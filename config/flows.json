@@ -1,0 +1,8 @@
+{
+  "defaultFlowOrder": [
+    "smoke",
+    "auth",
+    "lead-management",
+    "site-visit"
+  ]
+}

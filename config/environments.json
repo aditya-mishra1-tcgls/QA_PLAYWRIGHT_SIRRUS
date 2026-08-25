@@ -1,0 +1,13 @@
+{
+  "default": "qa",
+  "environments": {
+    "qa": {
+      "baseUrl": "https://qa.sirrus.ai/",
+      "activeProjectName": "Test1303"
+    },
+    "uat": {
+      "baseUrl": "https://uat.sirrus.ai/",
+      "activeProjectName": "Test1303"
+    }
+  }
+}

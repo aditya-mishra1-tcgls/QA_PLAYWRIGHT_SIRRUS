@@ -1,0 +1,14 @@
+{
+  "qa": {
+    "defaultUser": {
+      "mobileNumber": "confirm-qa-mobile-number",
+      "otp": "confirm-qa-otp"
+    }
+  },
+  "uat": {
+    "defaultUser": {
+      "mobileNumber": "9456888501",
+      "otp": "1234"
+    }
+  }
+}

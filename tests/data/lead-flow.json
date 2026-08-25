@@ -1,0 +1,42 @@
+{
+  "qa": {
+    "projectName": "Test1303",
+    "listingProjectName": "Test1303",
+    "preferredLeadNames": [
+      "Automation Lead",
+      "cplead",
+      "cplead sv"
+    ],
+    "fullNamePrefix": "Automation Lead",
+    "sourceCategory": "Test",
+    "companyName": "Sirrus QA Automation",
+    "preferredLocation": "Bengaluru",
+    "otherPreferences": "Automation seeded lead for QA flow validation",
+    "fallbackSourcePreferences": [
+      "Direct Site Visit",
+      "Digital Marketing",
+      "Channel Partner"
+    ]
+  },
+  "uat": {
+    "projectName": "Test1303",
+    "listingProjectName": "Test1303",
+    "preferredLeadNames": [
+      "cplead",
+      "cplead sv",
+      "cplead two",
+      "pratz",
+      "Automation Lead"
+    ],
+    "fullNamePrefix": "Automation Lead",
+    "sourceCategory": "Test",
+    "companyName": "Sirrus UAT Automation",
+    "preferredLocation": "Mumbai",
+    "otherPreferences": "Automation seeded lead for UAT flow validation",
+    "fallbackSourcePreferences": [
+      "Channel Partner",
+      "Direct Site Visit",
+      "Digital Marketing"
+    ]
+  }
+}

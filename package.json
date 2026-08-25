@@ -1,0 +1,21 @@
+{
+  "name": "tcgls-qa-playwright",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Flow-based Playwright QA automation starter for TCGLS",
+  "scripts": {
+    "test": "playwright test",
+    "test:qa": "TEST_ENV=qa playwright test",
+    "test:uat": "TEST_ENV=uat playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:smoke": "playwright test tests/flows/smoke --workers=1",
+    "test:auth": "playwright test tests/flows/auth --workers=1",
+    "test:flows": "node ./scripts/run-flows.mjs",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^24.3.0"
+  }
+}

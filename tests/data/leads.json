@@ -1,0 +1,24 @@
+{
+  "qa": {
+    "newLead": {
+      "firstName": "QA",
+      "lastName": "Automation",
+      "email": "qa.automation+lead@sirrus.ai",
+      "phone": "9999999990",
+      "source": "Website",
+      "company": "Sirrus QA",
+      "notes": "Seed data for QA lead creation flow"
+    }
+  },
+  "uat": {
+    "newLead": {
+      "firstName": "UAT",
+      "lastName": "Automation",
+      "email": "uat.automation+lead@sirrus.ai",
+      "phone": "9999999991",
+      "source": "Campaign",
+      "company": "Sirrus UAT",
+      "notes": "Seed data for UAT lead creation flow"
+    }
+  }
+}

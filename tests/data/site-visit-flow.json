@@ -1,0 +1,22 @@
+{
+  "uat": {
+    "otp": "1234",
+    "projectName": "Agrawal builders",
+    "scheduledLead": {
+      "leadId": "L0826005635",
+      "detailUrl": "https://uat.sirrus.ai/admin/developer/engagement-intelligence/manage-leads?id=106f61d0-89bd-445d-93a4-a219cd997a60&projectId=f177092b-3459-4ce0-a146-1c7b3e82e7ce&encryptedWhatsAppNumber=ODg3MjEzMzMzMw%3D%3D",
+      "source": "Direct Site Visit",
+      "subSource": "Walk In"
+    },
+    "completedLead": {
+      "leadId": "L0826005612",
+      "detailUrl": "https://uat.sirrus.ai/admin/developer/engagement-intelligence/manage-leads?id=12a72e0d-8952-49a5-950f-d80b61bce06f&projectId=f177092b-3459-4ce0-a146-1c7b3e82e7ce&encryptedWhatsAppNumber=ODE2NzU3NjU2NA%3D%3D",
+      "source": "Channel Partner",
+      "subSource": "Test Company - Test"
+    },
+    "revisitLead": {
+      "leadId": "L0826005637",
+      "detailUrl": "https://uat.sirrus.ai/admin/developer/engagement-intelligence/manage-leads?id=9a1e790f-b171-4268-a426-74be82d96d53&projectId=f177092b-3459-4ce0-a146-1c7b3e82e7ce&encryptedWhatsAppNumber=ODE2NzU3NjU2Ng%3D%3D"
+    }
+  }
+}

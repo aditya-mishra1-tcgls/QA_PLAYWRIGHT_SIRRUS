@@ -1,0 +1,10 @@
+{
+  "qa": {
+    "mobileNumber": "confirm-qa-mobile-number",
+    "otp": "confirm-qa-otp"
+  },
+  "uat": {
+    "mobileNumber": "9456888501",
+    "otp": "1234"
+  }
+}
