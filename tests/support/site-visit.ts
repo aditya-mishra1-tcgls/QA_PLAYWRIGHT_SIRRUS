@@ -1,27 +1,61 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 import siteVisitFlowConfig from "../data/site-visit-flow.json";
 
 type AppConfig = {
   envName: string;
 };
 
-export function getSiteVisitConfig(envName: string) {
-  return siteVisitFlowConfig[envName as keyof typeof siteVisitFlowConfig];
+const FALLBACK_RENDER_WAIT_MS = 3000;
+
+async function clickWithFallback(
+  locator: Locator,
+  page: Page,
+  postCheck?: () => Promise<boolean>,
+  options?: Parameters<Locator["click"]>[0]
+) {
+  await locator.click(options);
+
+  if (!postCheck) {
+    return;
+  }
+
+  const ready = await expect
+    .poll(postCheck, { timeout: 1500 })
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
+
+  if (!ready) {
+    await page.waitForTimeout(FALLBACK_RENDER_WAIT_MS);
+  }
 }
 
-export async function openLeadDetail(page: Page, detailUrl: string) {
-  await page.goto(detailUrl, { waitUntil: "networkidle" });
+export function getSiteVisitConfig(envName: string) {
+  const config = siteVisitFlowConfig[envName as keyof typeof siteVisitFlowConfig];
+  if (!config) {
+    throw new Error(`Missing site visit seed data for "${envName}" in tests/data/site-visit-flow.json.`);
+  }
+
+  return config;
+}
+
+export async function openLeadDetail(page: Page, detailPath: string) {
+  await page.goto(detailPath, { waitUntil: "networkidle" });
   await expect(page.getByText("Engagement Intelligence / Lead Profile", { exact: true })).toBeVisible({ timeout: 60000 });
 }
 
 export async function openChangeStage(page: Page) {
-  await page.getByRole("button", { name: /change stage/i }).click();
+  await clickWithFallback(
+    page.getByRole("button", { name: /change stage/i }),
+    page,
+    async () => await page.getByText("Choose a stage", { exact: true }).isVisible().catch(() => false)
+  );
   await expect(page.getByText("Choose a stage", { exact: true })).toBeVisible({ timeout: 30000 });
 }
 
 export async function assertSiteVisitScheduledLead(page: Page, app: AppConfig) {
   const config = getSiteVisitConfig(app.envName);
-  await openLeadDetail(page, config.scheduledLead.detailUrl);
+  await openLeadDetail(page, config.scheduledLead.detailPath);
 
   await expect(page.getByText(`Lead ID : ${config.scheduledLead.leadId}`, { exact: true })).toBeVisible();
   const bodyText = await page.locator("body").innerText();
@@ -37,7 +71,7 @@ export async function assertSiteVisitScheduledLead(page: Page, app: AppConfig) {
 
 export async function assertSiteVisitCompletedLead(page: Page, app: AppConfig) {
   const config = getSiteVisitConfig(app.envName);
-  await openLeadDetail(page, config.completedLead.detailUrl);
+  await openLeadDetail(page, config.completedLead.detailPath);
 
   await expect(page.getByText(`Lead ID : ${config.completedLead.leadId}`, { exact: true })).toBeVisible();
   const bodyText = await page.locator("body").innerText();
@@ -53,7 +87,7 @@ export async function assertSiteVisitCompletedLead(page: Page, app: AppConfig) {
 
 export async function assertSiteVisitHistory(page: Page, app: AppConfig) {
   const config = getSiteVisitConfig(app.envName);
-  await openLeadDetail(page, config.revisitLead.detailUrl);
+  await openLeadDetail(page, config.revisitLead.detailPath);
 
   await expect(page.getByText(`Lead ID : ${config.revisitLead.leadId}`, { exact: true })).toBeVisible();
   await expect(page.getByText(/Lead Status History/i)).toBeVisible();

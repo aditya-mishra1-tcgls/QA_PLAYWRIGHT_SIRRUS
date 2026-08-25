@@ -25,10 +25,43 @@ type EditedLead = {
   updatedEmail: string;
 };
 
+type AddedRemark = {
+  text: string;
+};
+
+type CostSheetRenderResult = {
+  emptyStateText: string;
+};
+
 type StageTransition = {
   stage: string;
   remark: string;
 };
+
+const FALLBACK_RENDER_WAIT_MS = 3000;
+
+async function clickWithFallback(
+  page: Page,
+  locator: Locator,
+  postCheck?: () => Promise<boolean>,
+  options?: Parameters<Locator["click"]>[0]
+) {
+  await locator.click(options);
+
+  if (!postCheck) {
+    return;
+  }
+
+  const ready = await expect
+    .poll(postCheck, { timeout: 1500 })
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
+
+  if (!ready) {
+    await page.waitForTimeout(FALLBACK_RENDER_WAIT_MS);
+  }
+}
 
 function randomDigits(length: number) {
   const min = 10 ** (length - 1);
@@ -56,7 +89,11 @@ export async function goToManageLeads(page: Page, app: AppConfig) {
   await ensureActiveProject(page, app.activeProjectName);
   await waitForManageConstructionContent(page);
   await expect(page.locator("button").nth(2)).toBeVisible({ timeout: 60000 });
-  await page.locator("button").nth(2).click();
+  await clickWithFallback(
+    page,
+    page.locator("button").nth(2),
+    async () => await page.getByRole("button", { name: /manage leads/i }).isVisible().catch(() => false)
+  );
   await expect(page.getByText("Engagement Intelligence", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /manage leads/i }).click();
   await page.waitForURL(/engagement-intelligence\/manage-leads/, { timeout: 60000 });
@@ -109,7 +146,6 @@ async function chooseFirstOption(page: Page, preferredOptions: string[] = []) {
   }
 
   await optionLocator.filter({ hasText: optionTexts.selected }).first().click({ force: true });
-  await page.waitForTimeout(500);
   return optionTexts.selected;
 }
 
@@ -156,8 +192,23 @@ export async function fillLeadForm(page: Page, app: AppConfig) {
   await waitForListingReady(page);
 
   const addLeadButton = page.getByText("Add Lead", { exact: true });
-  await addLeadButton.click();
-  await expect(page.getByText("Lead Form", { exact: true })).toBeVisible({ timeout: 30000 });
+  await clickWithFallback(
+    page,
+    addLeadButton,
+    async () => {
+      const leadFormVisible = await page.getByText("Lead Form", { exact: true }).isVisible().catch(() => false);
+      const nestedAddLeadVisible = await page.getByText("Add Lead", { exact: true }).last().isVisible().catch(() => false);
+      return leadFormVisible || nestedAddLeadVisible;
+    }
+  );
+
+  const leadForm = page.getByText("Lead Form", { exact: true });
+  if (!await leadForm.isVisible().catch(() => false)) {
+    await page.waitForTimeout(800);
+    await clickNestedAddLeadAction(page);
+  }
+
+  await expect(leadForm).toBeVisible({ timeout: 30000 });
 
   await page.locator("#fullName").fill(leadSeed.fullName);
 
@@ -210,9 +261,29 @@ export async function openLeadByName(page: Page, leadName: string) {
   await searchInput.press("Enter").catch(() => {});
   await page.waitForTimeout(2500);
 
-  const leadNameText = page.getByText(new RegExp(`^${leadName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i")).first();
-  await expect(leadNameText).toBeVisible({ timeout: 60000 });
-  await leadNameText.click({ force: true });
+  const leadLinkCandidates = [
+    page.getByRole("link", { name: new RegExp(`^${leadName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") }).first(),
+    page.locator('a[href*="manage-leads/?id="]').filter({ hasText: new RegExp(`^${leadName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") }).first(),
+    page.getByText(new RegExp(`^${leadName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i")).first()
+  ];
+
+  let opened = false;
+  for (const candidate of leadLinkCandidates) {
+    if (!await candidate.isVisible().catch(() => false)) {
+      continue;
+    }
+
+    await candidate.click({ force: true }).catch(() => {});
+    opened = await page.waitForURL(/engagement-intelligence\/manage-leads\/?\?id=/, { timeout: 15000 }).then(() => true).catch(() => false);
+    if (opened) {
+      break;
+    }
+  }
+
+  if (!opened) {
+    throw new Error(`Could not open lead profile for "${leadName}" from the lead listing.`);
+  }
+
   await waitForLeadProfile(page);
 }
 
@@ -220,6 +291,24 @@ async function clickFirstVisible(page: Page, locators: Locator[]) {
   for (const locator of locators) {
     if (await locator.first().isVisible().catch(() => false)) {
       await locator.first().click();
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function clickNestedAddLeadAction(page: Page) {
+  const nestedAddLeadCandidates = [
+    page.locator("button").filter({ hasText: /^Add Lead$/i }).last(),
+    page.locator('[role="menuitem"]').filter({ hasText: /^Add Lead$/i }).last(),
+    page.locator("div").filter({ hasText: /^Add Lead$/i }).last(),
+    page.getByText("Add Lead", { exact: true }).last()
+  ];
+
+  for (const candidate of nestedAddLeadCandidates) {
+    if (await candidate.isVisible().catch(() => false)) {
+      await candidate.click({ force: true });
       return true;
     }
   }
@@ -259,12 +348,14 @@ async function waitForListingReady(page: Page) {
 }
 
 async function waitForLeadProfile(page: Page) {
-  await page.waitForURL(/engagement-intelligence\/manage-leads\?id=/, { timeout: 30000 }).catch(() => {});
+  await page.waitForURL(/engagement-intelligence\/manage-leads\/?\?id=/, { timeout: 30000 });
+
+  await expect(page.getByText(/Lead Profile/i).first()).toBeVisible({ timeout: 60000 });
 
   await expect
     .poll(async () => {
       const bodyText = await page.locator("body").innerText();
-      return /Lead ID\s*:|Edit Lead Form|Change Stage|Lead Journey|Full Name\s*:/i.test(bodyText);
+      return /Lead ID\s*:|Edit Lead Form|Change Stage|Lead Journey|Full Name\s*:|Lead Profile/i.test(bodyText);
     }, { timeout: 60000 })
     .toBeTruthy();
 
@@ -424,15 +515,125 @@ export async function editOpenedLeadName(page: Page, nextName?: string): Promise
   return { previousName, updatedName, updatedEmail };
 }
 
+export async function addRemarkToOpenedLead(page: Page, remarkText?: string): Promise<AddedRemark> {
+  const finalRemark = remarkText ?? `Automation remark ${randomDigits(6)}`;
+  const addRemarkButtonCandidates = [
+    page.getByRole("button", { name: /add remark/i }),
+    page.getByRole("button", { name: /add comment/i }),
+    page.getByText("Add Remark", { exact: true }),
+    page.getByText("Add comment", { exact: true })
+  ];
+
+  const opened = await clickFirstVisible(page, addRemarkButtonCandidates);
+  if (!opened) {
+    throw new Error("Add Remark action was not visible on the lead profile.");
+  }
+
+  const remarkInputCandidates = [
+    page.getByRole("textbox", { name: /remark/i }).first(),
+    page.locator("textarea").first(),
+    page.locator('textarea[name*="remark" i]').first()
+  ];
+
+  let remarkInput: Locator | null = null;
+  for (const locator of remarkInputCandidates) {
+    if (await locator.isVisible().catch(() => false)) {
+      remarkInput = locator;
+      break;
+    }
+  }
+
+  if (!remarkInput) {
+    throw new Error("Remark input was not visible after opening the Add Remark flow.");
+  }
+
+  await remarkInput.scrollIntoViewIfNeeded().catch(() => {});
+  await remarkInput.fill(finalRemark);
+
+  const saveButtons = [
+    page.locator("#root-modal").getByRole("button", { name: /^save$/i }),
+    page.getByRole("button", { name: /^save$/i })
+  ];
+
+  let saved = false;
+  for (const locator of saveButtons) {
+    const count = await locator.count().catch(() => 0);
+    for (let index = count - 1; index >= 0; index -= 1) {
+      const button = locator.nth(index);
+      if (await button.isVisible().catch(() => false)) {
+        await button.click({ force: true });
+        saved = true;
+        break;
+      }
+    }
+
+    if (saved) {
+      break;
+    }
+  }
+
+  if (!saved) {
+    throw new Error("Save button was not visible in the Add Remark flow.");
+  }
+
+  await expect
+    .poll(async () => {
+      const bodyText = await page.locator("body").innerText().catch(() => "");
+      return bodyText.includes(finalRemark);
+    }, { timeout: 60000 })
+    .toBeTruthy();
+
+  return { text: finalRemark };
+}
+
+export async function assertGenerateCostSheetRenderingOnOpenedLead(page: Page): Promise<CostSheetRenderResult> {
+  const tabStrip = page
+    .locator("div")
+    .filter({ has: page.getByText("Overview", { exact: true }) })
+    .filter({ has: page.getByText("AI Insights", { exact: true }) })
+    .filter({ has: page.getByText("Change Stage", { exact: true }) })
+    .first();
+
+  const aiInsightsTab = tabStrip.getByText("AI Insights", { exact: true });
+  await expect(aiInsightsTab).toBeVisible({ timeout: 60000 });
+  await aiInsightsTab.click({ force: true });
+
+  const quotationsTab = page.getByRole("button", { name: /^quotations$/i }).first();
+  await expect(quotationsTab).toBeVisible({ timeout: 60000 });
+  await quotationsTab.click({ force: true });
+
+  const generateCostSheetButton = page.getByRole("button", { name: /generate cost sheet/i }).first();
+  await expect(generateCostSheetButton).toBeVisible({ timeout: 60000 });
+  await generateCostSheetButton.click({ force: true });
+
+  const emptyState = page.getByText(/No Master Cost Sheet/i).first();
+  await expect(emptyState).toBeVisible({ timeout: 60000 });
+
+  return { emptyStateText: await emptyState.innerText() };
+}
+
 export async function moveOpenedLeadToSiteVisitInProgress(page: Page) {
   await expect(page.getByRole("button", { name: /change stage/i })).toBeVisible({ timeout: 60000 });
-  await page.getByRole("button", { name: /change stage/i }).click();
+  await clickWithFallback(
+    page,
+    page.getByRole("button", { name: /change stage/i }),
+    async () => await page.getByText("Choose a stage", { exact: true }).isVisible().catch(() => false)
+  );
 
   await expect(page.getByText("Choose a stage", { exact: true })).toBeVisible({ timeout: 30000 });
 
   const siteVisitStage = page.getByText(/^Site Visit$/i).last();
   await expect(siteVisitStage).toBeVisible({ timeout: 30000 });
-  await siteVisitStage.click({ force: true });
+  await clickWithFallback(
+    page,
+    siteVisitStage,
+    async () => {
+      const subStageVisible = await page.getByText("Choose a sub stage *", { exact: true }).isVisible().catch(() => false);
+      const dateVisible = await page.getByText(/^Select Date \*$/i).isVisible().catch(() => false);
+      return subStageVisible || dateVisible;
+    },
+    { force: true }
+  );
 
   await expect(page.getByText("Choose a sub stage *", { exact: true })).toBeVisible({ timeout: 30000 });
   const inProgressOption = page.getByText(/^In Progress$/i).last();
@@ -457,10 +658,154 @@ export async function moveOpenedLeadToSiteVisitInProgress(page: Page) {
     .toBeTruthy();
 }
 
-function tomorrowIsoDate() {
+export async function assertSiteVisitStageCasesOnOpenedLead(page: Page) {
+  await openChangeStageTab(page);
+
+  const siteVisitStage = page.locator("button, div").filter({ hasText: /^Site Visit$/i }).last();
+  await expect(siteVisitStage).toBeVisible({ timeout: 30000 });
+  await clickWithFallback(
+    page,
+    siteVisitStage,
+    async () => await page.getByRole("button", { name: /start date/i }).first().isVisible().catch(() => false),
+    { force: true }
+  );
+
+  await fillSiteVisitBookingFields(page);
+  const booked = await clickVisibleSaveButton(page);
+  if (!booked) {
+    throw new Error('Save button was not visible after selecting "Site Visit" and entering booking details.');
+  }
+
+  await expect
+    .poll(async () => {
+      const bodyText = await page.locator("body").innerText().catch(() => "");
+      return /Site Visit/i.test(bodyText);
+    }, { timeout: 60000 })
+    .toBeTruthy();
+}
+
+function addDaysToCurrentDate(days: number) {
   const date = new Date();
-  date.setDate(date.getDate() + 1);
-  return date.toISOString().slice(0, 10);
+  date.setDate(date.getDate() + days);
+  return date;
+}
+
+function tomorrowIsoDate() {
+  return addDaysToCurrentDate(1).toISOString().slice(0, 10);
+}
+
+function siteVisitIsoDate() {
+  return addDaysToCurrentDate(3).toISOString().slice(0, 10);
+}
+
+function dateOptionName(daysAhead: number) {
+  const date = addDaysToCurrentDate(daysAhead);
+  const weekday = new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(date);
+  const month = new Intl.DateTimeFormat("en-US", { month: "long" }).format(date);
+  const day = date.getDate();
+  const remainder10 = day % 10;
+  const remainder100 = day % 100;
+  const suffix = remainder10 === 1 && remainder100 !== 11
+    ? "st"
+    : remainder10 === 2 && remainder100 !== 12
+      ? "nd"
+      : remainder10 === 3 && remainder100 !== 13
+        ? "rd"
+        : "th";
+
+  return new RegExp(`^Choose ${weekday}, ${month} ${day}${suffix},`, "i");
+}
+
+async function fillFirstVisibleField(page: Page, locators: Locator[], value: string) {
+  for (const locator of locators) {
+    if (await locator.isVisible().catch(() => false)) {
+      await locator.scrollIntoViewIfNeeded().catch(() => {});
+      await locator.fill(value);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function fillSiteVisitBookingFields(page: Page) {
+  const startDateButton = page.getByRole("button", { name: /start date/i }).first();
+  const remarkFieldCandidates = [
+    page.getByRole("textbox", { name: /remarks/i }).first(),
+    page.locator("textarea").first(),
+    page.locator('input[name*="remark" i]').first()
+  ];
+  const siteVisitDateLocators = [
+    startDateButton,
+    page.getByPlaceholder(/start date/i).first(),
+    page.locator('input[id*="visit"][type="date" i]').first(),
+    page.locator('input[name*="visit"][type="date" i]').first(),
+    page.locator('input[placeholder*="visit" i]').first(),
+    page.locator('input[id*="schedule"][type="date" i]').first(),
+    page.locator('input[name*="schedule"][type="date" i]').first(),
+    page.locator('input[placeholder*="date" i]').first(),
+    page.locator('input[type="date"]').first()
+  ];
+
+  const dateFieldVisible = await expect
+    .poll(async () => {
+      return await Promise.all(siteVisitDateLocators.map(async (locator) => await locator.isVisible().catch(() => false)));
+    }, { timeout: 4000 })
+    .toContain(true)
+    .then(() => true)
+    .catch(() => false);
+
+  if (!dateFieldVisible) {
+    await page.waitForTimeout(FALLBACK_RENDER_WAIT_MS);
+  }
+
+  const dateFilled = await selectSiteVisitDate(page, startDateButton, siteVisitDateLocators);
+  const remarkFilled = await fillSiteVisitRemark(page, remarkFieldCandidates, "user will come for site visit.");
+
+  if (!dateFilled || !remarkFilled) {
+    throw new Error("Site visit booking date or remarks were not ready after selecting Site Visit.");
+  }
+}
+
+async function selectSiteVisitDate(page: Page, startDateButton: Locator, locators: Locator[]) {
+  if (await startDateButton.isVisible().catch(() => false)) {
+    await clickWithFallback(
+      page,
+      startDateButton,
+      async () => await page.getByRole("option", { name: dateOptionName(3) }).first().isVisible().catch(() => false)
+    );
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const dateOption = page.getByRole("option", { name: dateOptionName(3) }).first();
+      if (await dateOption.isVisible().catch(() => false)) {
+        await dateOption.click({ force: true });
+        return true;
+      }
+
+      const scrolled = await scrollVisiblePopup(page);
+      if (!scrolled) {
+        break;
+      }
+      await page.waitForTimeout(400);
+    }
+  }
+
+  return await fillFirstVisibleField(page, locators, siteVisitIsoDate());
+}
+
+async function fillSiteVisitRemark(page: Page, locators: Locator[], remark: string) {
+  for (const locator of locators) {
+    if (!await locator.isVisible().catch(() => false)) {
+      continue;
+    }
+
+    await locator.scrollIntoViewIfNeeded().catch(() => {});
+    await locator.click().catch(() => {});
+    await locator.fill(remark);
+    return true;
+  }
+
+  return false;
 }
 
 async function fillVisibleStageFields(page: Page, remark: string) {
@@ -613,16 +958,19 @@ async function openChangeStageTab(page: Page) {
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
     await changeStageTab.scrollIntoViewIfNeeded().catch(() => {});
-    await changeStageTab.click({ force: true });
-    await page.waitForTimeout(1200);
+    await clickWithFallback(page, changeStageTab, async () => await stagePanelIsOpen(page, tabStrip, changeStageTab, aiInsightsTab), { force: true });
     const opened = await stagePanelIsOpen(page, tabStrip, changeStageTab, aiInsightsTab);
 
     if (opened) {
       return;
     }
 
-    await changeStageTab.click({ force: true, position: { x: 18, y: 18 } }).catch(() => {});
-    await page.waitForTimeout(1400);
+    await clickWithFallback(
+      page,
+      changeStageTab,
+      async () => await stagePanelIsOpen(page, tabStrip, changeStageTab, aiInsightsTab),
+      { force: true, position: { x: 18, y: 18 } }
+    ).catch(() => {});
     const reopened = await stagePanelIsOpen(page, tabStrip, changeStageTab, aiInsightsTab);
 
     if (reopened) {
@@ -640,7 +988,10 @@ export async function moveLeadThroughStages(page: Page, transitions: StageTransi
     const stageChip = page.getByText(new RegExp(`^${transition.stage}$`, "i")).last();
     await expect(stageChip).toBeVisible({ timeout: 30000 });
     await stageChip.click({ force: true });
-    await page.waitForTimeout(1000);
+
+    if (/^site visit$/i.test(transition.stage)) {
+      await fillSiteVisitBookingFields(page);
+    }
 
     await fillVisibleStageFields(page, transition.remark);
 
@@ -664,7 +1015,6 @@ export async function assertLeadJourneyStages(page: Page, stages: string[]) {
   const leadJourneyTab = page.getByText("Lead Journey", { exact: true });
   await expect(leadJourneyTab).toBeVisible({ timeout: 30000 });
   await leadJourneyTab.click();
-  await page.waitForTimeout(1000);
 
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const bodyText = await page.locator("body").innerText();

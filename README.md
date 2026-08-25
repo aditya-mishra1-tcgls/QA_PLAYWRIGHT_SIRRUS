@@ -44,6 +44,32 @@ npm run test:flows
 npm run test:headed
 ```
 
+## Run With Codex
+
+Open this project folder in Codex:
+
+```bash
+/Users/aakarshyadav/Desktop/tcgls/qa-playwright-automation
+```
+
+Quick handoff context for a separate Codex task:
+
+- `CODEX_CONTEXT.md`
+
+Typical Codex runs used for live QA:
+
+```bash
+npx playwright test tests/flows/lead-management/lead-stage-change.spec.ts --project=chromium --headed
+npx playwright test tests/flows/lead-management/edit-lead.spec.ts --project=chromium --headed
+```
+
+Notes for Codex usage:
+
+- Keep the project selection configured as `Test1303`.
+- Use `--headed` when you want realtime browser view.
+- Reuse shared helpers from `tests/support` instead of duplicating flow logic.
+- Update env, project, and account details from config files before running new flows.
+
 ## Config model
 
 - Switch target environment by changing `TEST_ENV` in `.env`.

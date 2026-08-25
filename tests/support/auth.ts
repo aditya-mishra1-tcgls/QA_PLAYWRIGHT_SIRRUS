@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect } from "@playwright/test";
+import { expect, type Locator } from "@playwright/test";
 
 type AppConfig = {
   envName: string;
@@ -13,6 +13,31 @@ type AppConfig = {
 
 export function getAuthStatePath(envName: string) {
   return path.resolve("playwright", ".auth", `${envName}.json`);
+}
+
+const FALLBACK_RENDER_WAIT_MS = 3000;
+
+async function clickWithFallback(
+  locator: Locator,
+  page: Page,
+  postCheck?: () => Promise<boolean>,
+  options?: Parameters<Locator["click"]>[0]
+) {
+  await locator.click(options);
+
+  if (!postCheck) {
+    return;
+  }
+
+  const ready = await expect
+    .poll(postCheck, { timeout: 1500 })
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
+
+  if (!ready) {
+    await page.waitForTimeout(FALLBACK_RENDER_WAIT_MS);
+  }
 }
 
 async function waitForProjectSwitcher(page: Page) {
@@ -118,7 +143,11 @@ export async function ensureActiveProject(page: Page, projectName: string) {
   }
 
   const projectSwitcher = await waitForProjectSwitcher(page);
-  await projectSwitcher.click();
+  await clickWithFallback(
+    projectSwitcher,
+    page,
+    async () => await page.locator("button").filter({ hasText: /\S/ }).first().isVisible().catch(() => false)
+  );
   await chooseConfiguredProject(page, projectName);
   await waitForProjectApplied(page, projectName);
 
@@ -129,13 +158,21 @@ export async function ensureActiveProject(page: Page, projectName: string) {
 
 export async function loginToPlatform(page: Page, app: AppConfig) {
   await page.goto(app.baseUrl, { waitUntil: "domcontentloaded" });
-  await page.getByRole("link", { name: /log in/i }).click();
+  await clickWithFallback(
+    page.getByRole("link", { name: /log in/i }),
+    page,
+    async () => await page.locator("#mobile_number").isVisible().catch(() => false)
+  );
 
   await expect(page).toHaveURL(/\/admin\/login/);
   await page.locator("#mobile_number").fill(app.mobileNumber);
-  await page.getByRole("button", { name: "Continue" }).click();
-
   const otpInputs = page.locator('input[inputmode="numeric"]');
+  await clickWithFallback(
+    page.getByRole("button", { name: "Continue" }),
+    page,
+    async () => (await otpInputs.count().catch(() => 0)) === 4
+  );
+
   await expect(otpInputs).toHaveCount(4);
 
   for (const [index, digit] of app.otp.split("").entries()) {
