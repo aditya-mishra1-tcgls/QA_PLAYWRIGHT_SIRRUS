@@ -33,6 +33,15 @@ type CostSheetRenderResult = {
   emptyStateText: string;
 };
 
+type ReEnquiryResult = {
+  source: string;
+  subSource: string;
+};
+
+type CommentPanelResult = {
+  panelTitle: string;
+};
+
 type StageTransition = {
   stage: string;
   remark: string;
@@ -610,6 +619,81 @@ export async function assertGenerateCostSheetRenderingOnOpenedLead(page: Page): 
   await expect(emptyState).toBeVisible({ timeout: 60000 });
 
   return { emptyStateText: await emptyState.innerText() };
+}
+
+export async function assertAddCommentPanelOnOpenedLead(page: Page): Promise<CommentPanelResult> {
+  const addCommentButtonCandidates = [
+    page.getByRole("button", { name: /add comment/i }),
+    page.getByText("Add comment", { exact: true }),
+    page.locator('button:has-text("Add comment")')
+  ];
+
+  const opened = await clickFirstVisible(page, addCommentButtonCandidates);
+  if (!opened) {
+    throw new Error("Add comment action was not visible on the lead profile.");
+  }
+
+  const panelTitle = page.getByText(/Add comment and followup/i).first();
+  await expect(panelTitle).toBeVisible({ timeout: 60000 });
+
+  return { panelTitle: await panelTitle.innerText() };
+}
+
+export async function addReEnquiryToOpenedLead(
+  page: Page,
+  source = "Direct Site Visit",
+  subSource = "Walk In"
+): Promise<ReEnquiryResult> {
+  const reEnquiryButtonCandidates = [
+    page.getByRole("button", { name: /^re-enquiry/i }),
+    page.getByText(/^Re-Enquiry/i).first(),
+    page.getByRole("button", { name: /add re-enquiry/i }),
+    page.getByText("Add Re-Enquiry", { exact: true }),
+    page.locator('button:has-text("Add Re-Enquiry")')
+  ];
+
+  const opened = await clickFirstVisible(page, reEnquiryButtonCandidates);
+  if (!opened) {
+    throw new Error("Add Re-Enquiry action was not visible on the lead profile.");
+  }
+
+  const sourceButton = page.getByRole("button", { name: /select source/i }).first();
+  await expect(sourceButton).toBeVisible({ timeout: 30000 });
+  await sourceButton.click({ force: true });
+
+  const sourceOption = page.getByRole("button", { name: new RegExp(`^${source}$`, "i") }).first();
+  await expect(sourceOption).toBeVisible({ timeout: 30000 });
+  await sourceOption.click({ force: true });
+
+  const subSourceButton = page.getByRole("button", { name: /select sub source/i }).first();
+  await expect(subSourceButton).toBeVisible({ timeout: 30000 });
+  await subSourceButton.click({ force: true });
+
+  const subSourceOption = page.getByRole("button", { name: new RegExp(`^${subSource}$`, "i") }).first();
+  await expect(subSourceOption).toBeVisible({ timeout: 30000 });
+  await subSourceOption.click({ force: true });
+
+  const saveButtonCandidates = [
+    page.getByRole("button", { name: /^save$/i }).last(),
+    page.getByRole("button", { name: /^SAVE$/ }).last()
+  ];
+
+  let saved = false;
+  for (const button of saveButtonCandidates) {
+    if (await button.isVisible().catch(() => false)) {
+      await button.click({ force: true });
+      saved = true;
+      break;
+    }
+  }
+
+  if (!saved) {
+    throw new Error("Save button was not visible in the re-enquiry flow.");
+  }
+
+  await expect(page.getByText("Lead Journey", { exact: true })).toBeVisible({ timeout: 60000 });
+
+  return { source, subSource };
 }
 
 export async function moveOpenedLeadToSiteVisitInProgress(page: Page) {
