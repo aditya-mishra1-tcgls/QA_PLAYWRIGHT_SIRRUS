@@ -46,12 +46,23 @@ async function waitForProjectSwitcher(page: Page) {
   await page.waitForTimeout(1500);
 
   const projectSwitcherCandidates = [
-    page.getByRole("button", { name: /builders|residency|project|test/i }).last(),
-    page.locator("button").filter({ hasText: /builders|residency|project|test/i }).last()
+    page.locator("button").filter({ has: page.locator("img") }).last(),
+    page.locator("button").filter({ hasText: /\S/ }).last(),
+    page.locator("button").nth(0)
   ];
 
   for (const candidate of projectSwitcherCandidates) {
-    if (await candidate.isVisible().catch(() => false)) {
+    const text = (await candidate.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+    const isVisible = await candidate.isVisible().catch(() => false);
+    if (!isVisible) {
+      continue;
+    }
+
+    const box = await candidate.boundingBox().catch(() => null);
+    const inTopRight = Boolean(box && box.x > 700 && box.y < 220);
+    const looksLikeProjectButton = /tower|test|project|builders|residency/i.test(text) || inTopRight;
+
+    if (looksLikeProjectButton) {
       return candidate;
     }
   }

@@ -3,7 +3,7 @@
   "environments": {
     "qa": {
       "baseUrl": "https://qa.sirrus.ai/",
-      "activeProjectName": "Test1303"
+      "activeProjectName": "Test123"
     },
     "uat": {
       "baseUrl": "https://uat.sirrus.ai/",

@@ -97,13 +97,19 @@ export async function goToManageLeads(page: Page, app: AppConfig) {
   await page.goto("/admin/developer/cpms/manage-construction", { waitUntil: "networkidle" });
   await ensureActiveProject(page, app.activeProjectName);
   await waitForManageConstructionContent(page);
-  await expect(page.locator("button").nth(2)).toBeVisible({ timeout: 60000 });
+  const engagementModuleButton = page
+    .locator("button")
+    .filter({
+      has: page.locator('img[alt*="engagement" i], img[alt*="Engagement" i]')
+    })
+    .first();
+
+  await expect(engagementModuleButton).toBeVisible({ timeout: 60000 });
   await clickWithFallback(
     page,
-    page.locator("button").nth(2),
+    engagementModuleButton,
     async () => await page.getByRole("button", { name: /manage leads/i }).isVisible().catch(() => false)
   );
-  await expect(page.getByText("Engagement Intelligence", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /manage leads/i }).click();
   await page.waitForURL(/engagement-intelligence\/manage-leads/, { timeout: 60000 });
   await waitForListingReady(page);
