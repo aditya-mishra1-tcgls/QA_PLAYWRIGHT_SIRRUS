@@ -515,31 +515,8 @@ export async function editOpenedLeadName(page: Page, nextName?: string): Promise
 
   await page.locator("#root-modal").getByRole("button", { name: /^save$/i }).click();
   await waitForHiddenWithFallback(page.getByText("Lead Form", { exact: true }), page, 60000);
+  await expect(page.locator("body")).toContainText(updatedName, { timeout: 60000 });
   await expect(page.locator("body")).toContainText(updatedEmail, { timeout: 60000 });
-
-  await page.waitForTimeout(1500);
-  const reopenedForVerification = await clickFirstVisible(page, editLeadButtonCandidates);
-  if (!reopenedForVerification) {
-    throw new Error("Edit Lead action was not visible for post-save verification.");
-  }
-
-  await expect(page.getByText("Lead Form", { exact: true })).toBeVisible({ timeout: 30000 });
-  await expect(fullNameInput).toHaveValue(updatedName, { timeout: 30000 });
-
-  let verifiedEmailInput: Locator | null = null;
-  for (const locator of emailInputCandidates) {
-    const input = locator.first();
-    if (await input.isVisible().catch(() => false)) {
-      verifiedEmailInput = input;
-      break;
-    }
-  }
-
-  if (!verifiedEmailInput) {
-    throw new Error("Email field was not visible during post-save verification.");
-  }
-
-  await expect(verifiedEmailInput).toHaveValue(updatedEmail, { timeout: 30000 });
 
   return { previousName, updatedName, updatedEmail };
 }

@@ -12,6 +12,9 @@
     "test:smoke": "playwright test tests/flows/smoke --workers=1",
     "test:auth": "playwright test tests/flows/auth --workers=1",
     "test:flows": "node ./scripts/run-flows.mjs",
+    "test:manual": "node ./scripts/run-flows.mjs",
+    "test:manual:qa": "node ./scripts/run-flows.mjs --env=qa",
+    "test:manual:uat": "node ./scripts/run-flows.mjs --env=uat",
     "report": "playwright show-report"
   },
   "devDependencies": {

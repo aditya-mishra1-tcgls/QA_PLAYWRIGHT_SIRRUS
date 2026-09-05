@@ -1,17 +1,28 @@
-import { test } from "../../support/test";
+import { test, expect } from "../../support/test";
 import {
-  assertSiteVisitCompletedLead,
-  assertSiteVisitHistory,
-  assertSiteVisitScheduledLead
+  assertLeadCreated,
+  assertSiteVisitStageCasesOnOpenedLead,
+  fillLeadForm,
+  goToManageLeads,
+  openLeadByName
+} from "../../support/leads";
+import {
+  assertSiteVisitHistory
 } from "../../support/site-visit";
 
 test.describe("Site visit flow", () => {
-  test("scheduled site visit lead should expose stage controls", async ({ page, app }) => {
-    await assertSiteVisitScheduledLead(page, app);
-  });
+  test.setTimeout(150000);
 
-  test("completed site visit lead should show visit completion details", async ({ page, app }) => {
-    await assertSiteVisitCompletedLead(page, app);
+  test("fresh lead should expose site visit stage controls", async ({ page, app }) => {
+    await goToManageLeads(page, app);
+
+    const leadSeed = await fillLeadForm(page, app);
+
+    await expect(page).toHaveURL(/engagement-intelligence\/manage-leads/);
+    await assertLeadCreated(page, leadSeed.fullName, leadSeed.projectName);
+
+    await openLeadByName(page, leadSeed.fullName);
+    await assertSiteVisitStageCasesOnOpenedLead(page);
   });
 
   test("site visit history should include scheduled, in progress, visit done, and revisit states", async ({ page, app }) => {

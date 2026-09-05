@@ -16,6 +16,7 @@ This project is organized flow-wise so we can add UI journeys gradually and run 
 - `config/environments.json`: change `qa` and `uat` base URLs here
 - `config/accounts.local.json`: keep environment-wise credentials here
 - `config/flows.json`: single ordered list for sequential execution
+- `config/execution-profiles.json`: named manual execution modes
 - `scripts/run-flows.mjs`: sequential runner for one or many flow folders
 
 ## Setup
@@ -43,8 +44,12 @@ npm run test:uat
 npm run test:smoke
 npm run test:auth
 npm run test:flows
+npm run test:manual -- --mode=regression --env=uat
+npm run test:manual -- --flows=smoke,lead-management --env=qa
 npm run test:headed
 ```
+
+Manual execution planning and report steps are documented in `docs/MANUAL_EXECUTION.md`.
 
 ## Run With Codex
 

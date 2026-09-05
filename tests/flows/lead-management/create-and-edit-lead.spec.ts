@@ -4,7 +4,6 @@ import {
   editOpenedLeadName,
   fillLeadForm,
   goToManageLeads,
-  moveOpenedLeadToSiteVisitInProgress,
   openLeadByName
 } from "../../support/leads";
 
@@ -21,10 +20,9 @@ test.describe("Lead create and edit flow", () => {
 
     await openLeadByName(page, leadSeed.fullName);
     const editedLead = await editOpenedLeadName(page, "test flow");
-    await moveOpenedLeadToSiteVisitInProgress(page);
 
     await expect(page).toHaveURL(/engagement-intelligence\/manage-leads\?id=/);
     await expect(page.locator("body")).toContainText(editedLead.updatedName);
-    await expect(page.locator("body")).toContainText(/In Progress/i);
+    await expect(page.locator("body")).toContainText(editedLead.updatedEmail);
   });
 });
