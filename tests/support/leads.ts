@@ -1202,6 +1202,55 @@ async function selectSiteVisitDate(
   return await fillFirstVisibleField(page, locators, siteVisitIsoDate());
 }
 
+async function scrollVisiblePopup(page: Page) {
+  const scrolled = await page.evaluate(() => {
+    const selectors = [
+      '[role="listbox"]',
+      '[role="dialog"]',
+      "#root-modal",
+      '[class*="popover" i]',
+      '[class*="calendar" i]',
+      '[class*="dropdown" i]',
+      '[class*="menu" i]',
+    ];
+
+    const candidates = selectors
+      .flatMap((selector) => Array.from(document.querySelectorAll<HTMLElement>(selector)))
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          element.scrollHeight > element.clientHeight
+        );
+      })
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return rightRect.top - leftRect.top;
+      });
+
+    const target = candidates[0];
+    if (!target) {
+      return false;
+    }
+
+    const before = target.scrollTop;
+    target.scrollTop += Math.max(180, Math.floor(target.clientHeight * 0.8));
+    return target.scrollTop !== before;
+  });
+
+  if (scrolled) {
+    return true;
+  }
+
+  await page.mouse.wheel(0, 400).catch(() => {});
+  return false;
+}
+
 async function fillSiteVisitRemark(
   page: Page,
   locators: Locator[],
