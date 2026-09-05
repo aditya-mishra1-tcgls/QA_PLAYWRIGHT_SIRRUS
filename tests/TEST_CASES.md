@@ -1,5 +1,8 @@
 # TCGLS QA Flow Catalog
 
+Feature requirements and exact business rules should live under `docs/features/`.
+This file is the high-level catalog, while feature docs are the source of truth for dynamic data, conditions, and automation status.
+
 Single execution command:
 
 ```bash
@@ -16,6 +19,10 @@ Default sequential order is controlled in `config/flows.json`.
    Includes:
    Lead creation
    Lead edit
+4. `lead-report`
+   Includes:
+   Dashboard creation
+   Chart creation
 
 ## Designed next flows
 
@@ -24,11 +31,10 @@ Default sequential order is controlled in `config/flows.json`.
 3. Lead stage movement from New Lead to Open/Site Visit
 4. Lead assignment and owner update
 5. Lead detail update and required field validation
-6. Lead reports validation
-7. Bulk lead upload
-8. Engagement dashboard metric sanity checks
-9. Call and chat CTA availability checks
-10. Logout and session persistence checks
+6. Bulk lead upload
+7. Engagement dashboard metric sanity checks
+8. Call and chat CTA availability checks
+9. Logout and session persistence checks
 
 ## Lead creation rules
 

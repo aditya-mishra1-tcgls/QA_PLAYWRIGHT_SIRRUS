@@ -14,6 +14,20 @@ type EnvConfig = {
   leads: typeof leads;
 };
 
+function ensureConfiguredCredential(envName: string, label: "mobileNumber" | "otp", value: string) {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error(`Missing ${label} for "${envName}" in config/accounts.local.json.`);
+  }
+
+  if (/^confirm-/i.test(normalized)) {
+    throw new Error(
+      `Placeholder ${label} for "${envName}" is still set to "${normalized}" in config/accounts.local.json. ` +
+      `Replace it with the real ${label} before running tests.`
+    );
+  }
+}
+
 function hydrateDotEnv() {
   const envPath = path.resolve(".env");
   if (!fs.existsSync(envPath)) {
@@ -57,6 +71,9 @@ export function loadEnv(): EnvConfig {
   if (!selectedAccount) {
     throw new Error(`Missing credentials for "${selectedEnv}" in ${sourcePath}.`);
   }
+
+  ensureConfiguredCredential(selectedEnv, "mobileNumber", selectedAccount.mobileNumber);
+  ensureConfiguredCredential(selectedEnv, "otp", selectedAccount.otp);
 
   return {
     envName: selectedEnv,
