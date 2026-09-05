@@ -15,7 +15,7 @@ export function getAuthStatePath(envName: string) {
   return path.resolve("playwright", ".auth", `${envName}.json`);
 }
 
-const FALLBACK_RENDER_WAIT_MS = 3000;
+const FALLBACK_RENDER_WAIT_MS = 5000;
 
 async function clickWithFallback(
   locator: Locator,

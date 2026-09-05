@@ -11,6 +11,8 @@ This project is organized flow-wise so we can add UI journeys gradually and run 
 - `tests/setup`: shared one-time login setup for all authenticated tests
 - `tests/data`: reusable test data
 - `tests/support`: shared helpers and fixtures
+- `docs/features`: feature requirements, dynamic data rules, and automation mapping
+- `docs/templates`: templates for documenting new features before or alongside automation
 - `config/environments.json`: change `qa` and `uat` base URLs here
 - `config/accounts.local.json`: keep environment-wise credentials here
 - `config/flows.json`: single ordered list for sequential execution
@@ -78,6 +80,36 @@ Notes for Codex usage:
 - Keep reusable mock records in `tests/data`, for example `tests/data/leads.json`.
 - Control the full sequential suite in `config/flows.json`.
 
+## Feature Requirements
+
+Keep exact feature functionality in `docs/features/` and update it whenever tests change.
+
+Organize feature docs by domain first:
+
+- `docs/features/engagement/...`
+- `docs/features/martech/...`
+- `docs/features/post-sales/...`
+
+Current examples:
+
+- `docs/features/engagement/lead-management.md`
+- `docs/features/engagement/site-visit.md`
+- `docs/TEST_STRATEGY.md`
+
+When adding a new test or changing behavior:
+
+1. identify domain and module first
+2. update the matching feature file
+3. add or update the Playwright spec
+4. mark the automation status in the feature file
+
+Suggested intake examples:
+
+- `engagement -> lead-report`
+- `engagement -> lead-management`
+- `martech -> campaign-report`
+- `post-sales -> handover`
+
 Tests can read the selected environment through the shared `app` fixture:
 
 ```ts
@@ -98,6 +130,7 @@ app.leads[app.envName]
 
 1. Create a new folder under `tests/flows`, for example `tests/flows/booking`.
 2. Add one or more `.spec.ts` files inside that folder.
-3. Run it sequentially with `npm run test:flows -- smoke auth booking`.
+3. Create or update the matching feature document from `docs/templates/feature-spec.template.md`.
+4. Run it sequentially with `npm run test:flows -- smoke auth booking`.
 
 Each folder represents one business flow, so we can execute multiple flows in a fixed order.

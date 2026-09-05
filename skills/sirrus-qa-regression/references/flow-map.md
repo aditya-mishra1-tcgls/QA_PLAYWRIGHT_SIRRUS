@@ -4,7 +4,9 @@
 
 - Login baseline with saved auth state
 - Lead creation flow structure
+- Lead edit and lead mutation support helpers
 - Site visit read-only validations against current UAT staged leads
+- Feature documentation workflow under `docs/features/`
 
 ## Current single-run entry
 
@@ -27,4 +29,5 @@
 
 ## Maintenance rule
 
-- Whenever a new selector pattern, lead fixture, project fixture, or stage rule becomes stable, update this file and `project-context.md` in the same change.
+- Whenever a new selector pattern, lead fixture, project fixture, stage rule, or documentation rule becomes stable, update this file and `project-context.md` in the same change.
+- Whenever a feature gets a new automated case, update the related file in `docs/features/` in the same change.

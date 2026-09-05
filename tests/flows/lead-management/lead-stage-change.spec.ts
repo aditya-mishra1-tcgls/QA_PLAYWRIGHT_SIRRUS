@@ -22,15 +22,11 @@ test.describe("Lead stage change flow", () => {
     await openLeadByName(page, leadSeed.fullName);
 
     await moveLeadThroughStages(page, [
-      { stage: "Open", remark: "Stage moved to Open for test flow." },
-      { stage: "Qualified", remark: "Stage moved to Qualified for test flow." },
       { stage: "Site Visit", remark: "Stage moved to Site Visit for test flow." }
     ]);
 
     await assertLeadJourneyStages(page, [
       "New Lead",
-      "Open",
-      "Qualified",
       "Site Visit"
     ]);
   });

@@ -47,7 +47,7 @@ type StageTransition = {
   remark: string;
 };
 
-const FALLBACK_RENDER_WAIT_MS = 3000;
+const FALLBACK_RENDER_WAIT_MS = 5000;
 
 async function clickWithFallback(
   page: Page,
@@ -70,6 +70,20 @@ async function clickWithFallback(
   if (!ready) {
     await page.waitForTimeout(FALLBACK_RENDER_WAIT_MS);
   }
+}
+
+async function waitForHiddenWithFallback(locator: Locator, page: Page, timeout = 60000) {
+  const hidden = await locator
+    .waitFor({ state: "hidden", timeout: 5000 })
+    .then(() => true)
+    .catch(() => false);
+
+  if (hidden) {
+    return;
+  }
+
+  await page.waitForTimeout(FALLBACK_RENDER_WAIT_MS);
+  await expect(locator).not.toBeVisible({ timeout });
 }
 
 function randomDigits(length: number) {
@@ -256,7 +270,7 @@ export async function fillLeadForm(page: Page, app: AppConfig) {
   }
 
   await page.locator("#root-modal").getByRole("button", { name: /^save$/i }).click();
-  await expect(page.getByText("Lead Form", { exact: true })).not.toBeVisible({ timeout: 60000 });
+  await waitForHiddenWithFallback(page.getByText("Lead Form", { exact: true }), page, 60000);
 
   return leadSeed;
 }
@@ -500,7 +514,7 @@ export async function editOpenedLeadName(page: Page, nextName?: string): Promise
   }
 
   await page.locator("#root-modal").getByRole("button", { name: /^save$/i }).click();
-  await expect(page.getByText("Lead Form", { exact: true })).not.toBeVisible({ timeout: 60000 });
+  await waitForHiddenWithFallback(page.getByText("Lead Form", { exact: true }), page, 60000);
   await expect(page.locator("body")).toContainText(updatedEmail, { timeout: 60000 });
 
   await page.waitForTimeout(1500);

@@ -5,7 +5,7 @@ type AppConfig = {
   envName: string;
 };
 
-const FALLBACK_RENDER_WAIT_MS = 3000;
+const FALLBACK_RENDER_WAIT_MS = 5000;
 
 async function clickWithFallback(
   locator: Locator,

@@ -1,5 +1,5 @@
 {
-  "default": "qa",
+  "default": "uat",
   "environments": {
     "qa": {
       "baseUrl": "https://qa.sirrus.ai/",

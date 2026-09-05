@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sirrus QA Regression"
+  short_description: "Scalable Sirrus Playwright QA rules"
+  default_prompt: "Use $sirrus-qa-regression to create or update a scalable Sirrus Playwright test that follows project, environment, selector, and feature-documentation rules."
