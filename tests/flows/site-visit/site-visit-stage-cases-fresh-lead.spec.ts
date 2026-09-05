@@ -10,7 +10,7 @@ import {
 test.describe("Site visit stage cases with fresh lead", () => {
   test.setTimeout(150000);
 
-  test("user should create a new lead and verify site visit stage cases", async ({ page, app }) => {
+  test("Create lead and verify site visit stage cases", async ({ page, app }) => {
     await goToManageLeads(page, app);
 
     const leadSeed = await fillLeadForm(page, app);

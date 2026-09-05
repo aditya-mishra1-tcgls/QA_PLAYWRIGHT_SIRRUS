@@ -4,7 +4,7 @@ import { assertAddCommentPanelOnOpenedLead, openAnyLeadFromListing } from "../..
 test.describe("Lead comment flow", () => {
   test.setTimeout(90000);
 
-  test("user should open add comment on any existing lead and verify the panel rendering", async ({ page, app }) => {
+  test("Open add comment panel for existing lead", async ({ page, app }) => {
     await openAnyLeadFromListing(page, app);
 
     const result = await assertAddCommentPanelOnOpenedLead(page);

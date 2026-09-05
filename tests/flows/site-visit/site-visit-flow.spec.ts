@@ -1,19 +1,21 @@
 import { test, expect } from "../../support/test";
 import {
+  assertLeadJourneyStages,
   assertLeadCreated,
   assertSiteVisitStageCasesOnOpenedLead,
   fillLeadForm,
   goToManageLeads,
+  moveOpenedLeadToSiteVisitInProgress,
   openLeadByName
 } from "../../support/leads";
 import {
   assertSiteVisitHistory
 } from "../../support/site-visit";
 
-test.describe("Site visit flow", () => {
+test.describe("Site visit lifecycle flow", () => {
   test.setTimeout(150000);
 
-  test("fresh lead should expose site visit stage controls", async ({ page, app }) => {
+  test("Create fresh lead and expose site visit controls", async ({ page, app }) => {
     await goToManageLeads(page, app);
 
     const leadSeed = await fillLeadForm(page, app);
@@ -25,12 +27,22 @@ test.describe("Site visit flow", () => {
     await assertSiteVisitStageCasesOnOpenedLead(page);
   });
 
-  test("site visit history should include scheduled, in progress, visit done, and revisit states", async ({ page, app }) => {
+  test("Validate scheduled to revisit site visit history", async ({ page, app }) => {
     await assertSiteVisitHistory(page, app);
   });
 
-  test.fixme("site visit should move from scheduled to in progress", async () => {
-    // Pending safe mutation flow wiring against a dedicated staging lead.
+  test("site visit should move from scheduled to in progress", async ({ page, app }) => {
+    await goToManageLeads(page, app);
+
+    const leadSeed = await fillLeadForm(page, app);
+
+    await expect(page).toHaveURL(/engagement-intelligence\/manage-leads/);
+    await assertLeadCreated(page, leadSeed.fullName, leadSeed.projectName);
+
+    await openLeadByName(page, leadSeed.fullName);
+    await assertSiteVisitStageCasesOnOpenedLead(page);
+    await moveOpenedLeadToSiteVisitInProgress(page);
+    await assertLeadJourneyStages(page, ["New Lead", "Site Visit", "In Progress"]);
   });
 
   test.fixme("site visit should complete with hard-coded OTP 1234", async () => {

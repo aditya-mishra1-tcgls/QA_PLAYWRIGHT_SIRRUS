@@ -49,6 +49,10 @@ type StageTransition = {
 
 const FALLBACK_RENDER_WAIT_MS = 5000;
 
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function clickWithFallback(
   page: Page,
   locator: Locator,
@@ -291,9 +295,9 @@ export async function openLeadByName(page: Page, leadName: string) {
   await page.waitForTimeout(2500);
 
   const leadLinkCandidates = [
-    page.getByRole("link", { name: new RegExp(`^${leadName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") }).first(),
-    page.locator('a[href*="manage-leads/?id="]').filter({ hasText: new RegExp(`^${leadName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") }).first(),
-    page.getByText(new RegExp(`^${leadName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i")).first()
+    page.getByRole("link", { name: new RegExp(`^${escapeRegex(leadName)}$`, "i") }).first(),
+    page.locator('a[href*="manage-leads/?id="]').filter({ hasText: new RegExp(`^${escapeRegex(leadName)}$`, "i") }).first(),
+    page.getByText(new RegExp(`^${escapeRegex(leadName)}$`, "i")).first()
   ];
 
   let opened = false;
@@ -933,25 +937,100 @@ async function fillVisibleStageFields(page: Page, remark: string) {
   }
 }
 
+async function fillSiteVisitCancellationReason(page: Page, dropdownReason: string, inputReason: string) {
+  const reasonDropdown = page.getByRole("button", { name: /select here/i }).first();
+  if (await reasonDropdown.isVisible().catch(() => false)) {
+    await clickWithFallback(
+      page,
+      reasonDropdown,
+      async () => await page.getByRole("button", { name: new RegExp(escapeRegex(dropdownReason), "i") }).first().isVisible().catch(() => false)
+    );
+
+    const reasonOption = page.getByRole("button", { name: new RegExp(escapeRegex(dropdownReason), "i") }).first();
+    await expect(reasonOption).toBeVisible({ timeout: 30000 });
+    await reasonOption.click({ force: true });
+    return;
+  }
+
+  const reasonFields = [
+    page.getByRole("textbox", { name: /reason|remarks/i }).first(),
+    page.locator('textarea[placeholder*="reason" i]').first(),
+    page.locator('input[placeholder*="reason" i]').first(),
+    page.locator('textarea[placeholder*="remark" i]').first(),
+    page.locator('input[placeholder*="remark" i]').first(),
+    page.locator('textarea[name*="reason" i]').first(),
+    page.locator('input[name*="reason" i]').first(),
+    page.locator('textarea[name*="remark" i]').first(),
+    page.locator('input[name*="remark" i]').first(),
+    page.locator("#root-modal textarea").first(),
+    page.locator('#root-modal input:not([type="date"]):not([type="time"])').first(),
+    page.locator('textarea').first(),
+    page.locator('input:not([type="date"]):not([type="time"]):not([type="search"])').last(),
+    page.locator('[contenteditable="true"]').first()
+  ];
+
+  const filled = await fillFirstVisibleField(page, reasonFields, inputReason);
+  if (!filled) {
+    throw new Error("Cancellation reason dropdown or input field was not visible.");
+  }
+}
+
 async function clickVisibleSaveButton(page: Page) {
   const saveButtons = [
     page.locator("#root-modal").getByRole("button", { name: /^save$/i }),
     page.getByRole("button", { name: /^save$/i })
   ];
 
-  for (const locator of saveButtons) {
-    const count = await locator.count().catch(() => 0);
-    for (let index = count - 1; index >= 0; index -= 1) {
-      const button = locator.nth(index);
-      if (await button.isVisible().catch(() => false)) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    for (const locator of saveButtons) {
+      const count = await locator.count().catch(() => 0);
+      for (let index = count - 1; index >= 0; index -= 1) {
+        const button = locator.nth(index);
         await button.scrollIntoViewIfNeeded().catch(() => {});
-        await button.click({ force: true });
-        return true;
+        if (await button.isVisible().catch(() => false)) {
+          await button.click({ force: true });
+          return true;
+        }
       }
+    }
+
+    const scrolled = await scrollStageFormSection(page);
+    if (!scrolled) {
+      await page.mouse.wheel(0, 600).catch(() => {});
     }
   }
 
   return false;
+}
+
+async function scrollStageFormSection(page: Page) {
+  return await page.evaluate(() => {
+    const scrollables = Array.from(document.querySelectorAll("div, section, main")).filter((element) => {
+      const html = element as HTMLElement;
+      const style = window.getComputedStyle(html);
+      const rect = html.getBoundingClientRect();
+      const text = (html.innerText || "").trim();
+
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        html.scrollHeight > html.clientHeight &&
+        (style.overflowY === "auto" || style.overflowY === "scroll" || style.overflowY === "overlay") &&
+        /Choose a stage|Choose a sub stage|Remarks|Site Visit|Cancelled|No Show/i.test(text)
+      );
+    });
+
+    for (const element of scrollables) {
+      const html = element as HTMLElement;
+      const previousTop = html.scrollTop;
+      html.scrollTop = Math.min(html.scrollTop + Math.max(Math.floor(html.clientHeight * 0.85), 320), html.scrollHeight);
+      if (html.scrollTop !== previousTop) {
+        return true;
+      }
+    }
+
+    return false;
+  });
 }
 
 async function scrollJourneySection(page: Page) {
@@ -1090,6 +1169,158 @@ export async function moveLeadThroughStages(page: Page, transitions: StageTransi
 
     await openChangeStageTab(page);
   }
+}
+
+export async function openLeadTaskFromDashboard(page: Page, app: AppConfig, leadName: string) {
+  await page.goto("/admin/developer/cpms/manage-construction", { waitUntil: "networkidle" });
+  await ensureActiveProject(page, app.activeProjectName);
+  await waitForManageConstructionContent(page);
+
+  const engagementModuleButton = page
+    .locator("button")
+    .filter({
+      has: page.locator('img[alt*="engagement" i], img[alt*="Engagement" i]')
+    })
+    .first();
+
+  await expect(engagementModuleButton).toBeVisible({ timeout: 60000 });
+  await clickWithFallback(
+    page,
+    engagementModuleButton,
+    async () => await page.getByText(/Lead Dashboard/i).first().isVisible().catch(() => false)
+  );
+
+  const leadDashboardTab = page.getByText(/^Lead Dashboard$/i).first();
+  await expect(leadDashboardTab).toBeVisible({ timeout: 60000 });
+  await clickWithFallback(
+    page,
+    leadDashboardTab,
+    async () => await page.getByText(/AI-Prioritized Executive Tasks/i).first().isVisible().catch(() => false),
+    { force: true }
+  );
+
+  const executiveTaskSection = page
+    .locator("div, section, article")
+    .filter({ hasText: /AI-Prioritized Executive Tasks/i })
+    .first();
+
+  await expect(executiveTaskSection).toBeVisible({ timeout: 60000 });
+  const viewAllButton = executiveTaskSection.getByRole("button", { name: /view all/i }).first();
+  await expect(viewAllButton).toBeVisible({ timeout: 60000 });
+  await clickWithFallback(
+    page,
+    viewAllButton,
+    async () => await page.locator('input, [role="textbox"]').first().isVisible().catch(() => false)
+  );
+
+  const searchInputCandidates = [
+    page.locator("#search").first(),
+    page.getByRole("textbox", { name: /search/i }).first(),
+    page.locator('input[placeholder*="search" i]').first(),
+    page.locator('input[type="search"]').first(),
+    page.locator("input").first()
+  ];
+
+  let searched = false;
+  for (const searchInput of searchInputCandidates) {
+    if (!await searchInput.isVisible().catch(() => false)) {
+      continue;
+    }
+
+    await searchInput.click().catch(() => {});
+    await searchInput.fill(leadName);
+    await searchInput.press("Enter").catch(() => {});
+    searched = true;
+    break;
+  }
+
+  if (!searched) {
+    throw new Error("Task card search input was not visible after opening AI-prioritized tasks.");
+  }
+
+  await expect(page.getByText(new RegExp(escapeRegex(leadName), "i")).first()).toBeVisible({ timeout: 60000 });
+
+  const leadTaskCard = page
+    .locator("div, article, section")
+    .filter({ hasText: new RegExp(escapeRegex(leadName), "i") })
+    .filter({ hasText: /Site Visit/i })
+    .last();
+
+  await expect(leadTaskCard).toBeVisible({ timeout: 60000 });
+
+  const takeActionButton = leadTaskCard.getByRole("button", { name: /take action/i }).first();
+  await leadTaskCard.click({ force: true }).catch(() => {});
+  const navigatedFromCard = await page
+    .waitForURL(/engagement-intelligence\/manage-leads\/?\?id=/, { timeout: 10000 })
+    .then(() => true)
+    .catch(() => false);
+
+  if (!navigatedFromCard && await takeActionButton.isVisible().catch(() => false)) {
+    await clickWithFallback(
+      page,
+      takeActionButton,
+      async () => /engagement-intelligence\/manage-leads\/?\?id=/.test(page.url())
+    );
+  }
+
+  await waitForLeadProfile(page);
+}
+
+export async function cancelSiteVisitFromOpenedLead(page: Page, remark = "automation is done", reason = "Out of Town") {
+  await openChangeStageTab(page);
+
+  const cancelledOption = page.getByText(/^Cancelled$/i).last();
+  await expect(cancelledOption).toBeVisible({ timeout: 30000 });
+  await clickWithFallback(
+    page,
+    cancelledOption,
+    async () => {
+      const dropdownVisible = await page.getByRole("button", { name: /select here/i }).first().isVisible().catch(() => false);
+      const reasonInputVisible = await page.getByRole("textbox", { name: /reason|remarks/i }).first().isVisible().catch(() => false);
+      const modalInputVisible = await page.locator("#root-modal input, #root-modal textarea").first().isVisible().catch(() => false);
+      return dropdownVisible || reasonInputVisible || modalInputVisible;
+    },
+    { force: true }
+  );
+
+  await fillSiteVisitCancellationReason(page, reason, remark);
+
+  const remarksField = page.getByRole("textbox", { name: /remarks/i }).first();
+  if (await remarksField.isVisible().catch(() => false)) {
+    await remarksField.fill(remark);
+  }
+
+  await fillFirstVisibleField(
+    page,
+    [
+      page.locator('input[type="date"]').first(),
+      page.locator('input[placeholder*="date" i]').first(),
+      page.locator('input[name*="date" i]').first()
+    ],
+    siteVisitIsoDate()
+  );
+
+  await fillFirstVisibleField(
+    page,
+    [
+      page.locator('input[type="time"]').first(),
+      page.locator('input[placeholder*="time" i]').first(),
+      page.locator('input[name*="time" i]').first()
+    ],
+    "14:00"
+  );
+
+  const saved = await clickVisibleSaveButton(page);
+  if (!saved) {
+    throw new Error('Save button was not visible after selecting "Cancelled" site visit condition.');
+  }
+
+  await expect
+    .poll(async () => {
+      const bodyText = await page.locator("body").innerText();
+      return /Stage Updated to Cancelled|Dropped Reason\s*:\s*\S/i.test(bodyText);
+    }, { timeout: 60000 })
+    .toBeTruthy();
 }
 
 export async function assertLeadJourneyStages(page: Page, stages: string[]) {

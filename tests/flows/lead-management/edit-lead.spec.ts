@@ -4,7 +4,7 @@ import { editOpenedLeadName, openAnyLeadFromListing } from "../../support/leads"
 test.describe("Lead edit flow", () => {
   test.setTimeout(90000);
 
-  test("user should edit any existing lead, update name and email, and save the changes", async ({ page, app }) => {
+  test("Update existing lead name and email", async ({ page, app }) => {
     await openAnyLeadFromListing(page, app);
 
     const editedLead = await editOpenedLeadName(page);

@@ -4,7 +4,7 @@ import { addReEnquiryToOpenedLead, openAnyLeadFromListing } from "../../support/
 test.describe("Lead re-enquiry flow", () => {
   test.setTimeout(90000);
 
-  test("user should add a re-enquiry on any existing lead with Direct Site Visit and Walk In", async ({ page, app }) => {
+  test("Add Direct Site Visit walk-in re-enquiry", async ({ page, app }) => {
     await openAnyLeadFromListing(page, app);
 
     const result = await addReEnquiryToOpenedLead(page, "Direct Site Visit", "Walk In");
