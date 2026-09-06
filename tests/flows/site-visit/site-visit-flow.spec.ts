@@ -1,10 +1,16 @@
 import { test, expect } from "../../support/test";
+import type { Page } from "@playwright/test";
 import {
   assertLeadJourneyStages,
   assertLeadCreated,
+  assertScheduledSiteVisitReady,
   assertSiteVisitStageCasesOnOpenedLead,
+  completeOpenedSiteVisitWithOtp,
+  completeOpenedSiteVisitWithSkip,
   fillLeadForm,
   goToManageLeads,
+  markOpenedSiteVisitNoShow,
+  moveCompletedSiteVisitToOpportunity,
   moveOpenedLeadToSiteVisitInProgress,
   openLeadByName
 } from "../../support/leads";
@@ -12,8 +18,29 @@ import {
   assertSiteVisitHistory
 } from "../../support/site-visit";
 
+type AppConfig = {
+  envName: string;
+  baseUrl: string;
+  activeProjectName: string;
+};
+
 test.describe("Site visit lifecycle flow", () => {
-  test.setTimeout(150000);
+  test.setTimeout(220000);
+
+  async function createScheduledSiteVisitLead(page: Page, app: AppConfig) {
+    await goToManageLeads(page, app);
+
+    const leadSeed = await fillLeadForm(page, app);
+
+    await expect(page).toHaveURL(/engagement-intelligence\/manage-leads/);
+    await assertLeadCreated(page, leadSeed.fullName, leadSeed.projectName);
+
+    await openLeadByName(page, leadSeed.fullName);
+    await assertSiteVisitStageCasesOnOpenedLead(page);
+    await assertScheduledSiteVisitReady(page, leadSeed.fullName);
+
+    return leadSeed;
+  }
 
   test("Create fresh lead and expose site visit controls", async ({ page, app }) => {
     await goToManageLeads(page, app);
@@ -41,23 +68,36 @@ test.describe("Site visit lifecycle flow", () => {
 
     await openLeadByName(page, leadSeed.fullName);
     await assertSiteVisitStageCasesOnOpenedLead(page);
-    await moveOpenedLeadToSiteVisitInProgress(page);
-    await assertLeadJourneyStages(page, ["New Lead", "Site Visit", "In Progress"]);
+    await assertScheduledSiteVisitReady(page, leadSeed.fullName);
+    await assertLeadJourneyStages(page, ["New Lead", "Site Visit", "Scheduled"]);
+    await moveOpenedLeadToSiteVisitInProgress(page, leadSeed.fullName);
   });
 
-  test.fixme("site visit should complete with hard-coded OTP 1234", async () => {
-    // Pending OTP modal automation on a dedicated in-progress lead.
+  test("site visit should complete with hard-coded OTP 1234", async ({ page, app }) => {
+    const leadSeed = await createScheduledSiteVisitLead(page, app);
+
+    await moveOpenedLeadToSiteVisitInProgress(page, leadSeed.fullName);
+    await completeOpenedSiteVisitWithOtp(page, leadSeed.fullName);
   });
 
-  test.fixme("site visit should complete through skip OTP path", async () => {
-    // Pending skip verification modal automation on a dedicated in-progress lead.
+  test("site visit should complete through skip OTP path", async ({ page, app }) => {
+    const leadSeed = await createScheduledSiteVisitLead(page, app);
+
+    await moveOpenedLeadToSiteVisitInProgress(page, leadSeed.fullName, "skip");
+    await completeOpenedSiteVisitWithSkip(page, leadSeed.fullName);
   });
 
-  test.fixme("site visit should support no show outcome", async () => {
-    // Pending no-show transition wiring on a dedicated scheduled lead.
+  test("site visit should support no show outcome", async ({ page, app }) => {
+    const leadSeed = await createScheduledSiteVisitLead(page, app);
+
+    await markOpenedSiteVisitNoShow(page, leadSeed.fullName);
   });
 
-  test.fixme("site visit done lead should move to opportunity with remark and next follow up date", async () => {
-    // Pending opportunity transition modal wiring on a dedicated visit-done lead.
+  test("site visit done lead should move to opportunity with remark and next follow up date", async ({ page, app }) => {
+    const leadSeed = await createScheduledSiteVisitLead(page, app);
+
+    await moveOpenedLeadToSiteVisitInProgress(page, leadSeed.fullName);
+    await completeOpenedSiteVisitWithOtp(page, leadSeed.fullName);
+    await moveCompletedSiteVisitToOpportunity(page, leadSeed.fullName);
   });
 });

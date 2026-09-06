@@ -56,6 +56,22 @@ function statusBadge(status) {
   return `<span class="badge ${normalized}">${normalized}</span>`;
 }
 
+function attachmentUrl(run, test, attachment, index) {
+  if (attachment?.url) {
+    return attachment.url;
+  }
+
+  if (!attachment?.path) {
+    return "#";
+  }
+
+  if (attachment.path.startsWith("data/test-runs/")) {
+    return `/${encodeURI(attachment.path)}`;
+  }
+
+  return `/api/runs/${encodeURIComponent(run.id)}/tests/${encodeURIComponent(test.testId)}/attachments/${index}`;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -222,7 +238,12 @@ function renderTests(run) {
   }
 
   elements.testList.className = "test-list";
-  elements.testList.innerHTML = tests.map((test) => `
+  elements.testList.innerHTML = tests.map((test) => {
+    const imageAttachments = (test.attachments || [])
+      .map((attachment, index) => ({ attachment, index }))
+      .filter(({ attachment }) => attachment.contentType === "image/png" || attachment.contentType === "image/jpeg");
+
+    return `
     <article class="test-card ${test.status || "running"} ${test.status === "passed" && !state.expandedTestIds.has(test.testId) ? "collapsed" : ""}" data-test-id="${escapeHtml(test.testId || "")}">
       <div class="test-title">
         <strong>${escapeHtml(testDisplayTitle(test))}</strong>
@@ -251,20 +272,22 @@ function renderTests(run) {
         </details>
       `).join("")}
       ${(test.errors || []).map((error) => `<pre class="error">${escapeHtml(error.message || error.stack || "Unknown error")}</pre>`).join("")}
-      ${((test.attachments || []).filter((attachment) => attachment.contentType === "image/png" || attachment.contentType === "image/jpeg")).length ? `
+      ${imageAttachments.length ? `
         <details class="failure-screenshots">
-          <summary>Failure screenshots (${(test.attachments || []).filter((attachment) => attachment.contentType === "image/png" || attachment.contentType === "image/jpeg").length})</summary>
+          <summary>Failure screenshots (${imageAttachments.length})</summary>
           <div class="screenshot-grid">
-            ${(test.attachments || []).filter((attachment) => attachment.contentType === "image/png" || attachment.contentType === "image/jpeg").map((attachment) => `
-              <a href="/${encodeURI(attachment.path)}" target="_blank" rel="noreferrer">
-                <img src="/${encodeURI(attachment.path)}" alt="${escapeHtml(attachment.name || "Failure screenshot")}">
+            ${imageAttachments.map(({ attachment, index }) => `
+              <a href="${attachmentUrl(run, test, attachment, index)}" target="_blank" rel="noreferrer">
+                <img src="${attachmentUrl(run, test, attachment, index)}" alt="${escapeHtml(attachment.name || "Failure screenshot")}">
                 <span>${escapeHtml(attachment.name || "Screenshot")}</span>
+                ${attachment.uploadError ? `<small>${escapeHtml(attachment.uploadError)}</small>` : ""}
               </a>
             `).join("")}
           </div>
         </details>` : ""}
     </article>
-  `).join("");
+  `;
+  }).join("");
 
   const runningSteps = elements.testList.querySelector(".test-card.running .steps, .test-card.retrying .steps");
   if (runningSteps) {
@@ -497,6 +520,11 @@ elements.runsList.addEventListener("click", (event) => {
   }
 });
 elements.testList.addEventListener("click", (event) => {
+  const interactiveTarget = event.target.closest("a, button, summary, input, select, textarea, label");
+  if (interactiveTarget && !interactiveTarget.matches("[data-rerun-test-id]")) {
+    return;
+  }
+
   const rerunButton = event.target.closest("[data-rerun-test-id]");
   if (rerunButton) {
     event.stopPropagation();

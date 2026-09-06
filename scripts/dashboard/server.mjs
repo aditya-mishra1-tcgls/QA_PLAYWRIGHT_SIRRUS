@@ -4,7 +4,7 @@ import { appendFile, copyFile, mkdir, readFile, rename, writeFile } from "node:f
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { databaseEnabled, getRemoteArtifact, initializePersistence, listPersistentRuns, loadPersistentRun, objectStorageEnabled, savePersistentRun, uploadRunArtifacts } from "./persistence.mjs";
+import { databaseEnabled, getRemoteArtifact, initializePersistence, listPersistentRunSummaries, listPersistentRuns, loadPersistentRun, objectStorageEnabled, savePersistentRun, uploadRunArtifact, uploadRunArtifacts } from "./persistence.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "../..");
@@ -81,6 +81,11 @@ function getRunDir(runId) {
   return path.join(runsRoot, safeRunId(runId));
 }
 
+function temporaryRunPath(runPath) {
+  const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${runPath}.${suffix}.tmp`;
+}
+
 function extractLastCompleteRunJson(content) {
   let depth = 0;
   let start = -1;
@@ -125,7 +130,7 @@ async function recoverRunFile(runPath, runId) {
 
   const backupPath = `${runPath}.corrupt-backup`;
   if (!existsSync(backupPath)) await copyFile(runPath, backupPath);
-  const temporaryPath = `${runPath}.tmp`;
+  const temporaryPath = temporaryRunPath(runPath);
   await writeFile(temporaryPath, `${JSON.stringify(recovered, null, 2)}\n`);
   await rename(temporaryPath, runPath);
   console.warn(`Recovered local run ${runId}; saved its original file as ${path.basename(backupPath)}.`);
@@ -141,15 +146,41 @@ async function recoverCorruptedRunFiles() {
   }
 }
 
+async function syncLocalRunsToDatabase() {
+  if (!databaseEnabled || !existsSync(runsRoot)) return;
+
+  for (const entry of readdirSync(runsRoot)) {
+    const runPath = path.join(runsRoot, entry, "run.json");
+    if (!existsSync(runPath)) continue;
+
+    const run = await recoverRunFile(runPath, entry);
+    if (!run) continue;
+
+    await preserveRunAttachments(run);
+    applyUploadedArtifactUrls(run);
+    recomputeRunSummary(run);
+    await savePersistentRun(run);
+  }
+}
+
 async function readRun(runId) {
   const runPath = path.join(getRunDir(runId), "run.json");
   let run;
-  if (existsSync(runPath)) {
+  if (databaseEnabled) {
+    run = await loadPersistentRun(runId);
+    if (!run) throw new Error("Run not found");
+  } else if (existsSync(runPath)) {
     run = await recoverRunFile(runPath, runId);
     if (!run) throw new Error("Run file is corrupt and could not be recovered");
   } else {
     run = await loadPersistentRun(runId);
     if (!run) throw new Error("Run not found");
+  }
+  if (await preserveRunAttachments(run)) {
+    await saveRun(run);
+  }
+  if (applyUploadedArtifactUrls(run)) {
+    await saveRun(run);
   }
   recomputeRunSummary(run);
   return run;
@@ -167,13 +198,15 @@ function trimRunForUi(run) {
 
 async function saveRun(run) {
   trimRunForUi(run);
+  const serializedRun = `${JSON.stringify(run, null, 2)}\n`;
+  const persistedRun = JSON.parse(serializedRun);
   const previous = saveQueues.get(run.id) || Promise.resolve();
   const task = previous.catch(() => {}).then(async () => {
     const runPath = path.join(getRunDir(run.id), "run.json");
-    const temporaryPath = `${runPath}.tmp`;
-    await writeFile(temporaryPath, `${JSON.stringify(run, null, 2)}\n`);
+    const temporaryPath = temporaryRunPath(runPath);
+    await writeFile(temporaryPath, serializedRun);
     await rename(temporaryPath, runPath);
-    await savePersistentRun(run);
+    await savePersistentRun(persistedRun);
   });
   saveQueues.set(run.id, task);
   try { await task; } finally { if (saveQueues.get(run.id) === task) saveQueues.delete(run.id); }
@@ -181,13 +214,42 @@ async function saveRun(run) {
 
 async function archiveRun(run) {
   if (!objectStorageEnabled) return;
-  run.artifacts = await uploadRunArtifacts(run.id, getRunDir(run.id));
-  run.archivedAt = new Date().toISOString();
+  try {
+    await preserveRunAttachments(run);
+    run.artifacts = await uploadRunArtifacts(run.id, getRunDir(run.id));
+    applyUploadedArtifactUrls(run);
+    run.archivedAt = new Date().toISOString();
+    run.archiveError = null;
+  } catch (error) {
+    run.archiveError = error.message || "S3 artifact upload failed";
+    run.events = run.events || [];
+    run.events.push({
+      type: "log",
+      source: "dashboard",
+      timestamp: new Date().toISOString(),
+      text: `S3 artifact upload failed: ${run.archiveError}`
+    });
+  }
   await saveRun(run);
 }
 
 function safeFileSegment(value) {
   return String(value || "attachment").replace(/[^a-zA-Z0-9._-]/g, "-");
+}
+
+function resolveAttachmentSource(attachmentPath) {
+  if (!attachmentPath) {
+    return null;
+  }
+
+  const candidates = path.isAbsolute(attachmentPath)
+    ? [attachmentPath]
+    : [
+        path.resolve(rootDir, attachmentPath),
+        path.resolve(attachmentPath)
+      ];
+
+  return candidates.find((candidate) => existsSync(candidate) && !statSync(candidate).isDirectory()) || null;
 }
 
 async function preserveAttachments(run, event) {
@@ -196,21 +258,131 @@ async function preserveAttachments(run, event) {
   const stored = [];
   for (let index = 0; index < attachments.length; index += 1) {
     const attachment = attachments[index];
-    if (!attachment.path || !existsSync(attachment.path)) {
+    const sourcePath = resolveAttachmentSource(attachment.path);
+    if (!sourcePath) {
       stored.push(attachment);
       continue;
     }
     await mkdir(targetDir, { recursive: true });
-    const extension = path.extname(attachment.path) || ".bin";
+    const extension = path.extname(sourcePath) || ".bin";
     const name = `${String(index + 1).padStart(2, "0")}-${safeFileSegment(attachment.name)}${extension}`;
     const destination = path.join(targetDir, name);
-    await copyFile(attachment.path, destination);
+    if (path.resolve(sourcePath) !== path.resolve(destination)) {
+      await copyFile(sourcePath, destination);
+    }
     stored.push({
       ...attachment,
       path: path.relative(rootDir, destination).split(path.sep).join("/")
     });
   }
   return stored;
+}
+
+async function preserveRunAttachments(run) {
+  let changed = false;
+
+  for (const test of Object.values(run.tests || {})) {
+    if (!Array.isArray(test.attachments) || !test.attachments.length) {
+      continue;
+    }
+
+    const normalized = await preserveAttachments(run, {
+      testId: test.testId,
+      attachments: test.attachments
+    });
+
+    if (JSON.stringify(normalized) !== JSON.stringify(test.attachments)) {
+      test.attachments = normalized;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function applyUploadedArtifactUrls(run) {
+  const artifactsByPath = new Map((run.artifacts || []).map((artifact) => [artifact.path, artifact]));
+  let changed = false;
+
+  for (const test of Object.values(run.tests || {})) {
+    if (!Array.isArray(test.attachments)) {
+      continue;
+    }
+
+    for (const attachment of test.attachments) {
+      const relativePath = attachment.path?.startsWith("data/test-runs/")
+        ? attachment.path.split("/").slice(3).join("/")
+        : attachment.path;
+      const artifact = artifactsByPath.get(relativePath);
+      if (artifact?.url && attachment.url !== artifact.url) {
+        attachment.url = artifact.url;
+        attachment.s3Key = artifact.key;
+        changed = true;
+      }
+    }
+  }
+
+  return changed;
+}
+
+function runRelativeAttachmentPath(run, attachment) {
+  if (!attachment?.path) {
+    return null;
+  }
+
+  const runPrefix = `data/test-runs/${run.id}/`;
+  if (attachment.path.startsWith(runPrefix)) {
+    return attachment.path.slice(runPrefix.length);
+  }
+
+  const runDir = getRunDir(run.id);
+  const absolutePath = path.resolve(rootDir, attachment.path);
+  const relativePath = path.relative(runDir, absolutePath);
+  return relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)
+    ? relativePath.split(path.sep).join("/")
+    : null;
+}
+
+async function uploadStoredAttachments(run, attachments) {
+  if (!objectStorageEnabled || !Array.isArray(attachments) || !attachments.length) {
+    return [];
+  }
+
+  run.artifacts = run.artifacts || [];
+  const artifactsByPath = new Map(run.artifacts.map((artifact) => [artifact.path, artifact]));
+  const uploaded = [];
+
+  for (const attachment of attachments) {
+    const relativePath = runRelativeAttachmentPath(run, attachment);
+    if (!relativePath || attachment.url) {
+      continue;
+    }
+
+    let artifact = artifactsByPath.get(relativePath);
+    if (!artifact) {
+      try {
+        artifact = await uploadRunArtifact(run.id, getRunDir(run.id), relativePath);
+      } catch (error) {
+        attachment.uploadError = error.message || "S3 upload failed";
+        run.archiveError = attachment.uploadError;
+        continue;
+      }
+    }
+    if (!artifact) {
+      continue;
+    }
+
+    if (!artifactsByPath.has(relativePath)) {
+      run.artifacts.push(artifact);
+      artifactsByPath.set(relativePath, artifact);
+    }
+
+    attachment.url = artifact.url;
+    attachment.s3Key = artifact.key;
+    uploaded.push(artifact);
+  }
+
+  return uploaded;
 }
 
 function sendJson(res, statusCode, data) {
@@ -220,6 +392,22 @@ function sendJson(res, statusCode, data) {
 
 function sendError(res, statusCode, message) {
   sendJson(res, statusCode, { error: message });
+}
+
+function contentTypeForPath(filePath) {
+  return {
+    ".html": "text/html",
+    ".css": "text/css",
+    ".js": "text/javascript",
+    ".json": "application/json",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webm": "video/webm",
+    ".zip": "application/zip",
+    ".md": "text/markdown",
+    ".log": "text/plain"
+  }[path.extname(filePath).toLowerCase()] || "application/octet-stream";
 }
 
 function killRunProcess(child) {
@@ -414,6 +602,7 @@ async function appendRetryEvent(run, retry, event) {
     targetTest.duration = event.duration;
     targetTest.errors = event.errors || [];
     targetTest.attachments = await preserveAttachments(run, event);
+    await uploadStoredAttachments(run, targetTest.attachments);
     targetTest.endedAt = event.timestamp;
     targetTest.retry = {
       ...(targetTest.retry || { id: retry.id, steps: [] }),
@@ -459,6 +648,7 @@ async function appendRunEvent(run, event) {
 
   if (event.type === "test_end") {
     event.attachments = await preserveAttachments(run, event);
+    await uploadStoredAttachments(run, event.attachments);
     run.tests[event.testId] = {
       ...(run.tests[event.testId] || {}),
       ...event,
@@ -747,8 +937,8 @@ async function retryTestInRun(runId, testId, body = {}) {
 }
 
 async function listRuns() {
-  const remoteRuns = await listPersistentRuns();
-  if (remoteRuns) return remoteRuns.map((run) => { recomputeRunSummary(run); return run; });
+  const remoteRuns = databaseEnabled ? await listPersistentRunSummaries() : await listPersistentRuns();
+  if (remoteRuns !== null) return remoteRuns.map((run) => { recomputeRunSummary(run); return run; });
   if (!existsSync(runsRoot)) {
     return [];
   }
@@ -761,11 +951,17 @@ async function listRuns() {
     const run = await recoverRunFile(runPath, entry);
     if (!run) continue;
 
+    if (await preserveRunAttachments(run)) {
+      await saveRun(run);
+    }
+    if (applyUploadedArtifactUrls(run)) {
+      await saveRun(run);
+    }
     recomputeRunSummary(run);
     runs.push(run);
   }
 
-  return runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  return runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, 20);
 }
 
 async function reconcileStaleRuns() {
@@ -821,15 +1017,24 @@ function serveStatic(res, pathname) {
   }
 
   const ext = path.extname(resolved);
-  const contentType = {
-    ".html": "text/html",
-    ".css": "text/css",
-    ".js": "text/javascript",
-    ".json": "application/json"
-  }[ext] || "application/octet-stream";
+  const contentType = contentTypeForPath(resolved);
 
   res.writeHead(200, { "content-type": contentType });
   createReadStream(resolved).pipe(res);
+}
+
+async function serveRunAttachment(res, runId, testId, attachmentIndex) {
+  const run = await readRun(runId);
+  const attachment = run.tests?.[testId]?.attachments?.[Number(attachmentIndex)];
+  const sourcePath = resolveAttachmentSource(attachment?.path);
+
+  if (!sourcePath) {
+    sendError(res, 404, "Attachment not found");
+    return;
+  }
+
+  res.writeHead(200, { "content-type": attachment.contentType || contentTypeForPath(sourcePath) });
+  createReadStream(sourcePath).pipe(res);
 }
 
 async function serveRunAsset(res, pathname) {
@@ -844,18 +1049,16 @@ async function serveRunAsset(res, pathname) {
     return;
   }
 
-  const ext = path.extname(resolved);
-  const contentType = {
-    ".html": "text/html",
-    ".css": "text/css",
-    ".js": "text/javascript",
-    ".json": "application/json",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webm": "video/webm",
-    ".zip": "application/zip"
-  }[ext] || "application/octet-stream";
+  const contentType = contentTypeForPath(resolved);
+
+  if (path.basename(resolved) === "run.json") {
+    const runId = relativePath.split("/")[0];
+    const run = await recoverRunFile(resolved, runId);
+    if (!run) {
+      sendError(res, 500, "Run file is corrupt and could not be recovered");
+      return;
+    }
+  }
 
   res.writeHead(200, { "content-type": contentType });
   createReadStream(resolved).pipe(res);
@@ -919,6 +1122,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const attachmentMatch = pathname.match(/^\/api\/runs\/([^/]+)\/tests\/([^/]+)\/attachments\/(\d+)$/);
+    if (req.method === "GET" && attachmentMatch) {
+      await serveRunAttachment(res, attachmentMatch[1], attachmentMatch[2], attachmentMatch[3]);
+      return;
+    }
+
     const eventMatch = pathname.match(/^\/api\/runs\/([^/]+)\/events$/);
     if (req.method === "GET" && eventMatch) {
       await streamEvents(req, res, eventMatch[1]);
@@ -940,6 +1149,7 @@ const port = Number(process.env.QA_DASHBOARD_PORT || process.env.PORT || 9324);
 const host = process.env.QA_DASHBOARD_HOST || "127.0.0.1";
 await initializePersistence();
 await recoverCorruptedRunFiles();
+await syncLocalRunsToDatabase();
 await reconcileStaleRuns();
 server.listen(port, host, () => {
   const displayHost = host === "0.0.0.0" ? "localhost" : host;

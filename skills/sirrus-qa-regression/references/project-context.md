@@ -12,6 +12,7 @@
 
 - Keep project selection config-driven.
 - Use the active project from environment/config helpers.
+- Current active project mapping: `qa` uses `Test123`; `uat` uses `Test1303`.
 - Do not hardcode project names inside specs.
 - If one environment needs a different project, reflect it through config and shared helpers first.
 
@@ -27,12 +28,15 @@
 - Project name is config-driven and should stay explicit
 - Current preferred source order should come from config data per environment
 - Source category default: `Test`
+- Lead creation reads the runtime `lead-form` API response and fills active, visible mandatory fields before save.
+- The helper also keeps filling identity fields used by assertions, such as full name and WhatsApp number, even when those fields are not mandatory.
 
 ## Dependent form behavior
 
 - `Project Name` selection must settle before `Source`
 - `Source` selection must settle before `Sub Source`
 - Prefer waiting for selected text plus dependent control readiness rather than only fixed sleeps
+- Lead form dropdown option lists may be rendered outside `#root-modal`; trigger lookup should stay modal-scoped, while option lookup may need to inspect the visible overlay.
 
 ## Stable authoring reminders
 

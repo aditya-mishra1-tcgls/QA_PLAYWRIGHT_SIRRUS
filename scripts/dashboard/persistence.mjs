@@ -1,16 +1,63 @@
-import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
+function loadDotEnv() {
+  const envPath = path.resolve(".env");
+  if (!existsSync(envPath)) return;
+
+  for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
+    const separatorIndex = trimmed.indexOf("=");
+    if (separatorIndex === -1) continue;
+
+    const key = trimmed.slice(0, separatorIndex).trim();
+    let value = trimmed.slice(separatorIndex + 1).trim();
+    if (!key || key in process.env) continue;
+
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+
+    process.env[key] = value;
+  }
+}
+
+loadDotEnv();
+
 const databaseUrl = process.env.QA_DATABASE_URL;
 const bucket = process.env.QA_S3_BUCKET;
 const prefix = (process.env.QA_S3_PREFIX || "qa-playwright").replace(/^\/+|\/+$/g, "");
+const region = process.env.AWS_REGION || "us-east-1";
+const endpoint = process.env.QA_S3_ENDPOINT || "";
+const publicBaseUrl = (process.env.QA_S3_PUBLIC_BASE_URL || "").replace(/\/+$/g, "");
+const databaseConnectionTimeoutMillis = Number(process.env.QA_DATABASE_CONNECTION_TIMEOUT_MS || 10000);
 
-const pool = databaseUrl ? new Pool({ connectionString: databaseUrl, ssl: process.env.QA_DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined }) : null;
+function databaseConfig() {
+  if (!databaseUrl) return null;
+
+  const parsed = new URL(databaseUrl);
+  return {
+    host: parsed.hostname,
+    port: Number(parsed.port || 5432),
+    user: decodeURIComponent(parsed.username),
+    password: decodeURIComponent(parsed.password),
+    database: decodeURIComponent(parsed.pathname.replace(/^\//, "")),
+    connectionTimeoutMillis: databaseConnectionTimeoutMillis,
+    ssl: process.env.QA_DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined
+  };
+}
+
+const pool = databaseUrl ? new Pool(databaseConfig()) : null;
 const s3 = bucket ? new S3Client({
-  region: process.env.AWS_REGION || "us-east-1",
-  endpoint: process.env.QA_S3_ENDPOINT || undefined,
+  region,
+  endpoint: endpoint || undefined,
   forcePathStyle: process.env.QA_S3_FORCE_PATH_STYLE === "true"
 }) : null;
 
@@ -49,6 +96,23 @@ export async function listPersistentRuns() {
   return result.rows.map((row) => row.payload);
 }
 
+export async function listPersistentRunSummaries() {
+  if (!pool) return null;
+  const result = await pool.query(`SELECT jsonb_build_object(
+    'id', payload->>'id',
+    'status', status,
+    'startedAt', payload->>'startedAt',
+    'endedAt', payload->>'endedAt',
+    'options', payload->'options',
+    'summary', payload->'summary',
+    'expectedTotal', payload->'expectedTotal'
+  ) AS payload
+  FROM qa_test_runs
+  ORDER BY started_at DESC
+  LIMIT 20`);
+  return result.rows.map((row) => row.payload);
+}
+
 function mimeType(filePath) {
   return {
     ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".json": "application/json",
@@ -64,24 +128,62 @@ function filesUnder(directory) {
   });
 }
 
+function encodeKey(key) {
+  return key.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+}
+
+function publicArtifactUrl(key) {
+  const encodedKey = encodeKey(key);
+  if (publicBaseUrl) {
+    return `${publicBaseUrl}/${encodedKey}`;
+  }
+
+  if (endpoint) {
+    const normalizedEndpoint = endpoint.replace(/\/+$/g, "");
+    return process.env.QA_S3_FORCE_PATH_STYLE === "true"
+      ? `${normalizedEndpoint}/${encodeURIComponent(bucket)}/${encodedKey}`
+      : `${normalizedEndpoint}/${encodedKey}`;
+  }
+
+  return `https://${bucket}.s3.${region}.amazonaws.com/${encodedKey}`;
+}
+
 export async function uploadRunArtifacts(runId, runDir) {
   if (!s3) return [];
   const files = filesUnder(runDir).filter((file) => path.basename(file) !== "run.json");
   const artifacts = [];
   for (const file of files) {
     const relativePath = path.relative(runDir, file).split(path.sep).join("/");
-    const key = [prefix, "runs", runId, relativePath].filter(Boolean).join("/");
-    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: createReadStream(file), ContentType: mimeType(file) }));
-    artifacts.push({ path: relativePath, key, contentType: mimeType(file) });
+    const artifact = await uploadRunArtifact(runId, runDir, relativePath);
+    if (artifact) {
+      artifacts.push(artifact);
+    }
   }
   return artifacts;
+}
+
+export async function uploadRunArtifact(runId, runDir, relativePath) {
+  if (!s3 || !relativePath || relativePath.includes("..")) return null;
+  const file = path.join(runDir, relativePath);
+  if (!existsSync(file) || statSync(file).isDirectory()) return null;
+
+  const key = [prefix, "runs", runId, relativePath].filter(Boolean).join("/");
+  await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: createReadStream(file), ContentLength: statSync(file).size, ContentType: mimeType(file) }));
+  return { path: relativePath, key, url: publicArtifactUrl(key), contentType: mimeType(file) };
 }
 
 export async function getRemoteArtifact(runId, relativePath) {
   if (!s3 || relativePath.includes("..")) return null;
   const key = [prefix, "runs", runId, relativePath].filter(Boolean).join("/");
-  const response = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-  return { body: response.Body, contentType: response.ContentType || mimeType(relativePath) };
+  try {
+    const response = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    return { body: response.Body, contentType: response.ContentType || mimeType(relativePath) };
+  } catch (error) {
+    if (["AccessDenied", "NoSuchKey", "NotFound"].includes(error?.name || error?.Code)) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 export async function closePersistence() {
