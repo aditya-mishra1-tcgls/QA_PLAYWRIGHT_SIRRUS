@@ -4,7 +4,7 @@ import { assertGenerateCostSheetRenderingOnOpenedLead, openAnyLeadFromListing } 
 test.describe("Lead quotation flow", () => {
   test.setTimeout(90000);
 
-  test("user should open generate cost sheet on any lead and verify the rendering state", async ({ page, app }) => {
+  test("Open generated cost sheet preview for lead", async ({ page, app }) => {
     await openAnyLeadFromListing(page, app);
 
     const result = await assertGenerateCostSheetRenderingOnOpenedLead(page);

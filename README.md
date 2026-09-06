@@ -16,6 +16,7 @@ This project is organized flow-wise so we can add UI journeys gradually and run 
 - `config/environments.json`: change `qa` and `uat` base URLs here
 - `config/accounts.local.json`: keep environment-wise credentials here
 - `config/flows.json`: single ordered list for sequential execution
+- `config/execution-profiles.json`: named manual execution modes
 - `scripts/run-flows.mjs`: sequential runner for one or many flow folders
 
 ## Setup
@@ -43,8 +44,38 @@ npm run test:uat
 npm run test:smoke
 npm run test:auth
 npm run test:flows
+npm run test:manual -- --mode=regression --env=uat
+npm run test:manual -- --flows=smoke,lead-management --env=qa
 npm run test:headed
+npm run dashboard
 ```
+
+Manual execution planning and report steps are documented in `docs/MANUAL_EXECUTION.md`.
+
+## Local Dashboard
+
+Start the dashboard:
+
+```bash
+npm run dashboard
+```
+
+Open `http://localhost:9324`.
+
+The dashboard lets you choose environment, execution mode, flows, specific spec files, project, grep, workers, retries, headed mode, and debug mode. It streams Playwright logs in realtime and shows test names, step names, step duration, pass/fail status, and errors in the browser.
+
+For a server deployment, set `QA_DASHBOARD_HOST=0.0.0.0` and expose `QA_DASHBOARD_PORT` through your firewall, reverse proxy, or load balancer. The browser page will show realtime execution from anywhere that can reach the server. If headed mode is enabled, the Playwright browser window opens on the server itself; use VNC/noVNC or a desktop session if you want to watch that headed browser visually.
+
+Run data is stored locally under `data/test-runs/<run-id>`:
+
+- `run.json`: run metadata, selected options, summary, tests, steps, and errors
+- `events.ndjson`: append-only realtime event stream
+- `output.log`: raw Playwright output
+- `html-report`: Playwright HTML report assets
+
+This local folder is intentionally ignored by git. For permanent storage, configure PostgreSQL and S3-compatible object storage in `.env` using the variables in `.env.example`. The dashboard then stores every run payload in PostgreSQL and uploads all run artifacts (HTML report, screenshots, videos, traces, logs, and retry artifacts) to the configured bucket when the run finishes. Each failed test captures a viewport image, full-page image, and a second viewport image after one second; users can open these from the **Failure screenshots** section on the test card. Local files remain available as a fallback.
+
+PostgreSQL is the source of truth for metadata; S3 is the source of truth for larger static files. This works with AWS RDS + S3, or managed alternatives such as Neon/Supabase + Cloudflare R2.
 
 ## Run With Codex
 

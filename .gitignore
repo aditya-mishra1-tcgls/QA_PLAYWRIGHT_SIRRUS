@@ -1,6 +1,8 @@
 node_modules
 playwright-report
+reports
 test-results
+data/test-runs
 .env
 playwright/.auth
 config/accounts.local.json

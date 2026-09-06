@@ -18,7 +18,8 @@ export default defineConfig({
   use: {
     baseURL: env.baseUrl,
     trace: "on-first-retry",
-    screenshot: "only-on-failure",
+    // The shared fixture captures three labeled failure screenshots for the dashboard.
+    screenshot: "off",
     video: "retain-on-failure"
   },
   projects: [

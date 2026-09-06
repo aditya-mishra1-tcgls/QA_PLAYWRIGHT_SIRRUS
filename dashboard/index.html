@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>QA Test Dashboard</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>QA Test Dashboard</h1>
+          <p id="subtitle">Local Playwright execution console</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="refreshRunsButton" class="icon-button" title="Refresh runs" type="button">Refresh</button>
+          <button id="stopRunButton" class="danger" type="button" disabled>Stop Run</button>
+        </div>
+      </header>
+
+      <section class="layout">
+        <aside class="panel controls">
+          <h2>Run Configuration</h2>
+          <form id="runForm">
+            <label>
+              Environment
+              <select id="envSelect" name="env"></select>
+            </label>
+
+            <label>
+              Mode
+              <select id="modeSelect" name="mode"></select>
+            </label>
+
+            <fieldset>
+              <legend>Flows</legend>
+              <div id="flowsList" class="check-list"></div>
+            </fieldset>
+
+            <label>
+              Specific Test Files
+              <select id="specSelect" name="specFiles" multiple></select>
+              <span class="hint">Selected files override flow selection.</span>
+            </label>
+            <button id="clearSpecSelectionButton" type="button">Clear Selected Files</button>
+
+            <label>
+              Project
+              <select id="projectSelect" name="project"></select>
+            </label>
+
+            <label>
+              Grep / Test Name
+              <input id="grepInput" name="grep" placeholder="e.g. login|lead creation">
+            </label>
+
+            <div class="number-grid">
+              <label>
+                Workers
+                <input id="workersInput" name="workers" type="number" min="1" value="1">
+              </label>
+              <label>
+                Retries
+                <input id="retriesInput" name="retries" type="number" min="0" value="0">
+              </label>
+            </div>
+
+            <div class="toggle-row">
+              <label><input id="headedInput" name="headed" type="checkbox"> Headed</label>
+              <label><input id="debugInput" name="debug" type="checkbox"> Debug</label>
+            </div>
+
+            <button id="startRunButton" class="primary" type="submit">Run Tests</button>
+          </form>
+        </aside>
+
+        <section class="workspace">
+          <div class="summary-strip">
+            <article>
+              <span>Status</span>
+              <strong id="statusValue">Idle</strong>
+            </article>
+            <article>
+              <span>Passed</span>
+              <strong id="passedValue">0</strong>
+            </article>
+            <article>
+              <span>Failed</span>
+              <strong id="failedValue">0</strong>
+            </article>
+            <article>
+              <span>Expected</span>
+              <strong id="expectedValue">0</strong>
+            </article>
+            <article>
+              <span>Duration</span>
+              <strong id="durationValue">0s</strong>
+            </article>
+          </div>
+
+          <div class="panel current-run">
+            <div class="panel-heading">
+              <div>
+                <h2>Execution</h2>
+                <p id="commandValue">No run started</p>
+              </div>
+              <a id="htmlReportLink" href="#" target="_blank" rel="noreferrer" hidden>HTML Report</a>
+            </div>
+            <div id="currentTestCard" class="current-test" hidden>
+              <span>Current Running Test</span>
+              <strong id="currentTestValue"></strong>
+            </div>
+            <div id="testList" class="test-list empty">No test execution yet.</div>
+          </div>
+
+          <div class="panel logs">
+            <div class="panel-heading">
+              <h2>Realtime Logs</h2>
+              <button id="clearLogsButton" type="button">Clear</button>
+            </div>
+            <pre id="logsOutput"></pre>
+          </div>
+        </section>
+
+        <aside class="panel history">
+          <h2>Local Reports</h2>
+          <div id="runsList" class="runs-list empty">No saved reports yet.</div>
+        </aside>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

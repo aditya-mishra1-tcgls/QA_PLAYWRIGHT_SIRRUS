@@ -12,10 +12,18 @@
     "test:smoke": "playwright test tests/flows/smoke --workers=1",
     "test:auth": "playwright test tests/flows/auth --workers=1",
     "test:flows": "node ./scripts/run-flows.mjs",
+    "test:manual": "node ./scripts/run-flows.mjs",
+    "test:manual:qa": "node ./scripts/run-flows.mjs --env=qa",
+    "test:manual:uat": "node ./scripts/run-flows.mjs --env=uat",
+    "dashboard": "node ./scripts/dashboard/server.mjs",
     "report": "playwright show-report"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
     "@types/node": "^24.3.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1127.0",
+    "pg": "^8.23.0"
   }
 }

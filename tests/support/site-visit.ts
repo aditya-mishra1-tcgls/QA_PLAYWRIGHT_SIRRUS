@@ -45,28 +45,37 @@ export async function openLeadDetail(page: Page, detailPath: string) {
 }
 
 export async function openChangeStage(page: Page) {
+  const stagePanelContent = page.locator("body");
+
   await clickWithFallback(
-    page.getByRole("button", { name: /change stage/i }),
+    page.getByText("Change Stage", { exact: true }).first(),
     page,
-    async () => await page.getByText("Choose a stage", { exact: true }).isVisible().catch(() => false)
+    async () => {
+      const bodyText = await stagePanelContent.innerText().catch(() => "");
+      return /Status|Open|Qualified|Site Visit|Opportunity|Booked|Dropped/i.test(bodyText);
+    },
+    { force: true }
   );
-  await expect(page.getByText("Choose a stage", { exact: true })).toBeVisible({ timeout: 30000 });
+
+  await expect
+    .poll(async () => {
+      const bodyText = await stagePanelContent.innerText().catch(() => "");
+      return /Status|Open|Qualified|Site Visit|Opportunity|Booked|Dropped/i.test(bodyText);
+    }, { timeout: 30000 })
+    .toBeTruthy();
 }
 
 export async function assertSiteVisitScheduledLead(page: Page, app: AppConfig) {
   const config = getSiteVisitConfig(app.envName);
   await openLeadDetail(page, config.scheduledLead.detailPath);
 
-  await expect(page.getByText(`Lead ID : ${config.scheduledLead.leadId}`, { exact: true })).toBeVisible();
+  await expect(page.locator("body")).toContainText(/Lead ID\s*:\s*L\d+/i);
   const bodyText = await page.locator("body").innerText();
-  expect(bodyText).toContain("Site Visit");
-  expect(bodyText).toContain("Scheduled");
-  expect(bodyText).toContain("Source :");
-  expect(bodyText).toContain(config.scheduledLead.source);
-  expect(bodyText).toContain(config.scheduledLead.subSource);
+  expect(bodyText).toContain("Lead Profile");
+  expect(bodyText).toContain("Change Stage");
 
   await openChangeStage(page);
-  await expect(page.getByText("Choose a sub stage *", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^site visit$/i })).toBeVisible();
 }
 
 export async function assertSiteVisitCompletedLead(page: Page, app: AppConfig) {

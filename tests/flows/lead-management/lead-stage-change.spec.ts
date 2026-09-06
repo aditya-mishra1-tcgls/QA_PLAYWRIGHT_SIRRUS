@@ -8,10 +8,10 @@ import {
   openLeadByName
 } from "../../support/leads";
 
-test.describe("Lead stage change flow", () => {
+test.describe("Lead stage progression flow", () => {
   test.setTimeout(150000);
 
-  test("user should create a lead, move it through multiple stages, and verify the lead journey", async ({ page, app }) => {
+  test("Create lead and validate multi-stage journey", async ({ page, app }) => {
     await goToManageLeads(page, app);
 
     const leadSeed = await fillLeadForm(page, app);

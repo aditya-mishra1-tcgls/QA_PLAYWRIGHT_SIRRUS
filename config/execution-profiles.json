@@ -1,0 +1,25 @@
+{
+  "defaultMode": "regression",
+  "modes": {
+    "smoke": {
+      "description": "Fast health check before deeper execution.",
+      "flows": ["smoke"]
+    },
+    "auth": {
+      "description": "Login and authentication validation.",
+      "flows": ["auth"]
+    },
+    "lead": {
+      "description": "Lead management focused execution.",
+      "flows": ["smoke", "lead-management"]
+    },
+    "site-visit": {
+      "description": "Site visit focused execution.",
+      "flows": ["smoke", "site-visit"]
+    },
+    "regression": {
+      "description": "Full manually triggered regression pack.",
+      "flows": ["smoke", "auth", "lead-management", "site-visit"]
+    }
+  }
+}

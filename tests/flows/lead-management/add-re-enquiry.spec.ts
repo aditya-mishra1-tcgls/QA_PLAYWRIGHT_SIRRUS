@@ -1,15 +1,24 @@
 import { test, expect } from "../../support/test";
-import { addReEnquiryToOpenedLead, openAnyLeadFromListing } from "../../support/leads";
+import {
+  addReEnquiryToOpenedLead,
+  openAnyLeadFromListing,
+} from "../../support/leads";
 
 test.describe("Lead re-enquiry flow", () => {
   test.setTimeout(90000);
 
-  test("user should add a re-enquiry on any existing lead with Direct Site Visit and Walk In", async ({ page, app }) => {
+  test("Add Direct Site Visit walk-in re-enquiry", async ({ page, app }) => {
     await openAnyLeadFromListing(page, app);
 
-    const result = await addReEnquiryToOpenedLead(page, "Direct Site Visit", "Walk In");
+    const result = await addReEnquiryToOpenedLead(
+      page,
+      "Direct Site Visit",
+      "Walk In",
+    );
 
-    await expect(page).toHaveURL(/engagement-intelligence\/manage-leads\/?\?id=/);
+    await expect(page).toHaveURL(
+      /engagement-intelligence\/manage-leads\/?\?id=/,
+    );
     await expect(page.locator("body")).toContainText(result.source);
   });
 });
