@@ -6,6 +6,7 @@ This project is organized flow-wise so we can add UI journeys gradually and run 
 
 - `tests/flows/smoke`: smoke journeys
 - `tests/flows/auth`: login and authentication journeys
+- `tests/flows/user-management`: admin user creation and user access journeys
 - `tests/flows/lead-management`: lead creation and lead actions
 - `tests/flows/site-visit`: site visit lifecycle validation
 - `tests/setup`: shared one-time login setup for all authenticated tests
@@ -46,6 +47,7 @@ npm run test:auth
 npm run test:flows
 npm run test:manual -- --mode=regression --env=uat
 npm run test:manual -- --flows=smoke,lead-management --env=qa
+npm run test:manual -- --mode=user-management --env=uat
 npm run test:headed
 npm run dashboard
 ```
@@ -65,6 +67,8 @@ Open `http://localhost:9324`.
 The dashboard lets you choose environment, execution mode, flows, specific spec files, project, grep, workers, retries, headed mode, and debug mode. It streams Playwright logs in realtime and shows test names, step names, step duration, pass/fail status, and errors in the browser.
 
 For a server deployment, set `QA_DASHBOARD_HOST=0.0.0.0` and expose `QA_DASHBOARD_PORT` through your firewall, reverse proxy, or load balancer. The browser page will show realtime execution from anywhere that can reach the server. If headed mode is enabled, the Playwright browser window opens on the server itself; use VNC/noVNC or a desktop session if you want to watch that headed browser visually.
+
+If the dashboard is hosted under a path prefix, set `QA_DASHBOARD_BASE_PATH`. For example, `https://dev-wag.sirrus.ai/qa-playwrite/` should use `QA_DASHBOARD_BASE_PATH=/qa-playwrite` unless the reverse proxy strips the prefix before forwarding to Node.
 
 Run data is stored locally under `data/test-runs/<run-id>`:
 
@@ -156,6 +160,15 @@ app.leads[app.envName]
 - The suite logs in once through `tests/setup/auth.setup.ts`.
 - The authenticated browser state is saved under `playwright/.auth/<env>.json`.
 - All normal test flows reuse that state automatically, which keeps execution fast.
+
+## User Management And Parallel Runs
+
+- Admin/user-management coverage is registered as the `user-management` execution profile.
+- Keep real admin and automation-user credentials in `config/accounts.local.json`; use `config/accounts.template.json` as the shape.
+- For parallel execution, configure at least one automation user per Playwright worker.
+- Avoid sharing the same login account across concurrent data-mutating tests. When three team members run scenarios at the same time, use three separate accounts or three separate account pools.
+- For a future email/password login path, save auth state per user, for example `playwright/.auth/uat-worker-1.json`, instead of sharing only `playwright/.auth/uat.json`.
+- Test data that creates users, leads, reports, or visits should include a unique run id, worker index, or timestamp in names/emails/mobile numbers.
 
 ## Adding a new flow
 

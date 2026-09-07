@@ -2,6 +2,7 @@
   "defaultFlowOrder": [
     "smoke",
     "auth",
+    "user-management",
     "lead-management",
     "lead-report",
     "site-visit"

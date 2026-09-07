@@ -17,6 +17,10 @@
       "description": "Site visit focused execution.",
       "flows": ["smoke", "site-visit"]
     },
+    "user-management": {
+      "description": "Admin user creation and user access focused execution.",
+      "flows": ["smoke", "auth", "user-management"]
+    },
     "regression": {
       "description": "Full manually triggered regression pack.",
       "flows": ["smoke", "auth", "lead-management", "site-visit"]

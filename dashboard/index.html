@@ -4,9 +4,42 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>QA Test Dashboard</title>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="styles.css">
   </head>
   <body>
+    <svg aria-hidden="true" class="icon-sprite">
+      <symbol id="icon-activity" viewBox="0 0 24 24">
+        <path d="M3 12h4l3-8 4 16 3-8h4"></path>
+      </symbol>
+      <symbol id="icon-check" viewBox="0 0 24 24">
+        <path d="m20 6-11 11-5-5"></path>
+      </symbol>
+      <symbol id="icon-file" viewBox="0 0 24 24">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <path d="M14 2v6h6"></path>
+      </symbol>
+      <symbol id="icon-play" viewBox="0 0 24 24">
+        <path d="M5 3l14 9-14 9z"></path>
+      </symbol>
+      <symbol id="icon-refresh" viewBox="0 0 24 24">
+        <path d="M21 12a9 9 0 0 1-15.5 6.2"></path>
+        <path d="M3 12A9 9 0 0 1 18.5 5.8"></path>
+        <path d="M18 2v4h4"></path>
+        <path d="M6 22v-4H2"></path>
+      </symbol>
+      <symbol id="icon-square" viewBox="0 0 24 24">
+        <path d="M6 6h12v12H6z"></path>
+      </symbol>
+      <symbol id="icon-timer" viewBox="0 0 24 24">
+        <path d="M10 2h4"></path>
+        <path d="M12 14l3-3"></path>
+        <path d="M12 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16z"></path>
+      </symbol>
+      <symbol id="icon-x" viewBox="0 0 24 24">
+        <path d="M18 6 6 18"></path>
+        <path d="m6 6 12 12"></path>
+      </symbol>
+    </svg>
     <main class="shell">
       <header class="topbar">
         <div>
@@ -14,14 +47,20 @@
           <p id="subtitle">Local Playwright execution console</p>
         </div>
         <div class="topbar-actions">
-          <button id="refreshRunsButton" class="icon-button" title="Refresh runs" type="button">Refresh</button>
-          <button id="stopRunButton" class="danger" type="button" disabled>Stop Run</button>
+          <button id="refreshRunsButton" class="icon-button" title="Refresh runs" type="button">
+            <svg class="icon"><use href="#icon-refresh"></use></svg>
+            Refresh
+          </button>
+          <button id="stopRunButton" class="danger" type="button" disabled>
+            <svg class="icon"><use href="#icon-square"></use></svg>
+            Stop Run
+          </button>
         </div>
       </header>
 
       <section class="layout">
         <aside class="panel controls">
-          <h2>Run Configuration</h2>
+          <h2><svg class="icon"><use href="#icon-activity"></use></svg> Run Configuration</h2>
           <form id="runForm">
             <label>
               Environment
@@ -48,7 +87,10 @@
               <select id="specSelect" name="specFiles" multiple></select>
               <span class="hint">Selected files override flow selection.</span>
             </label>
-            <button id="clearSpecSelectionButton" type="button">Clear Selected Files</button>
+            <button id="clearSpecSelectionButton" type="button">
+              <svg class="icon"><use href="#icon-x"></use></svg>
+              Clear Selected Files
+            </button>
 
             <label>
               Project
@@ -80,30 +122,33 @@
               <label><input id="debugInput" name="debug" type="checkbox"> Debug</label>
             </div>
 
-            <button id="startRunButton" class="primary" type="submit">Run Tests</button>
+            <button id="startRunButton" class="primary" type="submit">
+              <svg class="icon"><use href="#icon-play"></use></svg>
+              Run Tests
+            </button>
           </form>
         </aside>
 
         <section class="workspace">
           <div class="summary-strip">
             <article>
-              <span>Status</span>
+              <span><svg class="icon"><use href="#icon-activity"></use></svg> Status</span>
               <strong id="statusValue">Idle</strong>
             </article>
             <article>
-              <span>Passed</span>
+              <span><svg class="icon"><use href="#icon-check"></use></svg> Passed</span>
               <strong id="passedValue">0</strong>
             </article>
             <article>
-              <span>Failed</span>
+              <span><svg class="icon"><use href="#icon-x"></use></svg> Failed</span>
               <strong id="failedValue">0</strong>
             </article>
             <article>
-              <span>Expected</span>
+              <span><svg class="icon"><use href="#icon-file"></use></svg> Expected</span>
               <strong id="expectedValue">0</strong>
             </article>
             <article>
-              <span>Duration</span>
+              <span><svg class="icon"><use href="#icon-timer"></use></svg> Duration</span>
               <strong id="durationValue">0s</strong>
             </article>
           </div>
@@ -111,35 +156,44 @@
           <div class="panel current-run">
             <div class="panel-heading">
               <div>
-                <h2>Execution</h2>
+                <h2><svg class="icon"><use href="#icon-play"></use></svg> Execution</h2>
                 <p id="commandValue">No run started</p>
               </div>
-              <a id="htmlReportLink" href="#" target="_blank" rel="noreferrer" hidden>HTML Report</a>
+              <a id="htmlReportLink" href="#" target="_blank" rel="noreferrer" hidden>
+                <svg class="icon"><use href="#icon-file"></use></svg>
+                HTML Report
+              </a>
             </div>
             <div id="currentTestCard" class="current-test" hidden>
               <span>Current Running Test</span>
               <strong id="currentTestValue"></strong>
-              <button id="skipCurrentTestButton" class="warning" type="button">Skip Current</button>
+              <button id="skipCurrentTestButton" class="warning" type="button">
+                <svg class="icon"><use href="#icon-square"></use></svg>
+                Skip Current
+              </button>
             </div>
             <div id="testList" class="test-list empty">No test execution yet.</div>
           </div>
 
           <div class="panel logs">
             <div class="panel-heading">
-              <h2>Realtime Logs</h2>
-              <button id="clearLogsButton" type="button">Clear</button>
+              <h2><svg class="icon"><use href="#icon-activity"></use></svg> Realtime Logs</h2>
+              <button id="clearLogsButton" type="button">
+                <svg class="icon"><use href="#icon-x"></use></svg>
+                Clear
+              </button>
             </div>
             <pre id="logsOutput"></pre>
           </div>
         </section>
 
         <aside class="panel history">
-          <h2>Local Reports</h2>
+          <h2><svg class="icon"><use href="#icon-file"></use></svg> Local Reports</h2>
           <div id="runsList" class="runs-list empty">No saved reports yet.</div>
         </aside>
       </section>
     </main>
 
-    <script src="/app.js"></script>
+    <script src="app.js"></script>
   </body>
 </html>

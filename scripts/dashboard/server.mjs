@@ -10,6 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "../..");
 const dashboardDir = path.join(rootDir, "dashboard");
 const runsRoot = path.join(rootDir, "data", "test-runs");
+const dashboardBasePath = normalizeBasePath(process.env.QA_DASHBOARD_BASE_PATH || "");
 const eventPrefix = "@@QA_DASHBOARD_EVENT@@";
 const maxStoredEvents = 500;
 const maxStoredSteps = 120;
@@ -17,6 +18,31 @@ const activeRuns = new Map();
 const saveQueues = new Map();
 
 mkdirSync(runsRoot, { recursive: true });
+
+function normalizeBasePath(value) {
+  const trimmed = String(value || "").trim().replace(/\/+$/, "");
+  if (!trimmed || trimmed === "/") {
+    return "";
+  }
+
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+function stripDashboardBasePath(pathname) {
+  if (!dashboardBasePath) {
+    return pathname;
+  }
+
+  if (pathname === dashboardBasePath) {
+    return "/";
+  }
+
+  if (pathname.startsWith(`${dashboardBasePath}/`)) {
+    return pathname.slice(dashboardBasePath.length) || "/";
+  }
+
+  return pathname;
+}
 
 function readJson(relativePath, fallback) {
   const filePath = path.join(rootDir, relativePath);
@@ -1656,7 +1682,7 @@ async function serveRunAsset(res, pathname) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
-    const pathname = decodeURIComponent(url.pathname);
+    const pathname = stripDashboardBasePath(decodeURIComponent(url.pathname));
 
     if (req.method === "GET" && pathname === "/api/config") {
       sendJson(res, 200, getConfig());
@@ -1772,5 +1798,5 @@ await syncLocalRunsToDatabase();
 await reconcileStaleRuns();
 server.listen(port, host, () => {
   const displayHost = host === "0.0.0.0" ? "localhost" : host;
-  console.log(`QA dashboard running at http://${displayHost}:${port} (bind: ${host}, PostgreSQL: ${databaseEnabled ? "enabled" : "local only"}, object storage: ${objectStorageEnabled ? "enabled" : "local only"})`);
+  console.log(`QA dashboard running at http://${displayHost}:${port}${dashboardBasePath || ""} (bind: ${host}, PostgreSQL: ${databaseEnabled ? "enabled" : "local only"}, object storage: ${objectStorageEnabled ? "enabled" : "local only"})`);
 });

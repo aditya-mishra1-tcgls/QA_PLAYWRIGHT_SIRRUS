@@ -12,6 +12,11 @@ const state = {
 
 const maxVisibleSteps = 80;
 const maxVisibleLogs = 300;
+const dashboardBasePath = (() => {
+  const scriptUrl = new URL(document.currentScript?.getAttribute("src") || "app.js", window.location.href);
+  const basePath = scriptUrl.pathname.replace(/\/[^/]*$/, "");
+  return basePath === "/" ? "" : basePath;
+})();
 
 const elements = {
   envSelect: document.querySelector("#envSelect"),
@@ -121,7 +126,12 @@ function attachmentUrl(run, test, attachment, index) {
     return "#";
   }
 
-  return `/api/runs/${encodeURIComponent(run.id)}/tests/${encodeURIComponent(test.testId)}/attachments/${index}`;
+  return dashboardUrl(`/api/runs/${encodeURIComponent(run.id)}/tests/${encodeURIComponent(test.testId)}/attachments/${index}`);
+}
+
+function dashboardUrl(path) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${dashboardBasePath}${normalizedPath}`;
 }
 
 function escapeHtml(value) {
@@ -217,7 +227,7 @@ function resetLogs(lines = []) {
 }
 
 async function api(path, options) {
-  const response = await fetch(path, {
+  const response = await fetch(dashboardUrl(path), {
     headers: { "content-type": "application/json" },
     ...options
   });
@@ -460,7 +470,7 @@ function renderRun(run) {
   elements.commandValue.textContent = run?.command || "No run selected";
   elements.htmlReportLink.hidden = !run?.reportPath;
   if (run?.reportPath) {
-    elements.htmlReportLink.href = `/${run.reportPath}/index.html`;
+    elements.htmlReportLink.href = dashboardUrl(`/${run.reportPath}/index.html`);
   }
 
   elements.stopRunButton.disabled = !isRunningStatus(run?.status);
@@ -581,7 +591,7 @@ function connectEvents(runId, options = {}) {
     state.eventSource.close();
   }
 
-  state.eventSource = new EventSource(`/api/runs/${runId}/events${options.liveOnly ? "?liveOnly=1" : ""}`);
+  state.eventSource = new EventSource(dashboardUrl(`/api/runs/${runId}/events${options.liveOnly ? "?liveOnly=1" : ""}`));
   state.eventSource.onmessage = (message) => applyEvent(JSON.parse(message.data));
 }
 
