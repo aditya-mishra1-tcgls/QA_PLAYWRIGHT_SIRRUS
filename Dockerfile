@@ -9,6 +9,7 @@ ENV TEST_ENV=uat
 COPY package.json package-lock.json ./
 
 RUN npm ci
+RUN npx playwright install chromium
 
 COPY . .
 

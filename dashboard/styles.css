@@ -1,20 +1,22 @@
 :root {
   color-scheme: dark;
-  --bg: #0b1020;
-  --panel: #121a2b;
-  --panel-soft: #182235;
-  --panel-strong: #0f1726;
-  --text: #edf3ff;
-  --muted: #93a3ba;
-  --line: #26354d;
-  --line-strong: #344761;
-  --accent: #3fb7d7;
-  --accent-strong: #82daf0;
-  --danger: #ff776d;
-  --pass: #6ee7a8;
-  --fail: #ff776d;
-  --warn: #ffd166;
-  --shadow: 0 18px 42px rgba(0, 0, 0, 0.28);
+  --bg: #050505;
+  --rail: #111111;
+  --panel: #151515;
+  --panel-soft: #1f1f22;
+  --panel-strong: #0f0f10;
+  --text: #f2f2f3;
+  --muted: #9a9aa2;
+  --muted-strong: #c8c8cf;
+  --line: #2a2a2d;
+  --line-strong: #3a3a40;
+  --accent: #568cff;
+  --accent-strong: #78a3ff;
+  --danger: #ff3448;
+  --pass: #34e89a;
+  --fail: #ff3448;
+  --warn: #ffc400;
+  --shadow: 0 18px 42px rgba(0, 0, 0, 0.42);
 }
 
 * {
@@ -27,11 +29,9 @@
 
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at top left, rgba(63, 183, 215, 0.14), transparent 34rem),
-    linear-gradient(180deg, #0b1020 0%, #101827 100%);
+  background: var(--bg);
   color: var(--text);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: Inter, "SF Pro Display", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 button,
@@ -42,7 +42,7 @@ select {
 
 .shell {
   min-height: 100vh;
-  padding: 20px;
+  padding: 24px;
 }
 
 .login-shell {
@@ -80,8 +80,8 @@ select {
   display: flex;
   gap: 16px;
   justify-content: space-between;
-  margin: 0 auto 18px;
-  max-width: 1600px;
+  margin: 0 auto 20px;
+  max-width: 1680px;
   min-width: 0;
 }
 
@@ -92,15 +92,16 @@ p {
 }
 
 h1 {
-  font-size: 24px;
-  font-weight: 750;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0;
 }
 
 h2 {
   align-items: center;
   display: flex;
   font-size: 15px;
-  font-weight: 750;
+  font-weight: 800;
   gap: 8px;
 }
 
@@ -120,8 +121,8 @@ h2 {
 }
 
 .user-badge {
-  background: rgba(63, 183, 215, 0.12);
-  border: 1px solid rgba(63, 183, 215, 0.34);
+  background: rgba(86, 140, 255, 0.12);
+  border: 1px solid rgba(86, 140, 255, 0.36);
   border-radius: 999px;
   color: var(--accent-strong);
   font-size: 12px;
@@ -133,10 +134,10 @@ h2 {
 .layout {
   align-items: start;
   display: grid;
-  gap: 16px;
-  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr) minmax(240px, 320px);
+  gap: 14px;
+  grid-template-columns: minmax(280px, 330px) minmax(0, 1fr) minmax(260px, 330px);
   margin: 0 auto;
-  max-width: 1600px;
+  max-width: 1680px;
   min-width: 0;
 }
 
@@ -178,9 +179,9 @@ h2 {
 }
 
 .panel {
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   box-shadow: var(--shadow);
   min-width: 0;
 }
@@ -192,19 +193,25 @@ h2 {
 .icon {
   display: inline-block;
   flex: 0 0 auto;
-  height: 16px;
+  height: 17px;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2;
   vertical-align: -2px;
-  width: 16px;
+  width: 17px;
 }
 
 .controls,
 .history {
   align-self: start;
-  padding: 16px;
+  padding: 18px;
+}
+
+.controls {
+  background: var(--rail);
+  border-color: #252529;
+  min-height: calc(100vh - 48px);
 }
 
 .history {
@@ -226,8 +233,8 @@ h2 {
 
 .controls form {
   display: grid;
-  gap: 14px;
-  margin-top: 16px;
+  gap: 13px;
+  margin-top: 18px;
 }
 
 .admin-users,
@@ -336,28 +343,28 @@ legend {
 
 .form-error,
 .form-message[data-tone="error"] {
-  background: rgba(255, 119, 109, 0.1);
-  border: 1px solid rgba(255, 119, 109, 0.36);
+  background: rgba(255, 52, 72, 0.1);
+  border: 1px solid rgba(255, 52, 72, 0.38);
   color: var(--danger);
 }
 
 .form-message[data-tone="success"] {
-  background: rgba(110, 231, 168, 0.1);
-  border: 1px solid rgba(110, 231, 168, 0.36);
+  background: rgba(52, 232, 154, 0.1);
+  border: 1px solid rgba(52, 232, 154, 0.34);
   color: var(--pass);
 }
 
 .form-message[data-tone="info"] {
-  background: rgba(63, 183, 215, 0.1);
-  border: 1px solid rgba(63, 183, 215, 0.34);
+  background: rgba(86, 140, 255, 0.12);
+  border: 1px solid rgba(86, 140, 255, 0.38);
   color: var(--accent-strong);
 }
 
 input,
 select {
-  background: var(--panel-strong);
+  background: #101012;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   min-height: 38px;
   padding: 8px 10px;
@@ -369,7 +376,7 @@ select[multiple] {
 }
 
 input::placeholder {
-  color: #6e819b;
+  color: #6f7078;
 }
 
 input:focus,
@@ -377,12 +384,12 @@ select:focus,
 button:focus-visible,
 a:focus-visible {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(63, 183, 215, 0.18);
+  box-shadow: 0 0 0 3px rgba(86, 140, 255, 0.22);
   outline: none;
 }
 
 option {
-  background: var(--panel-strong);
+  background: #101012;
   color: var(--text);
 }
 
@@ -432,7 +439,7 @@ a {
   align-items: center;
   background: var(--panel-soft);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   cursor: pointer;
   display: inline-flex;
@@ -446,7 +453,7 @@ a {
 
 button:hover,
 a:hover {
-  background: #1d2a40;
+  background: #292a30;
   border-color: var(--line-strong);
 }
 
@@ -456,24 +463,24 @@ button:disabled {
 }
 
 .primary {
-  background: #1e95b8;
+  background: var(--accent);
   border-color: var(--accent);
-  color: #f5fcff;
+  color: #ffffff;
 }
 
 .primary:hover {
-  background: #2aa8cc;
+  background: #6d9dff;
 }
 
 .danger {
-  background: rgba(255, 119, 109, 0.12);
-  border-color: rgba(255, 119, 109, 0.42);
+  background: rgba(255, 52, 72, 0.12);
+  border-color: rgba(255, 52, 72, 0.42);
   color: var(--danger);
 }
 
 .warning {
-  background: rgba(255, 209, 102, 0.12);
-  border-color: rgba(255, 209, 102, 0.38);
+  background: rgba(255, 196, 0, 0.12);
+  border-color: rgba(255, 196, 0, 0.38);
   color: var(--warn);
 }
 
@@ -487,7 +494,7 @@ button:disabled {
 
 .summary-strip {
   display: grid;
-  gap: 8px;
+  gap: 14px;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   min-width: 0;
 }
@@ -496,21 +503,21 @@ button:disabled {
   align-items: center;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   box-shadow: var(--shadow);
   display: flex;
   gap: 8px;
   justify-content: space-between;
   min-width: 0;
-  min-height: 44px;
-  padding: 8px 10px;
+  min-height: 64px;
+  padding: 12px 14px;
 }
 
 .summary-strip span {
   align-items: center;
   color: var(--muted);
   display: flex;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   gap: 6px;
   line-height: 1.2;
@@ -518,7 +525,8 @@ button:disabled {
 }
 
 .summary-strip strong {
-  font-size: 18px;
+  font-size: 20px;
+  font-weight: 800;
   line-height: 1.1;
   overflow-wrap: anywhere;
   text-align: right;
@@ -527,7 +535,7 @@ button:disabled {
 .current-run,
 .logs {
   min-width: 0;
-  padding: 16px;
+  padding: 20px;
 }
 
 .panel-heading {
@@ -571,9 +579,9 @@ button:disabled {
 }
 
 .current-test {
-  background: rgba(63, 183, 215, 0.12);
-  border: 1px solid rgba(63, 183, 215, 0.35);
-  border-radius: 8px;
+  background: rgba(86, 140, 255, 0.12);
+  border: 1px solid rgba(86, 140, 255, 0.35);
+  border-radius: 10px;
   margin-bottom: 12px;
   min-width: 0;
   padding: 12px;
@@ -596,11 +604,23 @@ button:disabled {
 
 .test-card,
 .run-card {
-  background: rgba(15, 23, 38, 0.62);
+  background: #111113;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 10px;
   min-width: 0;
+  position: relative;
   padding: 12px;
+}
+
+.test-card::before {
+  background: transparent;
+  border-radius: 10px 0 0 10px;
+  bottom: 0;
+  content: "";
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 3px;
 }
 
 .test-card.collapsed {
@@ -613,21 +633,43 @@ button:disabled {
 }
 
 .test-card.running {
-  border-color: rgba(63, 183, 215, 0.72);
+  border-color: rgba(86, 140, 255, 0.72);
+  box-shadow: 0 0 0 1px rgba(86, 140, 255, 0.14), 0 0 28px rgba(86, 140, 255, 0.16);
+  overflow: hidden;
+}
+
+.test-card.running::before,
+.test-card.retrying::before {
+  background: linear-gradient(180deg, rgba(86, 140, 255, 0.15), var(--accent), rgba(86, 140, 255, 0.15));
+  animation: runningRail 1.25s ease-in-out infinite;
 }
 
 .test-card.retrying {
-  border-color: rgba(63, 183, 215, 0.72);
-  box-shadow: 0 0 0 2px rgba(63, 183, 215, 0.16), var(--shadow);
+  border-color: rgba(86, 140, 255, 0.72);
+  box-shadow: 0 0 0 2px rgba(86, 140, 255, 0.16), var(--shadow);
+  overflow: hidden;
 }
 
 .test-card.passed {
-  border-color: rgba(110, 231, 168, 0.48);
+  background: linear-gradient(90deg, rgba(52, 232, 154, 0.08), #111113 32%);
+  border-color: rgba(52, 232, 154, 0.48);
+}
+
+.test-card.passed::before {
+  background: var(--pass);
 }
 
 .test-card.failed,
-.test-card.timedOut {
-  border-color: rgba(255, 119, 109, 0.58);
+.test-card.timedOut,
+.test-card.interrupted {
+  background: linear-gradient(90deg, rgba(255, 52, 72, 0.1), #111113 34%);
+  border-color: rgba(255, 52, 72, 0.58);
+}
+
+.test-card.failed::before,
+.test-card.timedOut::before,
+.test-card.interrupted::before {
+  background: var(--fail);
 }
 
 .failure-screenshots {
@@ -649,7 +691,7 @@ button:disabled {
 }
 
 .screenshot-grid a {
-  background: var(--panel-strong);
+  background: #101012;
   border-color: var(--line);
   display: block;
   min-height: 0;
@@ -688,11 +730,55 @@ button:disabled {
   min-width: 0;
 }
 
+.test-title-main {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+
 .test-title strong,
 .run-title strong {
   font-size: 14px;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.status-mark {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 22px;
+  justify-content: center;
+  margin-top: -1px;
+  position: relative;
+  width: 22px;
+}
+
+.status-mark .icon {
+  height: 13px;
+  width: 13px;
+}
+
+.status-mark.running {
+  border: 2px solid rgba(86, 140, 255, 0.22);
+  border-top-color: var(--accent-strong);
+  animation: spinStatus 0.85s linear infinite;
+}
+
+.status-mark.passed {
+  background: rgba(52, 232, 154, 0.15);
+  color: var(--pass);
+}
+
+.status-mark.failed {
+  background: rgba(255, 52, 72, 0.15);
+  color: var(--fail);
+}
+
+.status-mark.queued {
+  background: rgba(154, 154, 162, 0.14);
 }
 
 .meta {
@@ -734,20 +820,20 @@ button:disabled {
 }
 
 .run-count.passed {
-  background: rgba(110, 231, 168, 0.12);
-  border-color: rgba(110, 231, 168, 0.36);
+  background: rgba(52, 232, 154, 0.12);
+  border-color: rgba(52, 232, 154, 0.36);
   color: var(--pass);
 }
 
 .run-count.failed {
-  background: rgba(255, 119, 109, 0.12);
-  border-color: rgba(255, 119, 109, 0.38);
+  background: rgba(255, 52, 72, 0.12);
+  border-color: rgba(255, 52, 72, 0.38);
   color: var(--fail);
 }
 
 .run-count.skipped {
-  background: rgba(255, 209, 102, 0.12);
-  border-color: rgba(255, 209, 102, 0.38);
+  background: rgba(255, 196, 0, 0.12);
+  border-color: rgba(255, 196, 0, 0.38);
   color: var(--warn);
 }
 
@@ -760,8 +846,8 @@ button:disabled {
 
 .rerun-button,
 .skip-button {
-  background: rgba(63, 183, 215, 0.1);
-  border-color: rgba(63, 183, 215, 0.35);
+  background: rgba(86, 140, 255, 0.1);
+  border-color: rgba(86, 140, 255, 0.35);
   color: var(--accent-strong);
   font-size: 12px;
   min-height: 28px;
@@ -769,18 +855,18 @@ button:disabled {
 }
 
 .skip-button {
-  background: rgba(255, 209, 102, 0.1);
-  border-color: rgba(255, 209, 102, 0.35);
+  background: rgba(255, 196, 0, 0.1);
+  border-color: rgba(255, 196, 0, 0.35);
   color: var(--warn);
 }
 
 .badge.running {
-  background: rgba(63, 183, 215, 0.14);
+  background: rgba(86, 140, 255, 0.14);
   color: var(--accent-strong);
 }
 
 .badge.retrying {
-  background: rgba(63, 183, 215, 0.14);
+  background: rgba(86, 140, 255, 0.14);
   color: var(--accent-strong);
 }
 
@@ -790,14 +876,14 @@ button:disabled {
 }
 
 .badge.passed {
-  background: rgba(110, 231, 168, 0.14);
+  background: rgba(52, 232, 154, 0.14);
   color: var(--pass);
 }
 
 .badge.failed,
 .badge.timedOut,
 .badge.interrupted {
-  background: rgba(255, 119, 109, 0.14);
+  background: rgba(255, 52, 72, 0.14);
   color: var(--fail);
 }
 
@@ -849,6 +935,14 @@ button:disabled {
   min-width: 0;
 }
 
+.test-card.running .step:last-child,
+.test-card.retrying .step:last-child {
+  background: rgba(86, 140, 255, 0.08);
+  border: 1px solid rgba(86, 140, 255, 0.2);
+  border-radius: 8px;
+  padding: 8px;
+}
+
 .step-row {
   display: flex;
   font-size: 13px;
@@ -864,7 +958,7 @@ button:disabled {
 }
 
 .error {
-  background: rgba(255, 119, 109, 0.1);
+  background: rgba(255, 52, 72, 0.1);
   border-left: 3px solid var(--danger);
   color: var(--danger);
   margin-top: 10px;
@@ -878,10 +972,10 @@ button:disabled {
 }
 
 .logs pre {
-  background: #070b14;
-  border: 1px solid #1c2a3f;
-  border-radius: 8px;
-  color: #c7f9df;
+  background: #09090a;
+  border: 1px solid #242428;
+  border-radius: 10px;
+  color: #d3f7df;
   font-size: 12px;
   line-height: 1.55;
   margin: 0;
@@ -909,6 +1003,31 @@ button:disabled {
 .run-card:hover {
   border-color: var(--accent);
   background: #162034;
+}
+
+@keyframes spinStatus {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes runningRail {
+  0%,
+  100% {
+    opacity: 0.38;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-mark.running,
+  .test-card.running::before,
+  .test-card.retrying::before {
+    animation: none;
+  }
 }
 
 @media (max-width: 1180px) {

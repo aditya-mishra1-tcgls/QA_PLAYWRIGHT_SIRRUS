@@ -5,7 +5,7 @@ import { appendFile, copyFile, mkdir, readFile, rename, rm, writeFile } from "no
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createPresignedGetUrl, databaseEnabled, getRemoteArtifact, getRemoteArtifactByKey, initializePersistence, listPersistentRunSummaries, listPersistentRuns, loadPersistentRun, objectStorageEnabled, savePersistentRun, uploadRunArtifact, uploadRunArtifacts } from "./persistence.mjs";
+import { createArtifactPublicUrl, createPresignedGetUrl, databaseEnabled, getRemoteArtifact, getRemoteArtifactByKey, initializePersistence, listPersistentRunSummaries, listPersistentRuns, loadPersistentRun, objectStorageEnabled, savePersistentRun, uploadRunArtifact, uploadRunArtifacts } from "./persistence.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "../..");
@@ -782,6 +782,7 @@ function persistentRunSnapshot(run) {
 
   return {
     ...run,
+    reportUrl: undefined,
     events: (run.events || []).slice(-maxStoredEvents),
     expectedTests: Array.isArray(run.expectedTests) ? run.expectedTests : [],
     tests,
@@ -966,7 +967,51 @@ function removeTemporaryAttachmentUrls(run) {
 function runForResponse(run) {
   trimRunForUi(run);
   recomputeRunSummary(run);
+  applyUploadedReportUrl(run);
   return applyPresignedAttachmentUrls(run);
+}
+
+function reportArtifactForRun(run) {
+  const reportPath = String(run?.reportPath || "");
+  const relativeReportPath = reportPath.startsWith(`data/test-runs/${run.id}/`)
+    ? reportPath.slice(`data/test-runs/${run.id}/`.length)
+    : reportPath;
+  const reportIndexPath = `${relativeReportPath || "html-report"}/index.html`.replace(/^\/+/, "");
+  return (run.artifacts || []).find((artifact) => artifact.path === reportIndexPath) || null;
+}
+
+function applyUploadedReportUrl(run) {
+  const reportArtifact = reportArtifactForRun(run);
+  if (!reportArtifact?.key) {
+    delete run.reportUrl;
+    return false;
+  }
+
+  const reportUrl = createArtifactPublicUrl(reportArtifact.key) || createPresignedGetUrl(reportArtifact.key);
+  if (!reportUrl) {
+    delete run.reportUrl;
+    return false;
+  }
+
+  if (run.reportUrl === reportUrl) {
+    return false;
+  }
+
+  run.reportUrl = reportUrl;
+  return true;
+}
+
+function broadcastReportReady(run) {
+  applyUploadedReportUrl(run);
+  if (!run.reportUrl) {
+    return;
+  }
+
+  broadcast(run.id, {
+    type: "report_ready",
+    timestamp: new Date().toISOString(),
+    reportUrl: run.reportUrl
+  });
 }
 
 function applyPresignedAttachmentUrls(run) {
@@ -1055,6 +1100,50 @@ function sendError(res, statusCode, message) {
   sendJson(res, statusCode, { error: message });
 }
 
+function escapeServerHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function redirectTo(res, location, cacheControl = "private, max-age=60") {
+  res.writeHead(302, {
+    location,
+    "cache-control": cacheControl,
+  });
+  res.end();
+}
+
+function sendReportUnavailable(res, message) {
+  res.writeHead(404, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Report Not Available</title>
+    <style>
+      body { align-items: center; background: #050505; color: #f2f2f3; display: grid; font-family: Inter, system-ui, sans-serif; min-height: 100vh; margin: 0; padding: 24px; }
+      main { background: #151515; border: 1px solid #2a2a2d; border-radius: 12px; margin: auto; max-width: 520px; padding: 24px; }
+      h1 { font-size: 20px; margin: 0 0 8px; }
+      p { color: #9a9aa2; line-height: 1.5; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>HTML report is not available</h1>
+      <p>${escapeServerHtml(message)}</p>
+    </main>
+  </body>
+</html>`);
+}
+
 function contentTypeForPath(filePath) {
   return {
     ".html": "text/html",
@@ -1124,7 +1213,7 @@ function buildPlaywrightArgs(run) {
     : run.options.flows.map((flow) => path.join("tests", "flows", flow));
 
   args.push(...selectedFiles);
-  args.push(`--reporter=list,${path.join("scripts", "dashboard", "reporter.mjs")}`);
+  args.push(`--reporter=list,html,${path.join("scripts", "dashboard", "reporter.mjs")}`);
 
   if (run.options.project) {
     args.push(`--project=${run.options.project}`);
@@ -1622,6 +1711,7 @@ async function startRun(body, dashboardUser = null) {
     await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
+    broadcastReportReady(run);
     activeRuns.delete(id);
   });
 
@@ -1644,6 +1734,7 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
     await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
+    broadcastReportReady(run);
     activeRuns.delete(run.id);
     return run;
   }
@@ -1741,6 +1832,7 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
     await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
+    broadcastReportReady(run);
     activeRuns.delete(run.id);
   });
 
@@ -1951,6 +2043,7 @@ async function retryTestInRun(runId, testId, body = {}) {
     await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
+    broadcastReportReady(run);
     activeRuns.delete(run.id);
   });
 
@@ -2123,6 +2216,47 @@ async function serveRunAsset(res, pathname) {
   createReadStream(resolved).pipe(res);
 }
 
+async function serveRunReport(res, runId) {
+  let run;
+  try {
+    run = await readRun(runId);
+  } catch {
+    sendReportUnavailable(res, "The selected run could not be found.");
+    return;
+  }
+
+  if (run.reportUrl) {
+    redirectTo(res, run.reportUrl);
+    return;
+  }
+
+  const reportPath = String(run.reportPath || path.relative(rootDir, path.join(getRunDir(runId), "html-report")));
+  const localIndexPath = path.resolve(rootDir, reportPath, "index.html");
+  const localReportRoot = path.resolve(rootDir, reportPath);
+  const isSafeLocalReportPath = localReportRoot.startsWith(`${rootDir}${path.sep}`)
+    && localIndexPath.startsWith(`${localReportRoot}${path.sep}`);
+  if (isSafeLocalReportPath && existsSync(localIndexPath)) {
+    if (objectStorageEnabled) {
+      try {
+        run.artifacts = await uploadRunArtifacts(run.id, getRunDir(run.id));
+        applyUploadedReportUrl(run);
+        await saveRun(run);
+        if (run.reportUrl) {
+          redirectTo(res, run.reportUrl);
+          return;
+        }
+      } catch (error) {
+        console.warn(`HTML report upload failed for ${run.id}: ${error.message}`);
+      }
+    }
+
+    redirectTo(res, `${dashboardBasePath}/${reportPath.replace(/^\/+/, "")}/index.html`);
+    return;
+  }
+
+  sendReportUnavailable(res, "The report files are not present locally and the uploaded S3 report URL is not available for this run.");
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
@@ -2259,6 +2393,12 @@ const server = http.createServer(async (req, res) => {
     const runMatch = pathname.match(/^\/api\/runs\/([^/]+)$/);
     if (req.method === "GET" && runMatch) {
       sendJson(res, 200, await readRun(runMatch[1]));
+      return;
+    }
+
+    const reportMatch = pathname.match(/^\/api\/runs\/([^/]+)\/report$/);
+    if (req.method === "GET" && reportMatch) {
+      await serveRunReport(res, reportMatch[1]);
       return;
     }
 

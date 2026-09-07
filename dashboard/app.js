@@ -63,7 +63,10 @@ function formatDuration(ms) {
     return `${value}ms`;
   }
 
-  return `${(value / 1000).toFixed(1)}s`;
+  const totalSeconds = Math.round(value / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
 }
 
 function formatElapsedSeconds(timestamp, startedAt) {
@@ -87,6 +90,23 @@ function setText(element, value) {
 function statusBadge(status) {
   const normalized = status || "pending";
   return `<span class="badge ${normalized}">${normalized}</span>`;
+}
+
+function testStatusIcon(status) {
+  const normalized = status || "running";
+  if (isRunningStatus(normalized)) {
+    return '<span class="status-mark running" aria-hidden="true"></span>';
+  }
+
+  if (normalized === "passed") {
+    return '<span class="status-mark passed" aria-hidden="true"><svg class="icon"><use href="#icon-check"></use></svg></span>';
+  }
+
+  if (isFailedStatus(normalized)) {
+    return '<span class="status-mark failed" aria-hidden="true"><svg class="icon"><use href="#icon-alert"></use></svg></span>';
+  }
+
+  return '<span class="status-mark queued" aria-hidden="true"></span>';
 }
 
 function numberOrZero(value) {
@@ -449,7 +469,10 @@ function renderTests(run) {
     return `
     <article class="test-card ${test.status || "running"} ${test.status === "passed" && !state.expandedTestIds.has(test.testId) ? "collapsed" : ""}" data-test-id="${escapeHtml(test.testId || "")}">
       <div class="test-title">
-        <strong>${escapeHtml(testDisplayTitle(test))}</strong>
+        <div class="test-title-main">
+          ${testStatusIcon(test.status)}
+          <strong>${escapeHtml(testDisplayTitle(test))}</strong>
+        </div>
         <div class="test-actions">
           ${isRunningStatus(test.status) ? `<button class="skip-button" type="button" data-skip-current-test-id="${escapeHtml(test.testId || "")}">Skip</button>` : ""}
           ${isFailedStatus(test.status) ? `<button class="rerun-button" type="button" data-rerun-test-id="${escapeHtml(test.testId || "")}">Retry</button>` : ""}
@@ -507,7 +530,8 @@ function renderRun(run) {
     : "";
   elements.htmlReportLink.hidden = !run?.reportPath;
   if (run?.reportPath) {
-    elements.htmlReportLink.href = dashboardUrl(`/${run.reportPath}/index.html`);
+    elements.htmlReportLink.href = run.reportUrl || dashboardUrl(`/api/runs/${encodeURIComponent(run.id)}/report`);
+    elements.htmlReportLink.title = run.reportUrl ? "Open uploaded S3 HTML report" : "Open HTML report";
   }
 
   elements.stopRunButton.disabled = !isRunningStatus(run?.status);
@@ -604,6 +628,11 @@ function applyEvent(event) {
       elements.stopRunButton.disabled = true;
       loadRuns();
     }
+    shouldRender = true;
+  }
+
+  if (event.type === "report_ready") {
+    run.reportUrl = event.reportUrl || run.reportUrl;
     shouldRender = true;
   }
 

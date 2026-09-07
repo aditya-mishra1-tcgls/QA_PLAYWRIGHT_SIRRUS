@@ -37,6 +37,7 @@ const bucket = process.env.QA_S3_BUCKET;
 const prefix = (process.env.QA_S3_PREFIX || "qa-playwright").replace(/^\/+|\/+$/g, "");
 const region = process.env.AWS_REGION || "us-east-1";
 const endpoint = process.env.QA_S3_ENDPOINT || "";
+const publicBaseUrl = (process.env.QA_S3_PUBLIC_BASE_URL || "").replace(/\/+$/g, "");
 const databaseConnectionTimeoutMillis = Number(process.env.QA_DATABASE_CONNECTION_TIMEOUT_MS || 10000);
 const presignedUrlExpiresSeconds = Number(process.env.QA_S3_PRESIGNED_URL_EXPIRES_SECONDS || 3600);
 const maxPersistentRunPayloadBytes = Number(process.env.QA_DATABASE_MAX_RUN_PAYLOAD_BYTES || 15 * 1024 * 1024);
@@ -182,6 +183,11 @@ function s3ObjectUrl(key) {
   }
 
   return new URL(`https://${bucket}.s3.${region}.amazonaws.com/${encodedKey}`);
+}
+
+export function createArtifactPublicUrl(key) {
+  if (!bucket || !key) return "";
+  return publicBaseUrl ? `${publicBaseUrl}/${encodeKey(key)}` : s3ObjectUrl(key).toString();
 }
 
 export function createPresignedGetUrl(key, expiresSeconds = presignedUrlExpiresSeconds) {

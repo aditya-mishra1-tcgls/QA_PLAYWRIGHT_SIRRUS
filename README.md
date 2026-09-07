@@ -98,7 +98,7 @@ Run data is stored locally under `data/test-runs/<run-id>`:
 - `output.log`: raw Playwright output
 - `html-report`: Playwright HTML report assets
 
-This local folder is intentionally ignored by git. For permanent storage, configure PostgreSQL and S3-compatible object storage in `.env` using the variables in `.env.example`. The dashboard then stores every run payload in PostgreSQL and uploads all run artifacts (HTML report, screenshots, videos, traces, logs, and retry artifacts) to the configured bucket when the run finishes. Each failed test captures a viewport image, full-page image, and a second viewport image after one second; users can open these from the **Failure screenshots** section on the test card. Local files remain available as a fallback.
+This local folder is intentionally ignored by git. For permanent storage, configure PostgreSQL and S3-compatible object storage in `.env` using the variables in `.env.example`. The dashboard then stores every run payload in PostgreSQL and uploads all run artifacts (HTML report, screenshots, videos, traces, logs, and retry artifacts) to the configured bucket when the run finishes. Set `QA_S3_PUBLIC_BASE_URL` to the public bucket or CDN base URL if you want the **HTML Report** button to open the uploaded S3 report directly. Each failed test captures a viewport image, full-page image, and a second viewport image after one second; users can open these from the **Failure screenshots** section on the test card. Local files remain available as a fallback.
 
 PostgreSQL is the source of truth for metadata; S3 is the source of truth for larger static files. This works with AWS RDS + S3, or managed alternatives such as Neon/Supabase + Cloudflare R2.
 
