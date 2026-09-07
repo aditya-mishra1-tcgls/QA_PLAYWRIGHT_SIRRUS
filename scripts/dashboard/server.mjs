@@ -260,8 +260,9 @@ async function syncLocalRunsToDatabase() {
     await preserveRunAttachments(run);
     applyUploadedArtifactUrls(run);
     recomputeRunSummary(run);
+    trimRunForUi(run);
     try {
-      await savePersistentRun(run);
+      await savePersistentRun(persistentRunSnapshot(run));
     } catch (error) {
       console.warn(`Skipped DB sync for local run ${entry}: ${error.message}`);
     }
@@ -269,29 +270,15 @@ async function syncLocalRunsToDatabase() {
 }
 
 async function readRun(runId) {
+  const activeRun = activeRuns.get(runId)?.run;
+  if (activeRun) {
+    return runForResponse(activeRun);
+  }
+
   const runPath = path.join(getRunDir(runId), "run.json");
   let run;
-  if (databaseEnabled) {
-    try {
-      run = await loadPersistentRun(runId);
-    } catch (error) {
-      console.warn(`DB read failed for run ${runId}; falling back to local run file: ${error.message}`);
-    }
-    if ((!run || !isFullRunPayload(run)) && existsSync(runPath)) {
-      const localRun = await recoverRunFile(runPath, runId);
-      if (localRun && isFullRunPayload(localRun)) {
-        run = localRun;
-      }
-    }
-    if (!run || !isFullRunPayload(run)) {
-      const rebuiltRun = await rebuildRunFromEvents(runId, run || {});
-      if (rebuiltRun) {
-        run = rebuiltRun;
-        await saveRun(run);
-      }
-    }
-    if (!run) throw new Error("Run not found");
-  } else if (existsSync(runPath)) {
+
+  if (existsSync(runPath)) {
     run = await recoverRunFile(runPath, runId);
     if (!run || !isFullRunPayload(run)) {
       const rebuiltRun = await rebuildRunFromEvents(runId, run || {});
@@ -301,6 +288,20 @@ async function readRun(runId) {
       }
     }
     if (!run) throw new Error("Run file is corrupt and could not be recovered");
+  } else if (databaseEnabled) {
+    try {
+      run = await loadPersistentRun(runId);
+    } catch (error) {
+      console.warn(`DB read failed for run ${runId}: ${error.message}`);
+    }
+    if (!run || !isFullRunPayload(run)) {
+      const rebuiltRun = await rebuildRunFromEvents(runId, run || {});
+      if (rebuiltRun) {
+        run = rebuiltRun;
+        await saveRun(run);
+      }
+    }
+    if (!run) throw new Error("Run not found");
   } else {
     run = await loadPersistentRun(runId);
     if (!run || !isFullRunPayload(run)) {
@@ -312,14 +313,14 @@ async function readRun(runId) {
     }
     if (!run) throw new Error("Run not found");
   }
+
   if (await preserveRunAttachments(run)) {
     await saveRun(run);
   }
   if (applyUploadedArtifactUrls(run)) {
     await saveRun(run);
   }
-  recomputeRunSummary(run);
-  return applyPresignedAttachmentUrls(run);
+  return runForResponse(run);
 }
 
 function isFullRunPayload(run) {
@@ -345,30 +346,85 @@ function trimRunForUi(run) {
   }
 }
 
+function persistentRunSnapshot(run) {
+  const tests = {};
+  for (const [testId, test] of Object.entries(run.tests || {})) {
+    tests[testId] = {
+      ...test,
+      steps: (test.steps || []).slice(-maxStoredSteps),
+      retry: test.retry ? {
+        ...test.retry,
+        steps: (test.retry.steps || []).slice(-maxStoredSteps)
+      } : test.retry,
+      attempts: Array.isArray(test.attempts)
+        ? test.attempts.map((attempt) => ({
+            ...attempt,
+            steps: (attempt.steps || []).slice(-maxStoredSteps)
+          }))
+        : test.attempts,
+      attachments: Array.isArray(test.attachments)
+        ? test.attachments.map((attachment) => {
+            const { url, ...persistedAttachment } = attachment;
+            return persistedAttachment;
+          })
+        : test.attachments
+    };
+  }
+
+  return {
+    ...run,
+    events: (run.events || []).slice(-maxStoredEvents),
+    expectedTests: Array.isArray(run.expectedTests) ? run.expectedTests : [],
+    tests,
+    artifacts: Array.isArray(run.artifacts) ? run.artifacts.map((artifact) => ({ ...artifact })) : run.artifacts
+  };
+}
+
+async function writeRunSnapshot(run) {
+  trimRunForUi(run);
+  const persistedRun = persistentRunSnapshot(run);
+  removeTemporaryAttachmentUrls(persistedRun);
+
+  const runPath = path.join(getRunDir(run.id), "run.json");
+  const temporaryPath = temporaryRunPath(runPath);
+  await writeFile(temporaryPath, `${JSON.stringify(persistedRun)}\n`);
+  await rename(temporaryPath, runPath);
+
+  try {
+    await savePersistentRun(persistedRun);
+  } catch (error) {
+    run.persistenceError = error.message || "DB save failed";
+    console.warn(`DB save failed for run ${run.id}; local run file was saved: ${run.persistenceError}`);
+  }
+}
+
 async function saveRun(run) {
   if (!isFullRunPayload(run)) {
     throw new Error(`Refusing to save summary-only run payload for ${run?.id || "unknown run"}.`);
   }
 
-  trimRunForUi(run);
-  const persistedRun = JSON.parse(JSON.stringify(run));
-  removeTemporaryAttachmentUrls(persistedRun);
-  const serializedRun = `${JSON.stringify(persistedRun, null, 2)}\n`;
-  const previous = saveQueues.get(run.id) || Promise.resolve();
-  const task = previous.catch(() => {}).then(async () => {
-    const runPath = path.join(getRunDir(run.id), "run.json");
-    const temporaryPath = temporaryRunPath(runPath);
-    await writeFile(temporaryPath, serializedRun);
-    await rename(temporaryPath, runPath);
+  const existing = saveQueues.get(run.id);
+  if (existing) {
+    existing.dirty = true;
+    return existing.promise;
+  }
+
+  const state = { dirty: false, promise: null };
+  state.promise = (async () => {
     try {
-      await savePersistentRun(persistedRun);
-    } catch (error) {
-      run.persistenceError = error.message || "DB save failed";
-      console.warn(`DB save failed for run ${run.id}; local run file was saved: ${run.persistenceError}`);
+      do {
+        state.dirty = false;
+        await writeRunSnapshot(run);
+      } while (state.dirty);
+    } finally {
+      if (saveQueues.get(run.id) === state) {
+        saveQueues.delete(run.id);
+      }
     }
-  });
-  saveQueues.set(run.id, task);
-  try { await task; } finally { if (saveQueues.get(run.id) === task) saveQueues.delete(run.id); }
+  })();
+
+  saveQueues.set(run.id, state);
+  return state.promise;
 }
 
 async function archiveRun(run) {
@@ -496,6 +552,12 @@ function removeTemporaryAttachmentUrls(run) {
       }
     }
   }
+}
+
+function runForResponse(run) {
+  trimRunForUi(run);
+  recomputeRunSummary(run);
+  return applyPresignedAttachmentUrls(run);
 }
 
 function applyPresignedAttachmentUrls(run) {
@@ -1259,7 +1321,22 @@ async function skipCurrentTestInRun(runId, testId) {
   return run;
 }
 
+function activeRunIsAlive(activeRun) {
+  const child = activeRun?.child;
+  return Boolean(child && child.exitCode === null && child.signalCode === null && !child.killed);
+}
+
+function clearInactiveRun(runId) {
+  const activeRun = activeRuns.get(runId);
+  if (activeRun && !activeRunIsAlive(activeRun)) {
+    activeRuns.delete(runId);
+    return true;
+  }
+  return false;
+}
+
 async function retryTestInRun(runId, testId, body = {}) {
+  clearInactiveRun(runId);
   const run = await readRun(runId);
   const targetTest = run.tests?.[testId] || run.expectedTests?.find((test) => test.testId === testId);
   if (!targetTest) {
@@ -1271,8 +1348,12 @@ async function retryTestInRun(runId, testId, body = {}) {
     throw new Error("Cannot rerun test without a file path.");
   }
 
-  if (activeRuns.has(runId)) {
+  const activeRun = activeRuns.get(runId);
+  if (activeRunIsAlive(activeRun)) {
     throw new Error("A run or retry is already active for this report.");
+  }
+  if (activeRun) {
+    activeRuns.delete(runId);
   }
 
   const retryId = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1403,10 +1484,17 @@ async function retryTestInRun(runId, testId, body = {}) {
   return run;
 }
 
+function recomputeRunSummaryIfTestsAreLoaded(run) {
+  if (run?.tests && Object.keys(run.tests).length) {
+    recomputeRunSummary(run);
+  }
+  return run;
+}
+
 async function listRuns() {
   try {
     const remoteRuns = databaseEnabled ? await listPersistentRunSummaries() : await listPersistentRuns();
-    if (remoteRuns !== null) return remoteRuns.map((run) => { recomputeRunSummary(run); return run; });
+    if (remoteRuns !== null) return remoteRuns.map(recomputeRunSummaryIfTestsAreLoaded);
   } catch (error) {
     console.warn(`DB run list failed; falling back to local run files: ${error.message}`);
   }

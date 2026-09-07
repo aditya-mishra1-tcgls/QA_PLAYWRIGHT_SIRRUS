@@ -39,6 +39,7 @@ const region = process.env.AWS_REGION || "us-east-1";
 const endpoint = process.env.QA_S3_ENDPOINT || "";
 const databaseConnectionTimeoutMillis = Number(process.env.QA_DATABASE_CONNECTION_TIMEOUT_MS || 10000);
 const presignedUrlExpiresSeconds = Number(process.env.QA_S3_PRESIGNED_URL_EXPIRES_SECONDS || 3600);
+const maxPersistentRunPayloadBytes = Number(process.env.QA_DATABASE_MAX_RUN_PAYLOAD_BYTES || 15 * 1024 * 1024);
 
 function databaseConfig() {
   if (!databaseUrl) return null;
@@ -87,13 +88,36 @@ export async function savePersistentRun(run) {
 
 export async function loadPersistentRun(runId) {
   if (!pool) return null;
+
+  const sizeResult = await pool.query("SELECT pg_column_size(payload) AS payload_bytes FROM qa_test_runs WHERE run_id = $1", [runId]);
+  const payloadBytes = Number(sizeResult.rows[0]?.payload_bytes || 0);
+  if (!payloadBytes) return null;
+
+  if (payloadBytes > maxPersistentRunPayloadBytes) {
+    throw new Error(
+      `Persistent run payload is ${payloadBytes} bytes, above the safe limit of ${maxPersistentRunPayloadBytes} bytes. ` +
+      "Use the local run file or events log instead of loading this full DB payload."
+    );
+  }
+
   const result = await pool.query("SELECT payload FROM qa_test_runs WHERE run_id = $1", [runId]);
   return result.rows[0]?.payload || null;
 }
 
 export async function listPersistentRuns() {
   if (!pool) return null;
-  const result = await pool.query("SELECT payload FROM qa_test_runs ORDER BY started_at DESC");
+  const result = await pool.query(`SELECT jsonb_build_object(
+    'id', payload->>'id',
+    'status', status,
+    'startedAt', payload->>'startedAt',
+    'endedAt', payload->>'endedAt',
+    'options', payload->'options',
+    'summary', payload->'summary',
+    'expectedTotal', payload->'expectedTotal'
+  ) AS payload
+  FROM qa_test_runs
+  ORDER BY started_at DESC
+  LIMIT 20`);
   return result.rows.map((row) => row.payload);
 }
 

@@ -78,6 +78,39 @@ function statusBadge(status) {
   return `<span class="badge ${normalized}">${normalized}</span>`;
 }
 
+function numberOrZero(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function runCountSummary(run) {
+  const summary = run?.summary || {};
+  const tests = Object.values(run?.tests || {});
+
+  const fallbackCount = (statuses) => tests.filter((test) => statuses.includes(test.status)).length;
+  const passed = numberOrZero(summary.passed ?? fallbackCount(["passed"]));
+  const failed = numberOrZero(summary.failed ?? fallbackCount(["failed"]))
+    + numberOrZero(summary.timedOut ?? fallbackCount(["timedOut"]))
+    + numberOrZero(summary.interrupted ?? fallbackCount(["interrupted"]));
+  const skipped = numberOrZero(summary.skipped ?? fallbackCount(["skipped"]))
+    + numberOrZero(summary.queued ?? fallbackCount(["queued"]))
+    + numberOrZero(summary.pending ?? fallbackCount(["pending"]))
+    + numberOrZero(summary["not executed"] ?? 0)
+    + numberOrZero(summary.notExecuted ?? fallbackCount(["notExecuted", "not-executed"]));
+
+  return { passed, failed, skipped };
+}
+
+function runCountBadges(run) {
+  const counts = runCountSummary(run);
+  return `
+    <span class="run-counts" aria-label="${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped">
+      <span class="run-count passed" title="Passed">✓ ${counts.passed}</span>
+      <span class="run-count failed" title="Failed">✕ ${counts.failed}</span>
+      <span class="run-count skipped" title="Skipped">↷ ${counts.skipped}</span>
+    </span>`;
+}
+
 function attachmentUrl(run, test, attachment, index) {
   if (attachment?.url) {
     return attachment.url;
@@ -592,7 +625,7 @@ async function loadRuns() {
     <article class="run-card" data-run-id="${run.id}">
       <div class="run-title">
         <strong>${escapeHtml(run.options?.mode || "custom")} / ${escapeHtml(run.options?.env || "")}</strong>
-        ${statusBadge(run.status)}
+        ${runCountBadges(run)}
       </div>
       <div class="meta">${new Date(run.startedAt).toLocaleString()} - ${escapeHtml((run.options?.flows || []).join(", "))}</div>
     </article>

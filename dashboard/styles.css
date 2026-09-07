@@ -428,6 +428,42 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.run-counts {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.run-count {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  min-width: 32px;
+  padding: 5px 7px;
+  text-align: center;
+}
+
+.run-count.passed {
+  background: #eaf7ef;
+  border-color: #a7d7bd;
+  color: var(--pass);
+}
+
+.run-count.failed {
+  background: #fff0ef;
+  border-color: #efb0ab;
+  color: var(--fail);
+}
+
+.run-count.skipped {
+  background: #fff7e6;
+  border-color: #f4d58d;
+  color: var(--warn);
+}
+
 .test-actions {
   align-items: center;
   display: flex;

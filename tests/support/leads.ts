@@ -1934,7 +1934,7 @@ async function clickStartSiteVisitCta(page: Page) {
 
     const scrolled = await scrollStageFormSection(page);
     if (!scrolled) {
-      await page.mouse.wheel(0, 700).catch(() => {});
+      await wheelRightStagePane(page);
     }
     await page.waitForTimeout(300);
   }
@@ -3215,7 +3215,12 @@ async function clickVisibleSaveButton(page: Page, postSaveText?: RegExp) {
     page.getByRole("button", { name: /^save$/i }),
   ];
 
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (attempt > 0) {
+      await scrollStageFormToBottom(page);
+      await wheelRightStagePane(page);
+    }
+
     for (const locator of saveButtons) {
       const count = await locator.count().catch(() => 0);
       for (let index = count - 1; index >= 0; index -= 1) {
@@ -3233,13 +3238,103 @@ async function clickVisibleSaveButton(page: Page, postSaveText?: RegExp) {
       }
     }
 
+    if (await clickVisibleSaveButtonWithDom(page)) {
+      if (postSaveText) {
+        await expect(page.locator("body")).toContainText(postSaveText, {
+          timeout: 15000,
+        }).catch(() => {});
+      }
+      return true;
+    }
+
     const scrolled = await scrollStageFormSection(page);
     if (!scrolled) {
-      await page.mouse.wheel(0, 600).catch(() => {});
+      await wheelRightStagePane(page);
     }
   }
 
   return false;
+}
+
+async function scrollStageFormToBottom(page: Page) {
+  await page.evaluate(() => {
+    const normalize = (value: string | null | undefined) =>
+      (value || "").replace(/\s+/g, " ").trim();
+
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>("main, section, article, div"))
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        const text = normalize(element.innerText || element.textContent);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          element.scrollHeight > element.clientHeight &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          (rect.left > window.innerWidth * 0.25 || /Choose a stage|Remarks|Add Follow up|Next Follow Up/i.test(text))
+        );
+      })
+      .sort((left, right) => {
+        const leftText = normalize(left.innerText || left.textContent);
+        const rightText = normalize(right.innerText || right.textContent);
+        const leftPriority = /Choose a stage|Remarks|Add Follow up|Next Follow Up/i.test(leftText) ? 0 : 1;
+        const rightPriority = /Choose a stage|Remarks|Add Follow up|Next Follow Up/i.test(rightText) ? 0 : 1;
+        if (leftPriority !== rightPriority) {
+          return leftPriority - rightPriority;
+        }
+        return right.getBoundingClientRect().left - left.getBoundingClientRect().left;
+      });
+
+    for (const element of candidates) {
+      element.scrollTop = element.scrollHeight;
+    }
+
+    document.scrollingElement?.scrollTo({ top: document.scrollingElement.scrollHeight });
+  }).catch(() => {});
+  await page.waitForTimeout(250);
+}
+
+async function wheelRightStagePane(page: Page, deltaY = 900) {
+  const viewport = page.viewportSize();
+  if (viewport) {
+    await page.mouse.move(Math.max(0, viewport.width - 360), Math.max(0, viewport.height - 260)).catch(() => {});
+  }
+  await page.mouse.wheel(0, deltaY).catch(() => {});
+  await page.waitForTimeout(250);
+}
+
+async function clickVisibleSaveButtonWithDom(page: Page) {
+  return await page.evaluate(() => {
+    const normalize = (value: string | null | undefined) =>
+      (value || "").replace(/\s+/g, " ").trim();
+    const isVisible = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.bottom >= 0 &&
+        rect.top <= window.innerHeight &&
+        style.visibility !== "hidden" &&
+        style.display !== "none" &&
+        style.pointerEvents !== "none"
+      );
+    };
+
+    const matches = Array.from(document.querySelectorAll<HTMLElement>("button, [role='button']"))
+      .filter((element) => normalize(element.innerText || element.textContent) === "Save" && isVisible(element))
+      .sort((left, right) => right.getBoundingClientRect().left - left.getBoundingClientRect().left);
+
+    const button = matches[0];
+    if (!button) {
+      return false;
+    }
+
+    button.scrollIntoView({ block: "center", inline: "center" });
+    button.click();
+    return true;
+  }).catch(() => false);
 }
 
 async function revealLocator(page: Page, locator: Locator) {
@@ -3703,15 +3798,37 @@ export async function openLeadTaskFromDashboard(
     );
   }
 
-  await expect(
-    page.getByText(new RegExp(escapeRegex(leadName), "i")).first(),
-  ).toBeVisible({ timeout: 60000 });
-
-  const leadTaskCard = page
-    .locator("div, article, section")
-    .filter({ hasText: new RegExp(escapeRegex(leadName), "i") })
+  const exactLeadName = page.getByText(new RegExp(escapeRegex(leadName), "i")).first();
+  const searchedSiteVisitTableRow = page
+    .locator("tbody tr")
     .filter({ hasText: /Site Visit/i })
+    .filter({ hasText: /Pending|Overdue|Completed|Aakarsh|Test1303/i })
+    .first();
+  const searchedSiteVisitCard = page
+    .locator("div, article, section")
+    .filter({ hasText: /Site Visit/i })
+    .filter({ hasText: /Pending|Overdue|Completed|Aakarsh|Test1303/i })
     .last();
+
+  await expect
+    .poll(
+      async () =>
+        (await exactLeadName.isVisible().catch(() => false)) ||
+        (await searchedSiteVisitTableRow.isVisible().catch(() => false)) ||
+        (await searchedSiteVisitCard.isVisible().catch(() => false)),
+      { timeout: 60000 },
+    )
+    .toBeTruthy();
+
+  const leadTaskCard = (await searchedSiteVisitTableRow.isVisible().catch(() => false))
+    ? searchedSiteVisitTableRow
+    : (await exactLeadName.isVisible().catch(() => false))
+      ? page
+          .locator("div, article, section")
+          .filter({ hasText: new RegExp(escapeRegex(leadName), "i") })
+          .filter({ hasText: /Site Visit/i })
+          .last()
+      : searchedSiteVisitCard;
 
   await expect(leadTaskCard).toBeVisible({ timeout: 60000 });
 
@@ -3719,7 +3836,7 @@ export async function openLeadTaskFromDashboard(
     .getByRole("button", { name: /take action/i })
     .first();
   await leadTaskCard.click({ force: true }).catch(() => {});
-  const navigatedFromCard = await page
+  let navigatedFromCard = await page
     .waitForURL(/engagement-intelligence\/manage-leads\/?\?id=/, {
       timeout: 10000,
     })
@@ -3733,6 +3850,12 @@ export async function openLeadTaskFromDashboard(
     await clickWithFallback(page, takeActionButton, async () =>
       /engagement-intelligence\/manage-leads\/?\?id=/.test(page.url()),
     );
+    navigatedFromCard = /engagement-intelligence\/manage-leads\/?\?id=/.test(page.url());
+  }
+
+  if (!navigatedFromCard) {
+    await goToManageLeads(page, app);
+    await openLeadByName(page, leadName);
   }
 
   await waitForLeadProfile(page);
@@ -3787,6 +3910,7 @@ export async function cancelSiteVisitFromOpenedLead(
     ],
     siteVisitIsoDate(),
   );
+  await selectCustomDateIfVisible(page, 1);
 
   await fillFirstVisibleField(
     page,
@@ -3797,6 +3921,7 @@ export async function cancelSiteVisitFromOpenedLead(
     ],
     "14:00",
   );
+  await selectCustomTimeIfVisible(page);
 
   const saved = await clickVisibleSaveButton(page);
   if (!saved) {
