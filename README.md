@@ -6,6 +6,7 @@ This project is organized flow-wise so we can add UI journeys gradually and run 
 
 - `tests/flows/smoke`: smoke journeys
 - `tests/flows/auth`: login and authentication journeys
+- `tests/flows/user-management`: admin user creation and user access journeys
 - `tests/flows/lead-management`: lead creation and lead actions
 - `tests/flows/site-visit`: site visit lifecycle validation
 - `tests/setup`: shared one-time login setup for all authenticated tests
@@ -46,6 +47,7 @@ npm run test:auth
 npm run test:flows
 npm run test:manual -- --mode=regression --env=uat
 npm run test:manual -- --flows=smoke,lead-management --env=qa
+npm run test:manual -- --mode=user-management --env=uat
 npm run test:headed
 npm run dashboard
 ```
@@ -66,6 +68,29 @@ The dashboard lets you choose environment, execution mode, flows, specific spec 
 
 For a server deployment, set `QA_DASHBOARD_HOST=0.0.0.0` and expose `QA_DASHBOARD_PORT` through your firewall, reverse proxy, or load balancer. The browser page will show realtime execution from anywhere that can reach the server. If headed mode is enabled, the Playwright browser window opens on the server itself; use VNC/noVNC or a desktop session if you want to watch that headed browser visually.
 
+Protect the dashboard with browser login before exposing it:
+
+```bash
+QA_DASHBOARD_AUTH_USERNAME=admin
+QA_DASHBOARD_AUTH_PASSWORD=<strong-password>
+```
+
+For Docker/server runs, pass the same variables to the container because `.env` is not copied into the image:
+
+```bash
+docker run --env-file .env -p 9324:9324 <image-name>
+```
+
+If Playwright reports that the Chromium executable does not exist on the server, rebuild the Docker image after dependency changes. The Docker base image version must match the `@playwright/test` version in `package.json`.
+
+These values bootstrap the first dashboard admin. After login, the admin-only **Dashboard Users** section can create more dashboard users. Created users are stored locally in `config/dashboard-users.local.json`, which is ignored by git. Normal users can open the dashboard and run/view tests, but only admins can create dashboard users.
+
+Each dashboard user can save their own app-test login from the **Configuration** page. Runs started by that user use their saved app login for the selected environment. If no user-specific app login is saved, tests fall back to the current shared `config/accounts.local.json` credentials.
+
+When the dashboard is bound to anything other than localhost, the server refuses to start unless both auth variables are configured.
+
+If the dashboard is hosted under a path prefix, set `QA_DASHBOARD_BASE_PATH`. For example, `https://dev-wag.sirrus.ai/qa-playwrite/` should use `QA_DASHBOARD_BASE_PATH=/qa-playwrite` unless the reverse proxy strips the prefix before forwarding to Node.
+
 Run data is stored locally under `data/test-runs/<run-id>`:
 
 - `run.json`: run metadata, selected options, summary, tests, steps, and errors
@@ -73,7 +98,7 @@ Run data is stored locally under `data/test-runs/<run-id>`:
 - `output.log`: raw Playwright output
 - `html-report`: Playwright HTML report assets
 
-This local folder is intentionally ignored by git. For permanent storage, configure PostgreSQL and S3-compatible object storage in `.env` using the variables in `.env.example`. The dashboard then stores every run payload in PostgreSQL and uploads all run artifacts (HTML report, screenshots, videos, traces, logs, and retry artifacts) to the configured bucket when the run finishes. Each failed test captures a viewport image, full-page image, and a second viewport image after one second; users can open these from the **Failure screenshots** section on the test card. Local files remain available as a fallback.
+This local folder is intentionally ignored by git. For permanent storage, configure PostgreSQL and S3-compatible object storage in `.env` using the variables in `.env.example`. The dashboard then stores every run payload in PostgreSQL and uploads all run artifacts (HTML report, screenshots, videos, traces, logs, and retry artifacts) to the configured bucket when the run finishes. The **HTML Report** button opens a presigned S3 URL for the uploaded report when AWS credentials are configured. Set `QA_S3_PUBLIC_BASE_URL` only if you prefer a public bucket or CDN URL fallback. Each failed test captures a viewport image, full-page image, and a second viewport image after one second; users can open these from the **Failure screenshots** section on the test card. Local files remain available as a fallback.
 
 PostgreSQL is the source of truth for metadata; S3 is the source of truth for larger static files. This works with AWS RDS + S3, or managed alternatives such as Neon/Supabase + Cloudflare R2.
 
@@ -154,8 +179,18 @@ app.leads[app.envName]
 ## Login baseline
 
 - The suite logs in once through `tests/setup/auth.setup.ts`.
-- The authenticated browser state is saved under `playwright/.auth/<env>.json`.
+- Local CLI runs save authenticated browser state under `playwright/.auth/<env>.json`.
+- Dashboard runs save authenticated browser state under `playwright/.auth/<env>-<run-id>.json`, so parallel executions do not overwrite each other. The dashboard removes that execution-specific auth file automatically when the run, retry, or continuation finishes.
 - All normal test flows reuse that state automatically, which keeps execution fast.
+
+## User Management And Parallel Runs
+
+- Admin/user-management coverage is registered as the `user-management` execution profile.
+- Keep real admin and automation-user credentials in `config/accounts.local.json`; use `config/accounts.template.json` as the shape.
+- For parallel execution, configure at least one automation user per Playwright worker.
+- Avoid sharing the same login account across concurrent data-mutating tests. When three team members run scenarios at the same time, use three separate accounts or three separate account pools.
+- Dashboard-triggered runs use execution-specific auth state, for example `playwright/.auth/uat-2026-09-07T12-30-00-000Z.json`, instead of sharing only `playwright/.auth/uat.json`.
+- Test data that creates users, leads, reports, or visits should include a unique run id, worker index, or timestamp in names/emails/mobile numbers.
 
 ## Adding a new flow
 

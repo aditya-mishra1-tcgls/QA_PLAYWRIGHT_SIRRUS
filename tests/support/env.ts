@@ -10,12 +10,17 @@ type EnvConfig = {
   activeProjectName: string;
   mobileNumber: string;
   otp: string;
+  adminUser?: {
+    email?: string;
+    password?: string;
+  };
+  parallelUsers?: Array<Record<string, string>>;
   users: typeof users;
   leads: typeof leads;
 };
 
-function ensureConfiguredCredential(envName: string, label: "mobileNumber" | "otp", value: string) {
-  const normalized = value.trim();
+function ensureConfiguredCredential(envName: string, label: string, value?: string) {
+  const normalized = (value || "").trim();
   if (!normalized) {
     throw new Error(`Missing ${label} for "${envName}" in config/accounts.local.json.`);
   }
@@ -66,21 +71,36 @@ export function loadEnv(): EnvConfig {
   const accountsPath = path.resolve("config", "accounts.local.json");
   const accountsTemplatePath = path.resolve("config", "accounts.template.json");
   const sourcePath = fs.existsSync(accountsPath) ? accountsPath : accountsTemplatePath;
-  const accounts = JSON.parse(fs.readFileSync(sourcePath, "utf8")) as Record<string, { mobileNumber: string; otp: string }>;
+  const accounts = JSON.parse(fs.readFileSync(sourcePath, "utf8")) as Record<
+    string,
+    {
+      mobileNumber: string;
+      otp: string;
+      adminUser?: {
+        email?: string;
+        password?: string;
+      };
+      parallelUsers?: Array<Record<string, string>>;
+    }
+  >;
   const selectedAccount = accounts[selectedEnv];
   if (!selectedAccount) {
     throw new Error(`Missing credentials for "${selectedEnv}" in ${sourcePath}.`);
   }
 
-  ensureConfiguredCredential(selectedEnv, "mobileNumber", selectedAccount.mobileNumber);
-  ensureConfiguredCredential(selectedEnv, "otp", selectedAccount.otp);
+  const selectedMobileNumber = process.env.APP_TEST_MOBILE_NUMBER || process.env.APP_TEST_LOGIN_ID || selectedAccount.mobileNumber;
+  const selectedOtp = process.env.APP_TEST_OTP || process.env.APP_TEST_PASSWORD || selectedAccount.otp;
+  ensureConfiguredCredential(selectedEnv, "mobileNumber", selectedMobileNumber);
+  ensureConfiguredCredential(selectedEnv, "otp", selectedOtp);
 
   return {
     envName: selectedEnv,
     baseUrl: availableEnv.baseUrl,
     activeProjectName: availableEnv.activeProjectName,
-    mobileNumber: selectedAccount.mobileNumber,
-    otp: selectedAccount.otp,
+    mobileNumber: selectedMobileNumber,
+    otp: selectedOtp,
+    adminUser: selectedAccount.adminUser,
+    parallelUsers: selectedAccount.parallelUsers,
     users,
     leads
   };

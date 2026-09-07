@@ -1,0 +1,23 @@
+{
+  "users": [
+    {
+      "username": "admin",
+      "password": "change-this-password",
+      "role": "admin",
+      "appCredentials": {
+        "uat": {
+          "loginId": "user-specific-mobile-or-login-id",
+          "password": "user-specific-password-or-otp",
+          "mobileNumber": "user-specific-mobile-number",
+          "otp": "user-specific-otp"
+        }
+      }
+    },
+    {
+      "username": "qa-user",
+      "password": "change-this-password",
+      "role": "user",
+      "appCredentials": {}
+    }
+  ]
+}

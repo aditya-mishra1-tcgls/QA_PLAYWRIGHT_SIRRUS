@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.55.0-noble
+FROM mcr.microsoft.com/playwright:v1.62.1-noble
 
 WORKDIR /app
 
@@ -9,6 +9,7 @@ ENV TEST_ENV=uat
 COPY package.json package-lock.json ./
 
 RUN npm ci
+RUN npx playwright install chromium
 
 COPY . .
 

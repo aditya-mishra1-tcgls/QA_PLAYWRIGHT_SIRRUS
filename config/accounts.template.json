@@ -1,10 +1,52 @@
 {
   "qa": {
     "mobileNumber": "confirm-qa-mobile-number",
-    "otp": "confirm-qa-otp"
+    "otp": "confirm-qa-otp",
+    "adminUser": {
+      "email": "admin.qa@example.com",
+      "password": "confirm-qa-admin-password"
+    },
+    "parallelUsers": [
+      {
+        "name": "qa-worker-1",
+        "mobileNumber": "confirm-qa-worker-1-mobile-number",
+        "otp": "confirm-qa-worker-1-otp"
+      },
+      {
+        "name": "qa-worker-2",
+        "mobileNumber": "confirm-qa-worker-2-mobile-number",
+        "otp": "confirm-qa-worker-2-otp"
+      },
+      {
+        "name": "qa-worker-3",
+        "mobileNumber": "confirm-qa-worker-3-mobile-number",
+        "otp": "confirm-qa-worker-3-otp"
+      }
+    ]
   },
   "uat": {
     "mobileNumber": "9456888501",
-    "otp": "1234"
+    "otp": "1234",
+    "adminUser": {
+      "email": "admin.uat@example.com",
+      "password": "confirm-uat-admin-password"
+    },
+    "parallelUsers": [
+      {
+        "name": "uat-worker-1",
+        "mobileNumber": "9456888501",
+        "otp": "1234"
+      },
+      {
+        "name": "uat-worker-2",
+        "mobileNumber": "confirm-uat-worker-2-mobile-number",
+        "otp": "confirm-uat-worker-2-otp"
+      },
+      {
+        "name": "uat-worker-3",
+        "mobileNumber": "confirm-uat-worker-3-mobile-number",
+        "otp": "confirm-uat-worker-3-otp"
+      }
+    ]
   }
 }

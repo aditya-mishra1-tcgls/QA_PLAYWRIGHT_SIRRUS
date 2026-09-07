@@ -1,5 +1,6 @@
 const state = {
   config: null,
+  session: null,
   runs: [],
   activeRun: null,
   eventSource: null,
@@ -7,11 +8,17 @@ const state = {
   expandedScreenshotTestIds: new Set(),
   logLines: [],
   logAutoScroll: true,
-  renderScheduled: false
+  renderScheduled: false,
+  counterTimers: new Map()
 };
 
 const maxVisibleSteps = 80;
 const maxVisibleLogs = 300;
+const dashboardBasePath = (() => {
+  const scriptUrl = new URL(document.currentScript?.getAttribute("src") || "app.js", window.location.href);
+  const basePath = scriptUrl.pathname.replace(/\/[^/]*$/, "");
+  return basePath === "/" ? "" : basePath;
+})();
 
 const elements = {
   envSelect: document.querySelector("#envSelect"),
@@ -32,19 +39,27 @@ const elements = {
   stopRunButton: document.querySelector("#stopRunButton"),
   refreshRunsButton: document.querySelector("#refreshRunsButton"),
   clearLogsButton: document.querySelector("#clearLogsButton"),
+  logoutButton: document.querySelector("#logoutButton"),
+  configLink: document.querySelector("#configLink"),
+  currentUserBadge: document.querySelector("#currentUserBadge"),
   statusValue: document.querySelector("#statusValue"),
   passedValue: document.querySelector("#passedValue"),
   failedValue: document.querySelector("#failedValue"),
   expectedValue: document.querySelector("#expectedValue"),
   durationValue: document.querySelector("#durationValue"),
   commandValue: document.querySelector("#commandValue"),
+  runOwnerValue: document.querySelector("#runOwnerValue"),
   htmlReportLink: document.querySelector("#htmlReportLink"),
   currentTestCard: document.querySelector("#currentTestCard"),
   currentTestValue: document.querySelector("#currentTestValue"),
   skipCurrentTestButton: document.querySelector("#skipCurrentTestButton"),
   testList: document.querySelector("#testList"),
   logsOutput: document.querySelector("#logsOutput"),
-  runsList: document.querySelector("#runsList")
+  runsList: document.querySelector("#runsList"),
+  videoModal: document.querySelector("#videoModal"),
+  videoModalTitle: document.querySelector("#videoModalTitle"),
+  videoModalCloseButton: document.querySelector("#videoModalCloseButton"),
+  videoPreviewPlayer: document.querySelector("#videoPreviewPlayer")
 };
 
 function formatDuration(ms) {
@@ -53,7 +68,10 @@ function formatDuration(ms) {
     return `${value}ms`;
   }
 
-  return `${(value / 1000).toFixed(1)}s`;
+  const totalSeconds = Math.round(value / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
 }
 
 function formatElapsedSeconds(timestamp, startedAt) {
@@ -71,12 +89,73 @@ function setText(element, value) {
   const nextValue = String(value);
   if (element.textContent !== nextValue) {
     element.textContent = nextValue;
+    element.classList.remove("value-pulse");
+    void element.offsetWidth;
+    element.classList.add("value-pulse");
+  }
+}
+
+function setAnimatedNumber(element, value) {
+  const target = Number(value || 0);
+  const currentTarget = Number(element.dataset.counterTarget || 0);
+
+  if (currentTarget === target && state.counterTimers.has(element.id)) {
+    return;
+  }
+
+  clearTimeout(state.counterTimers.get(element.id));
+  state.counterTimers.delete(element.id);
+  element.dataset.counterTarget = String(target);
+
+  const current = Number.parseInt(element.textContent || "0", 10) || 0;
+  if (target <= current) {
+    setText(element, target);
+    return;
+  }
+
+  const tickDelay = target - current > 20 ? 28 : 72;
+  const tick = (nextValue) => {
+    setText(element, nextValue);
+    if (nextValue >= target) {
+      state.counterTimers.delete(element.id);
+      return;
+    }
+
+    const timer = setTimeout(() => tick(nextValue + 1), tickDelay);
+    state.counterTimers.set(element.id, timer);
+  };
+
+  tick(current + 1);
+}
+
+function setSummaryStatus(status) {
+  setText(elements.statusValue, status);
+  const normalizedStatus = String(status || "Idle").toLowerCase();
+  for (const className of ["idle", "running", "passed", "failed", "interrupted", "stopping"]) {
+    elements.statusValue.parentElement.classList.toggle(`is-${className}`, normalizedStatus === className);
   }
 }
 
 function statusBadge(status) {
   const normalized = status || "pending";
   return `<span class="badge ${normalized}">${normalized}</span>`;
+}
+
+function testStatusIcon(status) {
+  const normalized = status || "running";
+  if (isRunningStatus(normalized)) {
+    return '<span class="status-mark running" aria-hidden="true"></span>';
+  }
+
+  if (normalized === "passed") {
+    return '<span class="status-mark passed" aria-hidden="true"><svg class="icon"><use href="#icon-check"></use></svg></span>';
+  }
+
+  if (isFailedStatus(normalized)) {
+    return '<span class="status-mark failed" aria-hidden="true"><svg class="icon"><use href="#icon-alert"></use></svg></span>';
+  }
+
+  return '<span class="status-mark queued" aria-hidden="true"></span>';
 }
 
 function numberOrZero(value) {
@@ -112,6 +191,10 @@ function runCountBadges(run) {
     </span>`;
 }
 
+function runOwnerLabel(run) {
+  return run?.options?.runOwner || "Unknown user";
+}
+
 function attachmentUrl(run, test, attachment, index) {
   if (attachment?.url) {
     return attachment.url;
@@ -121,7 +204,34 @@ function attachmentUrl(run, test, attachment, index) {
     return "#";
   }
 
-  return `/api/runs/${encodeURIComponent(run.id)}/tests/${encodeURIComponent(test.testId)}/attachments/${index}`;
+  return dashboardUrl(`/api/runs/${encodeURIComponent(run.id)}/tests/${encodeURIComponent(test.testId)}/attachments/${index}`);
+}
+
+function isVideoAttachment(attachment) {
+  return String(attachment?.contentType || "").startsWith("video/");
+}
+
+function openVideoPreview(title, src) {
+  if (!src) {
+    return;
+  }
+
+  elements.videoModalTitle.textContent = title || "Test video";
+  elements.videoPreviewPlayer.src = src;
+  elements.videoModal.hidden = false;
+  elements.videoPreviewPlayer.play().catch(() => {});
+}
+
+function closeVideoPreview() {
+  elements.videoPreviewPlayer.pause();
+  elements.videoPreviewPlayer.removeAttribute("src");
+  elements.videoPreviewPlayer.load();
+  elements.videoModal.hidden = true;
+}
+
+function dashboardUrl(path) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${dashboardBasePath}${normalizedPath}`;
 }
 
 function escapeHtml(value) {
@@ -217,7 +327,7 @@ function resetLogs(lines = []) {
 }
 
 async function api(path, options) {
-  const response = await fetch(path, {
+  const response = await fetch(dashboardUrl(path), {
     headers: { "content-type": "application/json" },
     ...options
   });
@@ -230,12 +340,40 @@ async function api(path, options) {
   return response.json();
 }
 
+async function requireSession() {
+  try {
+    const session = await api("/api/session");
+    if (!session.user) {
+      window.location.assign(dashboardUrl("/login.html"));
+      return null;
+    }
+
+    state.session = session;
+    elements.currentUserBadge.textContent = `${session.user.username} (${session.user.role})`;
+    elements.currentUserBadge.hidden = false;
+    elements.configLink.href = dashboardUrl("/config.html");
+    return session;
+  } catch {
+    window.location.assign(dashboardUrl("/login.html"));
+    return null;
+  }
+}
+
+async function logout() {
+  await api("/api/logout", { method: "POST" }).catch(() => {});
+  window.location.assign(dashboardUrl("/login.html"));
+}
+
 function selectedFlows() {
   return [...elements.flowsList.querySelectorAll("input:checked")].map((input) => input.value);
 }
 
 function selectedSpecs() {
   return [...elements.specSelect.selectedOptions].map((option) => option.value);
+}
+
+function clampWorkerInput() {
+  elements.workersInput.value = String(Math.min(10, Math.max(1, Number(elements.workersInput.value || 1))));
 }
 
 function selectedModuleConfig() {
@@ -320,6 +458,9 @@ function applyModeFlows() {
 }
 
 function buildRunPayload() {
+  clampWorkerInput();
+  const workers = Number(elements.workersInput.value || 1);
+
   return {
     env: elements.envSelect.value,
     module: elements.moduleSelect.value,
@@ -328,7 +469,7 @@ function buildRunPayload() {
     specFiles: selectedSpecs(),
     project: elements.projectSelect.value,
     grep: elements.grepInput.value.trim(),
-    workers: Number(elements.workersInput.value || 1),
+    workers,
     retries: elements.retriesInput.value === "" ? "" : Number(elements.retriesInput.value),
     testTimeoutMs: Number(elements.testTimeoutInput.value || 2) * 60 * 1000,
     headed: elements.headedInput.checked,
@@ -342,15 +483,15 @@ function updateSummary(run) {
   const failed = tests.filter((test) => isFailedStatus(test.status)).length;
   const expected = run?.expectedTotal || run?.expectedTests?.length || tests.length;
 
-  setText(elements.statusValue, run?.status || "Idle");
-  setText(elements.passedValue, passed);
-  setText(elements.failedValue, failed);
-  setText(elements.expectedValue, expected);
+  setSummaryStatus(run?.status || "Idle");
+  setAnimatedNumber(elements.passedValue, passed);
+  setAnimatedNumber(elements.failedValue, failed);
+  setAnimatedNumber(elements.expectedValue, expected);
   updateDuration(run);
 }
 
 function updateDuration(run) {
-  if (run?.startedAt && !run.endedAt) {
+  if (run?.startedAt && isRunningStatus(run.status)) {
     setText(elements.durationValue, formatDuration(Date.now() - new Date(run.startedAt).getTime()));
   } else if (run?.startedAt && run?.endedAt) {
     setText(elements.durationValue, formatDuration(new Date(run.endedAt).getTime() - new Date(run.startedAt).getTime()));
@@ -398,15 +539,24 @@ function renderTests(run) {
 
   elements.testList.className = "test-list";
   elements.testList.innerHTML = tests.map((test) => {
+    const isExpanded = state.expandedTestIds.has(test.testId);
+    const shouldCollapse = !isRunningStatus(test.status) && !isExpanded;
+    const isOpen = !shouldCollapse;
     const imageAttachments = (test.attachments || [])
       .map((attachment, index) => ({ attachment, index }))
       .filter(({ attachment }) => attachment.contentType === "image/png" || attachment.contentType === "image/jpeg");
+    const videoAttachments = (test.attachments || [])
+      .map((attachment, index) => ({ attachment, index }))
+      .filter(({ attachment }) => isVideoAttachment(attachment));
     const humanSteps = humanStepsFor(test);
 
     return `
-    <article class="test-card ${test.status || "running"} ${test.status === "passed" && !state.expandedTestIds.has(test.testId) ? "collapsed" : ""}" data-test-id="${escapeHtml(test.testId || "")}">
+    <article class="test-card ${test.status || "running"} ${shouldCollapse ? "collapsed" : ""}" data-test-id="${escapeHtml(test.testId || "")}" aria-expanded="${isOpen ? "true" : "false"}">
       <div class="test-title">
-        <strong>${escapeHtml(testDisplayTitle(test))}</strong>
+        <div class="test-title-main">
+          ${testStatusIcon(test.status)}
+          <strong>${escapeHtml(testDisplayTitle(test))}</strong>
+        </div>
         <div class="test-actions">
           ${isRunningStatus(test.status) ? `<button class="skip-button" type="button" data-skip-current-test-id="${escapeHtml(test.testId || "")}">Skip</button>` : ""}
           ${isFailedStatus(test.status) ? `<button class="rerun-button" type="button" data-rerun-test-id="${escapeHtml(test.testId || "")}">Retry</button>` : ""}
@@ -432,6 +582,22 @@ function renderTests(run) {
         </details>
       `).join("")}
       ${(test.errors || []).map((error) => `<pre class="error">${escapeHtml(error.message || error.stack || "Unknown error")}</pre>`).join("")}
+      ${videoAttachments.length ? `
+        <details class="test-videos" open>
+          <summary>Test videos (${videoAttachments.length})</summary>
+          <div class="video-list">
+            ${videoAttachments.map(({ attachment, index }) => {
+              const src = attachmentUrl(run, test, attachment, index);
+              return `
+                <button class="video-preview-button" type="button" data-video-src="${escapeHtml(src)}" data-video-title="${escapeHtml(attachment.name || testDisplayTitle(test) || "Test video")}">
+                  <svg class="icon"><use href="#icon-play"></use></svg>
+                  <span>${escapeHtml(attachment.name || "Preview video")}</span>
+                </button>
+                ${attachment.uploadError ? `<small>${escapeHtml(attachment.uploadError)}</small>` : ""}
+              `;
+            }).join("")}
+          </div>
+        </details>` : ""}
       ${imageAttachments.length ? `
         <details class="failure-screenshots" data-screenshot-test-id="${escapeHtml(test.testId || "")}" ${state.expandedScreenshotTestIds.has(test.testId) ? "open" : ""}>
           <summary>Failure screenshots (${imageAttachments.length})</summary>
@@ -458,9 +624,14 @@ function renderTests(run) {
 function renderRun(run) {
   state.activeRun = run;
   elements.commandValue.textContent = run?.command || "No run selected";
+  elements.runOwnerValue.hidden = !run;
+  elements.runOwnerValue.innerHTML = run
+    ? `<svg class="icon"><use href="#icon-user"></use></svg> Ran by ${escapeHtml(runOwnerLabel(run))}`
+    : "";
   elements.htmlReportLink.hidden = !run?.reportPath;
   if (run?.reportPath) {
-    elements.htmlReportLink.href = `/${run.reportPath}/index.html`;
+    elements.htmlReportLink.href = run.reportUrl || dashboardUrl(`/api/runs/${encodeURIComponent(run.id)}/report`);
+    elements.htmlReportLink.title = run.reportUrl ? "Open presigned S3 HTML report" : "Open HTML report";
   }
 
   elements.stopRunButton.disabled = !isRunningStatus(run?.status);
@@ -508,6 +679,9 @@ function applyEvent(event) {
   if (event.type === "test_begin") {
     run.tests[event.testId] = { ...event, status: "running", steps: [] };
     run.currentTestId = event.testId;
+    run.status = "running";
+    run.endedAt = null;
+    run.exitCode = null;
     shouldRender = true;
   }
 
@@ -560,6 +734,11 @@ function applyEvent(event) {
     shouldRender = true;
   }
 
+  if (event.type === "report_ready") {
+    run.reportUrl = event.reportUrl || run.reportUrl;
+    shouldRender = true;
+  }
+
   if (event.type === "test_update") {
     run.tests[event.testId] = event.test;
     if (run.currentTestId === event.testId && !isRunningStatus(event.test?.status)) {
@@ -581,7 +760,7 @@ function connectEvents(runId, options = {}) {
     state.eventSource.close();
   }
 
-  state.eventSource = new EventSource(`/api/runs/${runId}/events${options.liveOnly ? "?liveOnly=1" : ""}`);
+  state.eventSource = new EventSource(dashboardUrl(`/api/runs/${runId}/events${options.liveOnly ? "?liveOnly=1" : ""}`));
   state.eventSource.onmessage = (message) => applyEvent(JSON.parse(message.data));
 }
 
@@ -674,7 +853,11 @@ async function loadRuns() {
         <strong>${escapeHtml(run.options?.module || "engagement")} / ${escapeHtml(run.options?.mode || "custom")} / ${escapeHtml(run.options?.env || "")}</strong>
         ${runCountBadges(run)}
       </div>
-      <div class="meta">${new Date(run.startedAt).toLocaleString()} - ${escapeHtml((run.options?.flows || []).join(", "))}</div>
+      <div class="meta run-card-meta">
+        <span><svg class="icon"><use href="#icon-user"></use></svg> Ran by ${escapeHtml(runOwnerLabel(run))}</span>
+        <span>${new Date(run.startedAt).toLocaleString()}</span>
+        <span>${escapeHtml((run.options?.flows || []).join(", ") || "custom selection")}</span>
+      </div>
     </article>
   `).join("");
 }
@@ -711,6 +894,9 @@ elements.modeSelect.addEventListener("change", applyModeFlows);
 elements.moduleSelect.addEventListener("change", refreshModuleScopedOptions);
 elements.runForm.addEventListener("submit", startRun);
 elements.stopRunButton.addEventListener("click", stopRun);
+elements.workersInput.addEventListener("change", clampWorkerInput);
+elements.workersInput.addEventListener("blur", clampWorkerInput);
+elements.logoutButton.addEventListener("click", logout);
 elements.skipCurrentTestButton.addEventListener("click", () => {
   elements.skipCurrentTestButton.disabled = true;
   skipCurrentTest(elements.skipCurrentTestButton.dataset.skipCurrentTestId).catch((error) => {
@@ -738,6 +924,13 @@ elements.runsList.addEventListener("click", (event) => {
   }
 });
 elements.testList.addEventListener("click", (event) => {
+  const videoButton = event.target.closest("[data-video-src]");
+  if (videoButton) {
+    event.stopPropagation();
+    openVideoPreview(videoButton.dataset.videoTitle, videoButton.dataset.videoSrc);
+    return;
+  }
+
   const interactiveTarget = event.target.closest("a, button, summary, input, select, textarea, label");
   if (interactiveTarget && !interactiveTarget.matches("[data-rerun-test-id], [data-skip-current-test-id]")) {
     return;
@@ -767,6 +960,10 @@ elements.testList.addEventListener("click", (event) => {
     return;
   }
 
+  if (event.target.closest("details, summary")) {
+    return;
+  }
+
   const card = event.target.closest("[data-test-id]");
   if (!card?.dataset.testId || !state.activeRun) {
     return;
@@ -793,15 +990,34 @@ elements.testList.addEventListener("toggle", (event) => {
   }
 }, true);
 
+elements.videoModal.addEventListener("click", (event) => {
+  if (event.target.closest("[data-close-video-modal]")) {
+    closeVideoPreview();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !elements.videoModal.hidden) {
+    closeVideoPreview();
+  }
+});
+
 setInterval(() => {
   if (isRunningStatus(state.activeRun?.status)) {
     updateDuration(state.activeRun);
   }
 }, 1000);
 
-Promise.all([
-  api("/api/config").then(populateConfig),
-  loadRuns()
-]).catch((error) => {
-  appendDashboardLog(error.message);
-});
+requireSession()
+  .then((session) => {
+    if (!session) {
+      return null;
+    }
+
+    return Promise.all([
+      api("/api/config").then(populateConfig),
+      loadRuns(),
+    ]);
+  })
+  .catch((error) => {
+    appendDashboardLog(error.message);
+  });

@@ -22,6 +22,16 @@
       "specFilePrefixes": [
         "tests/flows/martech/"
       ]
+    },
+    "admin": {
+      "label": "Admin",
+      "description": "Admin automation suite for user and access management.",
+      "flows": [
+        "user-management"
+      ],
+      "specFilePrefixes": [
+        "tests/flows/user-management/"
+      ]
     }
   }
 }

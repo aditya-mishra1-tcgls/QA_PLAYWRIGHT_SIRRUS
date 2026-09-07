@@ -1,22 +1,429 @@
 import { spawn } from "node:child_process";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { appendFile, copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createPresignedGetUrl, databaseEnabled, getRemoteArtifact, getRemoteArtifactByKey, initializePersistence, listPersistentRunSummaries, listPersistentRuns, loadPersistentRun, objectStorageEnabled, savePersistentRun, uploadRunArtifact, uploadRunArtifacts } from "./persistence.mjs";
+import { createArtifactPublicUrl, createPresignedGetUrl, databaseEnabled, getRemoteArtifact, getRemoteArtifactByKey, initializePersistence, listPersistentRunSummaries, listPersistentRuns, loadPersistentRun, objectStorageEnabled, savePersistentRun, uploadRunArtifact, uploadRunArtifacts } from "./persistence.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "../..");
 const dashboardDir = path.join(rootDir, "dashboard");
 const runsRoot = path.join(rootDir, "data", "test-runs");
+const dashboardUsersPath = path.join(rootDir, "config", "dashboard-users.local.json");
+
+loadDotEnvFile();
+
+const dashboardBasePath = normalizeBasePath(process.env.QA_DASHBOARD_BASE_PATH || "");
+const legacyDashboardAuth = getDashboardAuthConfig();
 const eventPrefix = "@@QA_DASHBOARD_EVENT@@";
 const maxStoredEvents = 500;
 const maxStoredSteps = 120;
 const activeRuns = new Map();
 const saveQueues = new Map();
+const dashboardSessions = new Map();
 
 mkdirSync(runsRoot, { recursive: true });
+
+function loadDotEnvFile() {
+  const envPath = path.join(rootDir, ".env");
+  if (!existsSync(envPath)) {
+    return;
+  }
+
+  for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    const separatorIndex = trimmed.indexOf("=");
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, separatorIndex).trim();
+    let value = trimmed.slice(separatorIndex + 1).trim();
+    if (!key || Object.prototype.hasOwnProperty.call(process.env, key)) {
+      continue;
+    }
+
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}
+
+function normalizeBasePath(value) {
+  const trimmed = String(value || "").trim().replace(/\/+$/, "");
+  if (!trimmed || trimmed === "/") {
+    return "";
+  }
+
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+function stripDashboardBasePath(pathname) {
+  if (!dashboardBasePath) {
+    return pathname;
+  }
+
+  if (pathname === dashboardBasePath) {
+    return "/";
+  }
+
+  if (pathname.startsWith(`${dashboardBasePath}/`)) {
+    return pathname.slice(dashboardBasePath.length) || "/";
+  }
+
+  return pathname;
+}
+
+function getDashboardAuthConfig() {
+  const username = process.env.QA_DASHBOARD_AUTH_USERNAME || process.env.QA_DASHBOARD_USERNAME || "";
+  const password = process.env.QA_DASHBOARD_AUTH_PASSWORD || process.env.QA_DASHBOARD_PASSWORD || "";
+
+  if (!username && !password) {
+    return null;
+  }
+
+  if (!username || !password) {
+    throw new Error("Configure both QA_DASHBOARD_AUTH_USERNAME and QA_DASHBOARD_AUTH_PASSWORD, or remove both to disable local dashboard auth.");
+  }
+
+  return { username, password };
+}
+
+function loadDashboardUsers() {
+  const bootstrapAdmin = legacyDashboardAuth ? {
+    username: legacyDashboardAuth.username,
+    password: legacyDashboardAuth.password,
+    role: "admin",
+    appCredentials: {},
+    createdAt: new Date().toISOString(),
+    isBootstrapAdmin: true,
+  } : null;
+
+  if (existsSync(dashboardUsersPath)) {
+    const configuredUsers = JSON.parse(readFileSync(dashboardUsersPath, "utf8"));
+    const users = Array.isArray(configuredUsers.users) ? configuredUsers.users : [];
+    if (bootstrapAdmin && !users.some((user) => user.username === bootstrapAdmin.username)) {
+      return [bootstrapAdmin, ...users];
+    }
+
+    return users;
+  }
+
+  if (!bootstrapAdmin) {
+    return [];
+  }
+
+  return [bootstrapAdmin];
+}
+
+async function saveDashboardUsers(users) {
+  const payload = {
+    users: users.map((user) => ({
+      username: user.username,
+      password: user.password,
+      role: user.role,
+      appCredentials: user.appCredentials || {},
+      createdAt: user.createdAt,
+      isBootstrapAdmin: user.isBootstrapAdmin || undefined,
+    })),
+  };
+  await writeFile(dashboardUsersPath, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function safeEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left));
+  const rightBuffer = Buffer.from(String(right));
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function parseCookies(req) {
+  return Object.fromEntries(
+    String(req.headers.cookie || "")
+      .split(";")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const separatorIndex = part.indexOf("=");
+        return separatorIndex === -1
+          ? [part, ""]
+          : [part.slice(0, separatorIndex), decodeURIComponent(part.slice(separatorIndex + 1))];
+      })
+  );
+}
+
+function currentDashboardUser(req) {
+  const token = parseCookies(req).qa_dashboard_session;
+  const session = token ? dashboardSessions.get(token) : null;
+  if (!session) {
+    return null;
+  }
+
+  return {
+    username: session.username,
+    role: session.role,
+  };
+}
+
+function authIsEnabled() {
+  return loadDashboardUsers().length > 0;
+}
+
+function isPublicPath(req, pathname) {
+  if (req.method === "POST" && pathname === "/api/login") {
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/session") {
+    return true;
+  }
+
+  return req.method === "GET" && ["/login.html", "/login.js", "/styles.css"].includes(pathname);
+}
+
+function redirectToLogin(res) {
+  res.writeHead(302, {
+    location: `${dashboardBasePath}/login.html`,
+    "cache-control": "no-store",
+  });
+  res.end();
+}
+
+function redirectToDashboardBase(res, url) {
+  const query = url.search || "";
+  res.writeHead(302, {
+    location: `${dashboardBasePath}/${query}`,
+    "cache-control": "no-store",
+  });
+  res.end();
+}
+
+function requireDashboardAuth(req, res, pathname) {
+  if (!authIsEnabled() || isPublicPath(req, pathname)) {
+    return true;
+  }
+
+  if (currentDashboardUser(req)) {
+    return true;
+  }
+
+  if (pathname.startsWith("/api/") || pathname.startsWith("/data/")) {
+    sendError(res, 401, "Login required");
+    return false;
+  }
+
+  redirectToLogin(res);
+  return false;
+}
+
+function requireAdmin(req, res) {
+  const user = currentDashboardUser(req);
+  if (user?.role === "admin") {
+    return true;
+  }
+
+  sendError(res, 403, "Admin access required");
+  return false;
+}
+
+async function loginDashboardUser(body, res) {
+  const username = String(body.username || "").trim();
+  const password = String(body.password || "");
+  const user = loadDashboardUsers().find((candidate) => candidate.username === username);
+
+  if (!user || !safeEqual(password, user.password)) {
+    sendError(res, 401, "Invalid username or password");
+    return;
+  }
+
+  const token = randomBytes(32).toString("base64url");
+  dashboardSessions.set(token, {
+    username: user.username,
+    role: user.role || "user",
+    createdAt: Date.now(),
+  });
+
+  res.writeHead(200, {
+    "content-type": "application/json",
+    "set-cookie": `qa_dashboard_session=${encodeURIComponent(token)}; Path=${dashboardBasePath || "/"}; HttpOnly; SameSite=Lax`,
+    "cache-control": "no-store",
+  });
+  res.end(JSON.stringify({ user: { username: user.username, role: user.role || "user" } }));
+}
+
+function logoutDashboardUser(req, res) {
+  const token = parseCookies(req).qa_dashboard_session;
+  if (token) {
+    dashboardSessions.delete(token);
+  }
+
+  res.writeHead(200, {
+    "content-type": "application/json",
+    "set-cookie": `qa_dashboard_session=; Path=${dashboardBasePath || "/"}; HttpOnly; SameSite=Lax; Max-Age=0`,
+    "cache-control": "no-store",
+  });
+  res.end(JSON.stringify({ ok: true }));
+}
+
+async function createDashboardUser(body) {
+  const username = String(body.username || "").trim();
+  const password = String(body.password || "");
+  const role = String(body.role || "user").trim() === "admin" ? "admin" : "user";
+
+  if (!/^[a-zA-Z0-9._@-]{3,80}$/.test(username)) {
+    throw new Error("Username must be 3-80 characters and use letters, numbers, dot, underscore, hyphen, or @.");
+  }
+
+  if (password.length < 8) {
+    throw new Error("Password must be at least 8 characters.");
+  }
+
+  const users = loadDashboardUsers();
+  if (users.some((user) => user.username === username)) {
+    throw new Error("Dashboard user already exists.");
+  }
+
+  const nextUser = {
+    username,
+    password,
+    role,
+    appCredentials: {},
+    createdAt: new Date().toISOString(),
+  };
+  users.push(nextUser);
+  await saveDashboardUsers(users);
+  return { username: nextUser.username, role: nextUser.role, createdAt: nextUser.createdAt };
+}
+
+function listDashboardUsers() {
+  return loadDashboardUsers().map((user) => ({
+    username: user.username,
+    role: user.role || "user",
+    createdAt: user.createdAt || null,
+    isBootstrapAdmin: Boolean(user.isBootstrapAdmin),
+  }));
+}
+
+async function resetDashboardUserPassword(username, body) {
+  username = String(username || "").trim();
+  const nextPassword = String(body.password || "");
+  if (!username) {
+    throw new Error("Username is required.");
+  }
+
+  if (nextPassword.length < 8) {
+    throw new Error("Password must be at least 8 characters.");
+  }
+
+  const users = loadDashboardUsers();
+  const user = users.find((candidate) => candidate.username === username);
+  if (!user) {
+    throw new Error("Dashboard user not found.");
+  }
+
+  user.password = nextPassword;
+  user.passwordUpdatedAt = new Date().toISOString();
+  await saveDashboardUsers(users);
+  return { username: user.username, role: user.role || "user" };
+}
+
+async function deleteDashboardUser(username, currentUser) {
+  username = String(username || "").trim();
+  if (!username) {
+    throw new Error("Username is required.");
+  }
+
+  if (username === currentUser.username) {
+    throw new Error("You cannot delete your own active admin account.");
+  }
+
+  const users = loadDashboardUsers();
+  const user = users.find((candidate) => candidate.username === username);
+  if (!user) {
+    throw new Error("Dashboard user not found.");
+  }
+
+  const adminCount = users.filter((candidate) => (candidate.role || "user") === "admin").length;
+  if ((user.role || "user") === "admin" && adminCount <= 1) {
+    throw new Error("Cannot delete the last admin user.");
+  }
+
+  await saveDashboardUsers(users.filter((candidate) => candidate.username !== username));
+  for (const [token, session] of dashboardSessions.entries()) {
+    if (session.username === username) {
+      dashboardSessions.delete(token);
+    }
+  }
+
+  return { username };
+}
+
+function userAppCredentials(username) {
+  const user = loadDashboardUsers().find((candidate) => candidate.username === username);
+  return user?.appCredentials && typeof user.appCredentials === "object" ? user.appCredentials : {};
+}
+
+function appCredentialForUser(username, envName) {
+  const credentials = userAppCredentials(username);
+  return credentials[envName] || null;
+}
+
+async function saveAppCredentialForUser(username, envName, credential) {
+  const users = loadDashboardUsers();
+  const user = users.find((candidate) => candidate.username === username);
+  if (!user) {
+    throw new Error("Dashboard user not found.");
+  }
+
+  const mobileNumber = String(credential.mobileNumber || "").trim();
+  const otp = String(credential.otp || "").trim();
+  const loginId = String(credential.loginId || mobileNumber).trim();
+  const password = String(credential.password || otp).trim();
+
+  if (!loginId && !mobileNumber) {
+    throw new Error("Add login id or mobile number.");
+  }
+
+  if (!password && !otp) {
+    throw new Error("Add password or OTP.");
+  }
+
+  user.appCredentials = user.appCredentials || {};
+  user.appCredentials[envName] = {
+    loginId,
+    password,
+    mobileNumber: mobileNumber || loginId,
+    otp: otp || password,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await saveDashboardUsers(users);
+  return sanitizedAppCredential(user.appCredentials[envName]);
+}
+
+function sanitizedAppCredential(credential) {
+  if (!credential) {
+    return null;
+  }
+
+  return {
+    loginId: credential.loginId || credential.mobileNumber || "",
+    mobileNumber: credential.mobileNumber || credential.loginId || "",
+    hasPassword: Boolean(credential.password),
+    hasOtp: Boolean(credential.otp),
+    updatedAt: credential.updatedAt || null,
+  };
+}
 
 function readJson(relativePath, fallback) {
   const filePath = path.join(rootDir, relativePath);
@@ -194,6 +601,9 @@ async function rebuildRunFromEvents(runId, seedRun = {}) {
 
     if (event.type === "test_begin") {
       run.currentTestId = event.testId;
+      run.status = "running";
+      run.endedAt = null;
+      run.exitCode = null;
       run.tests[event.testId] = {
         ...(run.tests[event.testId] || {}),
         ...event,
@@ -375,6 +785,7 @@ function persistentRunSnapshot(run) {
 
   return {
     ...run,
+    reportUrl: undefined,
     events: (run.events || []).slice(-maxStoredEvents),
     expectedTests: Array.isArray(run.expectedTests) ? run.expectedTests : [],
     tests,
@@ -559,7 +970,51 @@ function removeTemporaryAttachmentUrls(run) {
 function runForResponse(run) {
   trimRunForUi(run);
   recomputeRunSummary(run);
+  applyUploadedReportUrl(run);
   return applyPresignedAttachmentUrls(run);
+}
+
+function reportArtifactForRun(run) {
+  const reportPath = String(run?.reportPath || "");
+  const relativeReportPath = reportPath.startsWith(`data/test-runs/${run.id}/`)
+    ? reportPath.slice(`data/test-runs/${run.id}/`.length)
+    : reportPath;
+  const reportIndexPath = `${relativeReportPath || "html-report"}/index.html`.replace(/^\/+/, "");
+  return (run.artifacts || []).find((artifact) => artifact.path === reportIndexPath) || null;
+}
+
+function applyUploadedReportUrl(run) {
+  const reportArtifact = reportArtifactForRun(run);
+  if (!reportArtifact?.key) {
+    delete run.reportUrl;
+    return false;
+  }
+
+  const reportUrl = createPresignedGetUrl(reportArtifact.key) || createArtifactPublicUrl(reportArtifact.key);
+  if (!reportUrl) {
+    delete run.reportUrl;
+    return false;
+  }
+
+  if (run.reportUrl === reportUrl) {
+    return false;
+  }
+
+  run.reportUrl = reportUrl;
+  return true;
+}
+
+function broadcastReportReady(run) {
+  applyUploadedReportUrl(run);
+  if (!run.reportUrl) {
+    return;
+  }
+
+  broadcast(run.id, {
+    type: "report_ready",
+    timestamp: new Date().toISOString(),
+    reportUrl: run.reportUrl
+  });
 }
 
 function applyPresignedAttachmentUrls(run) {
@@ -648,6 +1103,50 @@ function sendError(res, statusCode, message) {
   sendJson(res, statusCode, { error: message });
 }
 
+function escapeServerHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function redirectTo(res, location, cacheControl = "private, max-age=60") {
+  res.writeHead(302, {
+    location,
+    "cache-control": cacheControl,
+  });
+  res.end();
+}
+
+function sendReportUnavailable(res, message) {
+  res.writeHead(404, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Report Not Available</title>
+    <style>
+      body { align-items: center; background: #050505; color: #f2f2f3; display: grid; font-family: Inter, system-ui, sans-serif; min-height: 100vh; margin: 0; padding: 24px; }
+      main { background: #151515; border: 1px solid #2a2a2d; border-radius: 12px; margin: auto; max-width: 520px; padding: 24px; }
+      h1 { font-size: 20px; margin: 0 0 8px; }
+      p { color: #9a9aa2; line-height: 1.5; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>HTML report is not available</h1>
+      <p>${escapeServerHtml(message)}</p>
+    </main>
+  </body>
+</html>`);
+}
+
 function contentTypeForPath(filePath) {
   return {
     ".html": "text/html",
@@ -717,7 +1216,7 @@ function buildPlaywrightArgs(run) {
     : run.options.flows.map((flow) => path.join("tests", "flows", flow));
 
   args.push(...selectedFiles);
-  args.push(`--reporter=list,${path.join("scripts", "dashboard", "reporter.mjs")}`);
+  args.push(`--reporter=list,html,${path.join("scripts", "dashboard", "reporter.mjs")}`);
 
   if (run.options.project) {
     args.push(`--project=${run.options.project}`);
@@ -754,6 +1253,74 @@ function buildPlaywrightArgs(run) {
   return args;
 }
 
+function playwrightRunEnv(options, reportDir, runId, extra = {}) {
+  const runOwner = options.runOwner || "";
+  const appCredential = runOwner ? appCredentialForUser(runOwner, options.env) : null;
+
+  return {
+    ...process.env,
+    TEST_ENV: options.env,
+    QA_DASHBOARD_RUN_USER: runOwner,
+    APP_TEST_LOGIN_ID: appCredential?.loginId || "",
+    APP_TEST_PASSWORD: appCredential?.password || "",
+    APP_TEST_MOBILE_NUMBER: appCredential?.mobileNumber || "",
+    APP_TEST_OTP: appCredential?.otp || "",
+    PLAYWRIGHT_TEST_TIMEOUT: String(options.testTimeoutMs || 120000),
+    PLAYWRIGHT_HTML_REPORT: reportDir,
+    PLAYWRIGHT_AUTH_STATE_KEY: runId,
+    QA_DASHBOARD_RUN_ID: runId,
+    ...extra,
+  };
+}
+
+function safeAuthStateSegment(value) {
+  return String(value || "").trim().replace(/[^a-zA-Z0-9._-]/g, "-").replace(/-+/g, "-");
+}
+
+function authStatePathForRun(run) {
+  const envName = safeAuthStateSegment(run?.options?.env || "");
+  const runId = safeAuthStateSegment(run?.id || "");
+  if (!envName || !runId) {
+    return null;
+  }
+
+  return path.resolve(rootDir, "playwright", ".auth", `${envName}-${runId}.json`);
+}
+
+async function cleanupRunAuthState(run) {
+  const authStatePath = authStatePathForRun(run);
+  if (!authStatePath) {
+    return;
+  }
+
+  const authRoot = path.resolve(rootDir, "playwright", ".auth");
+  const resolvedAuthStatePath = path.resolve(authStatePath);
+  if (!resolvedAuthStatePath.startsWith(`${authRoot}${path.sep}`)) {
+    return;
+  }
+
+  if (!existsSync(resolvedAuthStatePath)) {
+    return;
+  }
+
+  try {
+    await rm(resolvedAuthStatePath, { force: true });
+    await appendRunEvent(run, {
+      type: "log",
+      source: "dashboard",
+      timestamp: new Date().toISOString(),
+      text: `Cleaned execution auth state ${path.relative(rootDir, resolvedAuthStatePath)}.`
+    });
+  } catch (error) {
+    await appendRunEvent(run, {
+      type: "log",
+      source: "dashboard",
+      timestamp: new Date().toISOString(),
+      text: `Could not clean execution auth state: ${error.message}`
+    });
+  }
+}
+
 function getRelativeTestTarget(test) {
   if (!test?.file) {
     return "";
@@ -775,6 +1342,14 @@ function isTerminalTestStatus(status) {
 
 function isFailedStatus(status) {
   return ["failed", "timedOut", "interrupted"].includes(status);
+}
+
+function isExecutionStatus(status) {
+  return ["running", "retrying", "stopping"].includes(status);
+}
+
+function clampWorkerCount(value) {
+  return Math.min(10, Math.max(1, Number(value || 1)));
 }
 
 function shouldShowProcessLog(line) {
@@ -850,9 +1425,9 @@ function recomputeRunSummary(run) {
   const failed = tests.some((test) => isFailedStatus(test.status));
   const active = tests.some((test) => ["running", "retrying"].includes(test.status) && run.currentTestId === test.testId);
 
-  if (expectedTotal > 0 && completed >= expectedTotal && !failed && !active) {
-    run.status = "passed";
-  } else if (failed && !active) {
+  if (expectedTotal > 0 && completed >= expectedTotal && !active) {
+    run.status = failed ? "failed" : "passed";
+  } else if (!isExecutionStatus(run.status) && failed && !active) {
     run.status = "failed";
   }
 }
@@ -894,6 +1469,8 @@ async function appendRetryEvent(run, retry, event) {
     };
     run.currentTestId = retry.testId;
     run.status = "retrying";
+    run.endedAt = null;
+    run.exitCode = null;
     await appendFriendlyLog(run, `Retry started: ${targetTest.displayTitle || targetTest.title || event.displayTitle || event.title || "Untitled test"}`, event.timestamp);
     broadcast(run.id, { type: "test_update", timestamp: event.timestamp, testId: retry.testId, test: targetTest, runStatus: run.status, summary: run.summary });
     return;
@@ -951,6 +1528,9 @@ async function appendRunEvent(run, event) {
 
   if (event.type === "test_begin") {
     run.currentTestId = event.testId;
+    run.status = "running";
+    run.endedAt = null;
+    run.exitCode = null;
     run.tests[event.testId] = { ...event, status: "running", steps: [], startedAt: event.timestamp };
     await appendFriendlyLog(run, `Started: ${event.displayTitle || event.title || "Untitled test"}`, event.timestamp);
   }
@@ -1016,7 +1596,7 @@ function broadcast(runId, event) {
   }
 }
 
-async function startRun(body) {
+async function startRun(body, dashboardUser = null) {
   const config = getConfig();
   const id = createRunId();
   const runDir = getRunDir(id);
@@ -1031,12 +1611,13 @@ async function startRun(body) {
     specFiles: Array.isArray(body.specFiles) ? body.specFiles : [],
     project: body.project || "chromium",
     grep: body.grep || "",
-    workers: Number(body.workers || 1),
+    workers: clampWorkerCount(body.workers),
     retries: body.retries === "" || body.retries === undefined ? "" : Number(body.retries),
     testTimeoutMs: Number(body.testTimeoutMs || 120000),
     headed: Boolean(body.headed),
     debug: Boolean(body.debug)
   };
+  const runOwner = dashboardUser?.username || "";
 
   if (body.rerunTest) {
     const target = getRelativeTestTarget(body.rerunTest);
@@ -1063,7 +1644,12 @@ async function startRun(body) {
     exitCode: null,
     command: "",
     reportPath: path.relative(rootDir, reportDir),
-    options,
+    options: {
+      ...options,
+      runOwner,
+      authStateKey: id,
+      usesUserAppCredential: Boolean(runOwner && appCredentialForUser(runOwner, options.env)),
+    },
     summary: {},
     expectedTotal: 0,
     expectedTests: [],
@@ -1079,13 +1665,7 @@ async function startRun(body) {
   const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, {
     cwd: rootDir,
     detached: process.platform !== "win32",
-    env: {
-      ...process.env,
-      TEST_ENV: options.env,
-      PLAYWRIGHT_TEST_TIMEOUT: String(options.testTimeoutMs || 120000),
-      PLAYWRIGHT_HTML_REPORT: reportDir,
-      QA_DASHBOARD_RUN_ID: id
-    }
+    env: playwrightRunEnv(run.options, reportDir, id)
   });
 
   activeRuns.set(id, { child, subscribers: new Set(), run });
@@ -1144,8 +1724,10 @@ async function startRun(body) {
     run.exitCode = code;
     run.endedAt = new Date().toISOString();
     await appendRunEvent(run, { type: "run_end", timestamp: run.endedAt, status: run.status, exitCode: code });
+    await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
+    broadcastReportReady(run);
     activeRuns.delete(id);
   });
 
@@ -1165,8 +1747,10 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
     run.status = Object.values(run.tests || {}).some((test) => isFailedStatus(test.status)) ? "failed" : "passed";
     run.endedAt = new Date().toISOString();
     await appendRunEvent(run, { type: "run_end", timestamp: run.endedAt, status: run.status, reason: "No remaining tests after skip." });
+    await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
+    broadcastReportReady(run);
     activeRuns.delete(run.id);
     return run;
   }
@@ -1204,14 +1788,9 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
   const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, {
     cwd: rootDir,
     detached: process.platform !== "win32",
-    env: {
-      ...process.env,
-      TEST_ENV: continuationRun.options.env,
-      PLAYWRIGHT_TEST_TIMEOUT: String(continuationRun.options.testTimeoutMs || 120000),
-      PLAYWRIGHT_HTML_REPORT: reportDir,
-      QA_DASHBOARD_RUN_ID: run.id,
+    env: playwrightRunEnv(continuationRun.options, reportDir, run.id, {
       QA_DASHBOARD_CONTINUATION_ID: continuationId
-    }
+    })
   });
 
   activeRuns.set(run.id, { child, subscribers, run });
@@ -1266,8 +1845,10 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
     run.exitCode = code;
     run.endedAt = new Date().toISOString();
     await appendRunEvent(run, { type: "run_end", timestamp: run.endedAt, status: run.status, exitCode: code });
+    await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
+    broadcastReportReady(run);
     activeRuns.delete(run.id);
   });
 
@@ -1366,6 +1947,8 @@ async function retryTestInRun(runId, testId, body = {}) {
 
   run.status = "retrying";
   run.currentTestId = testId;
+  run.endedAt = null;
+  run.exitCode = null;
   rememberPreviousAttempt(targetTest);
   targetTest.status = "retrying";
   targetTest.errors = [];
@@ -1392,21 +1975,17 @@ async function retryTestInRun(runId, testId, body = {}) {
       retries: body.retries ?? 0,
       testTimeoutMs: run.options?.testTimeoutMs || body.testTimeoutMs || 120000,
       headed: Boolean(body.headed ?? run.options?.headed),
-      debug: Boolean(body.debug ?? run.options?.debug)
+      debug: Boolean(body.debug ?? run.options?.debug),
+      runOwner: run.options?.runOwner || ""
     }
   };
   const args = buildPlaywrightArgs(retryRun);
   const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, {
     cwd: rootDir,
     detached: process.platform !== "win32",
-    env: {
-      ...process.env,
-      TEST_ENV: retryRun.options.env,
-      PLAYWRIGHT_TEST_TIMEOUT: String(retryRun.options.testTimeoutMs || run.options?.testTimeoutMs || 120000),
-      PLAYWRIGHT_HTML_REPORT: reportDir,
-      QA_DASHBOARD_RUN_ID: run.id,
+    env: playwrightRunEnv(retryRun.options, reportDir, run.id, {
       QA_DASHBOARD_RETRY_ID: retryId
-    }
+    })
   });
 
   activeRuns.set(run.id, { child, subscribers: new Set(), run });
@@ -1477,10 +2056,13 @@ async function retryTestInRun(runId, testId, body = {}) {
 
     run.currentTestId = null;
     recomputeRunSummary(run);
-    run.endedAt = run.status === "passed" ? new Date().toISOString() : run.endedAt;
+    run.exitCode = code;
+    run.endedAt = new Date().toISOString();
     await appendRunEvent(run, { type: "run_status", timestamp: new Date().toISOString(), status: run.status });
+    await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
+    broadcastReportReady(run);
     activeRuns.delete(run.id);
   });
 
@@ -1494,10 +2076,24 @@ function recomputeRunSummaryIfTestsAreLoaded(run) {
   return run;
 }
 
+function mergeActiveRunSnapshots(runs) {
+  const runMap = new Map((runs || []).map((run) => [run.id, run]));
+  for (const [runId, activeRun] of activeRuns.entries()) {
+    if (!activeRunIsAlive(activeRun)) {
+      continue;
+    }
+    runMap.set(runId, runForResponse(activeRun.run));
+  }
+
+  return Array.from(runMap.values())
+    .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))
+    .slice(0, 20);
+}
+
 async function listRuns() {
   try {
     const remoteRuns = databaseEnabled ? await listPersistentRunSummaries() : await listPersistentRuns();
-    if (remoteRuns !== null) return remoteRuns.map(recomputeRunSummaryIfTestsAreLoaded);
+    if (remoteRuns !== null) return mergeActiveRunSnapshots(remoteRuns.map(recomputeRunSummaryIfTestsAreLoaded));
   } catch (error) {
     console.warn(`DB run list failed; falling back to local run files: ${error.message}`);
   }
@@ -1524,7 +2120,7 @@ async function listRuns() {
     runs.push(run);
   }
 
-  return runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, 20);
+  return mergeActiveRunSnapshots(runs);
 }
 
 async function reconcileStaleRuns() {
@@ -1653,10 +2249,164 @@ async function serveRunAsset(res, pathname) {
   createReadStream(resolved).pipe(res);
 }
 
+async function serveRunReport(res, runId) {
+  let run;
+  try {
+    run = await readRun(runId);
+  } catch {
+    sendReportUnavailable(res, "The selected run could not be found.");
+    return;
+  }
+
+  if (run.reportUrl) {
+    redirectTo(res, run.reportUrl);
+    return;
+  }
+
+  const reportPath = String(run.reportPath || path.relative(rootDir, path.join(getRunDir(runId), "html-report")));
+  const localIndexPath = path.resolve(rootDir, reportPath, "index.html");
+  const localReportRoot = path.resolve(rootDir, reportPath);
+  const isSafeLocalReportPath = localReportRoot.startsWith(`${rootDir}${path.sep}`)
+    && localIndexPath.startsWith(`${localReportRoot}${path.sep}`);
+  if (isSafeLocalReportPath && existsSync(localIndexPath)) {
+    if (objectStorageEnabled) {
+      try {
+        run.artifacts = await uploadRunArtifacts(run.id, getRunDir(run.id));
+        applyUploadedReportUrl(run);
+        await saveRun(run);
+        if (run.reportUrl) {
+          redirectTo(res, run.reportUrl);
+          return;
+        }
+      } catch (error) {
+        console.warn(`HTML report upload failed for ${run.id}: ${error.message}`);
+      }
+    }
+
+    redirectTo(res, `${dashboardBasePath}/${reportPath.replace(/^\/+/, "")}/index.html`);
+    return;
+  }
+
+  sendReportUnavailable(res, "The report files are not present locally and the uploaded S3 report URL is not available for this run.");
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
-    const pathname = decodeURIComponent(url.pathname);
+    const rawPathname = decodeURIComponent(url.pathname);
+    if (dashboardBasePath && rawPathname === dashboardBasePath) {
+      redirectToDashboardBase(res, url);
+      return;
+    }
+
+    const pathname = stripDashboardBasePath(rawPathname);
+
+    if (!requireDashboardAuth(req, res, pathname)) {
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/login") {
+      await loginDashboardUser(await readBody(req), res);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/logout") {
+      logoutDashboardUser(req, res);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/session") {
+      sendJson(res, 200, { user: currentDashboardUser(req) });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/dashboard-users") {
+      if (!requireAdmin(req, res)) {
+        return;
+      }
+      sendJson(res, 200, { users: listDashboardUsers() });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/dashboard-users") {
+      if (!requireAdmin(req, res)) {
+        return;
+      }
+      sendJson(res, 201, { user: await createDashboardUser(await readBody(req)) });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/dashboard-users/password") {
+      if (!requireAdmin(req, res)) {
+        return;
+      }
+      const body = await readBody(req);
+      sendJson(res, 200, {
+        user: await resetDashboardUserPassword(String(body.username || ""), body),
+      });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/dashboard-users/delete") {
+      const currentUser = currentDashboardUser(req);
+      if (!requireAdmin(req, res)) {
+        return;
+      }
+      const body = await readBody(req);
+      sendJson(res, 200, {
+        deleted: await deleteDashboardUser(String(body.username || ""), currentUser),
+      });
+      return;
+    }
+
+    const dashboardUserPasswordMatch = pathname.match(/^\/api\/dashboard-users\/([^/]+)\/password$/);
+    if (req.method === "POST" && dashboardUserPasswordMatch) {
+      if (!requireAdmin(req, res)) {
+        return;
+      }
+      sendJson(res, 200, {
+        user: await resetDashboardUserPassword(decodeURIComponent(dashboardUserPasswordMatch[1]), await readBody(req)),
+      });
+      return;
+    }
+
+    const dashboardUserMatch = pathname.match(/^\/api\/dashboard-users\/([^/]+)$/);
+    if (req.method === "DELETE" && dashboardUserMatch) {
+      const currentUser = currentDashboardUser(req);
+      if (!requireAdmin(req, res)) {
+        return;
+      }
+      sendJson(res, 200, {
+        deleted: await deleteDashboardUser(decodeURIComponent(dashboardUserMatch[1]), currentUser),
+      });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/app-credentials") {
+      const user = currentDashboardUser(req);
+      const envName = url.searchParams.get("env") || "";
+      const credential = appCredentialForUser(user.username, envName);
+      sendJson(res, 200, {
+        credential: sanitizedAppCredential(credential),
+        usesDefault: !credential,
+      });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/app-credentials") {
+      const user = currentDashboardUser(req);
+      const body = await readBody(req);
+      const envName = String(body.env || "").trim();
+      if (!envName) {
+        sendError(res, 400, "Environment is required.");
+        return;
+      }
+
+      sendJson(res, 200, {
+        credential: await saveAppCredentialForUser(user.username, envName, body),
+      });
+      return;
+    }
 
     if (req.method === "GET" && pathname === "/api/config") {
       sendJson(res, 200, getConfig());
@@ -1669,13 +2419,19 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && pathname === "/api/runs") {
-      sendJson(res, 201, await startRun(await readBody(req)));
+      sendJson(res, 201, await startRun(await readBody(req), currentDashboardUser(req)));
       return;
     }
 
     const runMatch = pathname.match(/^\/api\/runs\/([^/]+)$/);
     if (req.method === "GET" && runMatch) {
       sendJson(res, 200, await readRun(runMatch[1]));
+      return;
+    }
+
+    const reportMatch = pathname.match(/^\/api\/runs\/([^/]+)\/report$/);
+    if (req.method === "GET" && reportMatch) {
+      await serveRunReport(res, reportMatch[1]);
       return;
     }
 
@@ -1766,11 +2522,14 @@ const server = http.createServer(async (req, res) => {
 
 const port = Number(process.env.QA_DASHBOARD_PORT || process.env.PORT || 9324);
 const host = process.env.QA_DASHBOARD_HOST || "127.0.0.1";
+if (!authIsEnabled() && !["127.0.0.1", "localhost", "::1"].includes(host)) {
+  throw new Error("Refusing to start public dashboard without auth. Set QA_DASHBOARD_AUTH_USERNAME and QA_DASHBOARD_AUTH_PASSWORD in .env.");
+}
 await initializePersistence();
 await recoverCorruptedRunFiles();
 await syncLocalRunsToDatabase();
 await reconcileStaleRuns();
 server.listen(port, host, () => {
   const displayHost = host === "0.0.0.0" ? "localhost" : host;
-  console.log(`QA dashboard running at http://${displayHost}:${port} (bind: ${host}, PostgreSQL: ${databaseEnabled ? "enabled" : "local only"}, object storage: ${objectStorageEnabled ? "enabled" : "local only"})`);
+  console.log(`QA dashboard running at http://${displayHost}:${port}${dashboardBasePath || ""} (bind: ${host}, auth: ${authIsEnabled() ? "enabled" : "disabled"}, PostgreSQL: ${databaseEnabled ? "enabled" : "local only"}, object storage: ${objectStorageEnabled ? "enabled" : "local only"})`);
 });
