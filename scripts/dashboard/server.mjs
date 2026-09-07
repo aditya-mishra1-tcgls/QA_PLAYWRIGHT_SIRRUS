@@ -59,10 +59,12 @@ function listFlowFolders() {
 function getConfig() {
   const environments = readJson("config/environments.json", { default: "", environments: {} });
   const profiles = readJson("config/execution-profiles.json", { defaultMode: "", modes: {} });
+  const modules = readJson("config/test-modules.json", { defaultModule: "engagement", modules: { engagement: { label: "Engagement" } } });
 
   return {
     environments,
     profiles,
+    modules,
     flows: listFlowFolders(),
     specFiles: listSpecFiles(),
     projects: ["chromium", "setup"]
@@ -1023,6 +1025,7 @@ async function startRun(body) {
 
   const options = {
     env: body.env || config.environments.default,
+    module: body.module || config.modules.defaultModule || "engagement",
     mode: body.mode || config.profiles.defaultMode,
     flows: normalizeFlows(config, body),
     specFiles: Array.isArray(body.specFiles) ? body.specFiles : [],

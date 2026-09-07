@@ -17,6 +17,7 @@ const elements = {
   envSelect: document.querySelector("#envSelect"),
   modeSelect: document.querySelector("#modeSelect"),
   flowsList: document.querySelector("#flowsList"),
+  moduleSelect: document.querySelector("#moduleSelect"),
   specSelect: document.querySelector("#specSelect"),
   projectSelect: document.querySelector("#projectSelect"),
   grepInput: document.querySelector("#grepInput"),
@@ -237,6 +238,46 @@ function selectedSpecs() {
   return [...elements.specSelect.selectedOptions].map((option) => option.value);
 }
 
+function selectedModuleConfig() {
+  const moduleName = elements.moduleSelect.value || state.config?.modules?.defaultModule || "engagement";
+  return state.config?.modules?.modules?.[moduleName] || null;
+}
+
+function moduleScopedFlows() {
+  const moduleConfig = selectedModuleConfig();
+  if (!moduleConfig || !Array.isArray(moduleConfig.flows)) {
+    return state.config?.flows || [];
+  }
+
+  return (state.config?.flows || []).filter((flow) => moduleConfig.flows.includes(flow));
+}
+
+function moduleScopedSpecFiles() {
+  const moduleConfig = selectedModuleConfig();
+  const prefixes = moduleConfig?.specFilePrefixes || [];
+  if (!prefixes.length) {
+    return state.config?.specFiles || [];
+  }
+
+  return (state.config?.specFiles || []).filter((file) => prefixes.some((prefix) => file.startsWith(prefix)));
+}
+
+function refreshModuleScopedOptions() {
+  const previouslySelectedSpecs = new Set(selectedSpecs());
+  const scopedFlows = moduleScopedFlows();
+  const scopedSpecFiles = moduleScopedSpecFiles();
+
+  elements.flowsList.innerHTML = scopedFlows
+    .map((flow) => `<label><input type="checkbox" value="${escapeHtml(flow)}"> ${escapeHtml(flow)}</label>`)
+    .join("") || '<span class="hint">No flows configured for this module yet.</span>';
+
+  elements.specSelect.innerHTML = scopedSpecFiles
+    .map((file) => `<option value="${escapeHtml(file)}" ${previouslySelectedSpecs.has(file) ? "selected" : ""}>${escapeHtml(file)}</option>`)
+    .join("");
+
+  applyModeFlows();
+}
+
 function populateConfig(config) {
   state.config = config;
 
@@ -250,13 +291,13 @@ function populateConfig(config) {
     .join("");
   elements.modeSelect.value = config.profiles.defaultMode || elements.modeSelect.value;
 
-  elements.flowsList.innerHTML = config.flows
-    .map((flow) => `<label><input type="checkbox" value="${escapeHtml(flow)}"> ${escapeHtml(flow)}</label>`)
+  const modules = config.modules?.modules || { engagement: { label: "Engagement" } };
+  elements.moduleSelect.innerHTML = Object.entries(modules)
+    .map(([name, module]) => `<option value="${escapeHtml(name)}">${escapeHtml(module.label || name)}</option>`)
     .join("");
+  elements.moduleSelect.value = config.modules?.defaultModule || "engagement";
 
-  elements.specSelect.innerHTML = config.specFiles
-    .map((file) => `<option value="${escapeHtml(file)}">${escapeHtml(file)}</option>`)
-    .join("");
+  refreshModuleScopedOptions();
 
   elements.projectSelect.innerHTML = config.projects
     .map((project) => `<option value="${escapeHtml(project)}">${escapeHtml(project)}</option>`)
@@ -268,7 +309,11 @@ function populateConfig(config) {
 
 function applyModeFlows() {
   const mode = state.config?.profiles.modes?.[elements.modeSelect.value];
-  const modeFlows = new Set(mode?.flows || []);
+  const moduleConfig = selectedModuleConfig();
+  const scopedFlows = new Set(moduleScopedFlows());
+  const modeFlows = new Set(Array.isArray(moduleConfig?.flows)
+    ? (mode?.flows || []).filter((flow) => scopedFlows.has(flow))
+    : (mode?.flows || []));
   for (const checkbox of elements.flowsList.querySelectorAll("input")) {
     checkbox.checked = modeFlows.has(checkbox.value);
   }
@@ -277,6 +322,7 @@ function applyModeFlows() {
 function buildRunPayload() {
   return {
     env: elements.envSelect.value,
+    module: elements.moduleSelect.value,
     mode: elements.modeSelect.value,
     flows: selectedFlows(),
     specFiles: selectedSpecs(),
@@ -583,6 +629,7 @@ async function startRerun(testId) {
     method: "POST",
     body: JSON.stringify({
       env: activeRun.options?.env || elements.envSelect.value,
+      module: activeRun.options?.module || elements.moduleSelect.value,
       project: failedTest.projectName || activeRun.options?.project || elements.projectSelect.value,
       retries: activeRun.options?.retries ?? 0,
       headed: Boolean(activeRun.options?.headed),
@@ -624,7 +671,7 @@ async function loadRuns() {
   elements.runsList.innerHTML = state.runs.map((run) => `
     <article class="run-card" data-run-id="${run.id}">
       <div class="run-title">
-        <strong>${escapeHtml(run.options?.mode || "custom")} / ${escapeHtml(run.options?.env || "")}</strong>
+        <strong>${escapeHtml(run.options?.module || "engagement")} / ${escapeHtml(run.options?.mode || "custom")} / ${escapeHtml(run.options?.env || "")}</strong>
         ${runCountBadges(run)}
       </div>
       <div class="meta">${new Date(run.startedAt).toLocaleString()} - ${escapeHtml((run.options?.flows || []).join(", "))}</div>
@@ -661,6 +708,7 @@ async function stopRun() {
 }
 
 elements.modeSelect.addEventListener("change", applyModeFlows);
+elements.moduleSelect.addEventListener("change", refreshModuleScopedOptions);
 elements.runForm.addEventListener("submit", startRun);
 elements.stopRunButton.addEventListener("click", stopRun);
 elements.skipCurrentTestButton.addEventListener("click", () => {
