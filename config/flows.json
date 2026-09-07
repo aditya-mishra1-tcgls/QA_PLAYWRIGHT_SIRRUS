@@ -3,6 +3,7 @@
     "smoke",
     "auth",
     "lead-management",
+    "lead-report",
     "site-visit"
   ]
 }

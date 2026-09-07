@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import { test as base } from "@playwright/test";
 import siteVisitFlowConfig from "../data/site-visit-flow.json";
 
 type AppConfig = {
@@ -6,6 +7,10 @@ type AppConfig = {
 };
 
 const FALLBACK_RENDER_WAIT_MS = 5000;
+
+async function logStep(title: string) {
+  await base.step(title, async () => {});
+}
 
 async function clickWithFallback(
   locator: Locator,
@@ -40,11 +45,13 @@ export function getSiteVisitConfig(envName: string) {
 }
 
 export async function openLeadDetail(page: Page, detailPath: string) {
+  await logStep("Open lead detail page");
   await page.goto(detailPath, { waitUntil: "networkidle" });
   await expect(page.getByText("Engagement Intelligence / Lead Profile", { exact: true })).toBeVisible({ timeout: 60000 });
 }
 
 export async function openChangeStage(page: Page) {
+  await logStep("Open change stage panel");
   const stagePanelContent = page.locator("body");
 
   await clickWithFallback(
@@ -66,6 +73,7 @@ export async function openChangeStage(page: Page) {
 }
 
 export async function assertSiteVisitScheduledLead(page: Page, app: AppConfig) {
+  await logStep("Verify scheduled site visit lead");
   const config = getSiteVisitConfig(app.envName);
   await openLeadDetail(page, config.scheduledLead.detailPath);
 
@@ -79,6 +87,7 @@ export async function assertSiteVisitScheduledLead(page: Page, app: AppConfig) {
 }
 
 export async function assertSiteVisitCompletedLead(page: Page, app: AppConfig) {
+  await logStep("Verify completed site visit lead");
   const config = getSiteVisitConfig(app.envName);
   await openLeadDetail(page, config.completedLead.detailPath);
 
@@ -95,6 +104,7 @@ export async function assertSiteVisitCompletedLead(page: Page, app: AppConfig) {
 }
 
 export async function assertSiteVisitHistory(page: Page, app: AppConfig) {
+  await logStep("Verify site visit history");
   const config = getSiteVisitConfig(app.envName);
   await openLeadDetail(page, config.revisitLead.detailPath);
 

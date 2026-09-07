@@ -4,6 +4,16 @@ import { getAuthStatePath } from "./tests/support/auth";
 
 const env = loadEnv();
 const authStatePath = getAuthStatePath(env.envName);
+const pageZoom = Number(process.env.PLAYWRIGHT_PAGE_ZOOM || 0.6);
+const desktopChrome = devices["Desktop Chrome"];
+const zoomedViewport = {
+  width: Math.round((desktopChrome.viewport?.width || 1280) / pageZoom),
+  height: Math.round(Math.max(desktopChrome.viewport?.height || 720, 900) / pageZoom)
+};
+const zoomedDesktopChrome = {
+  ...desktopChrome,
+  viewport: zoomedViewport
+};
 
 export default defineConfig({
   testDir: "./tests",
@@ -26,13 +36,13 @@ export default defineConfig({
     {
       name: "setup",
       testMatch: /tests\/setup\/.*\.ts/,
-      use: { ...devices["Desktop Chrome"] }
+      use: { ...zoomedDesktopChrome }
     },
     {
       name: "chromium",
       testIgnore: /tests\/setup\/.*\.ts/,
       use: {
-        ...devices["Desktop Chrome"],
+        ...zoomedDesktopChrome,
         storageState: authStatePath
       },
       dependencies: ["setup"]

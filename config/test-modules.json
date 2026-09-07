@@ -1,0 +1,27 @@
+{
+  "defaultModule": "engagement",
+  "modules": {
+    "engagement": {
+      "label": "Engagement",
+      "description": "Current engagement automation suite.",
+      "flows": [
+        "smoke",
+        "auth",
+        "lead-management",
+        "lead-report",
+        "site-visit"
+      ],
+      "specFilePrefixes": [
+        "tests/flows/"
+      ]
+    },
+    "martech": {
+      "label": "Martech",
+      "description": "Future martech automation suite.",
+      "flows": [],
+      "specFilePrefixes": [
+        "tests/flows/martech/"
+      ]
+    }
+  }
+}

@@ -39,6 +39,11 @@
             </fieldset>
 
             <label>
+              Module
+              <select id="moduleSelect" name="module"></select>
+            </label>
+
+            <label>
               Specific Test Files
               <select id="specSelect" name="specFiles" multiple></select>
               <span class="hint">Selected files override flow selection.</span>
@@ -63,6 +68,10 @@
               <label>
                 Retries
                 <input id="retriesInput" name="retries" type="number" min="0" value="0">
+              </label>
+              <label>
+                Test Timeout (min)
+                <input id="testTimeoutInput" name="testTimeoutMinutes" type="number" min="1" value="2">
               </label>
             </div>
 
@@ -110,6 +119,7 @@
             <div id="currentTestCard" class="current-test" hidden>
               <span>Current Running Test</span>
               <strong id="currentTestValue"></strong>
+              <button id="skipCurrentTestButton" class="warning" type="button">Skip Current</button>
             </div>
             <div id="testList" class="test-list empty">No test execution yet.</div>
           </div>

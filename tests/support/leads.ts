@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, type Locator } from "@playwright/test";
+import { expect, test as base, type Locator } from "@playwright/test";
 import leadFlowConfig from "../data/lead-flow.json";
 import { ensureActiveProject } from "./auth";
 
@@ -47,10 +47,85 @@ type StageTransition = {
   remark: string;
 };
 
+type SiteVisitOtpMode = "otp" | "skip";
+
 const FALLBACK_RENDER_WAIT_MS = 5000;
+const REQUIRED_LEAD_IDENTITY_KEYS = new Set([
+  "fullName",
+  "projectName",
+  "sourceOfLead",
+  "subSourceOfLead",
+  "whatsAppNumber",
+]);
+const CORE_LEAD_FIELD_KEYS = new Set([
+  "fullName",
+  "projectName",
+  "sourceOfLead",
+  "subSourceOfLead",
+  "whatsAppNumber",
+]);
+const DROPDOWN_OPTION_SELECTOR =
+  'button[class*="text-left"], button[class*="hover:text-gray-300"], [role="option"]';
+
+type LeadFlowConfigKey = keyof typeof leadFlowConfig;
+
+type LeadFormOption = {
+  label?: string;
+  value?: string;
+};
+
+type LeadFormField = {
+  key: string;
+  label: string;
+  type?: string;
+  rank?: number;
+  isMandatory?: boolean;
+  isVisible?: boolean;
+  isActive?: boolean;
+  options?: LeadFormOption[];
+  config?: {
+    datePicker?: boolean;
+    disablePastDates?: boolean;
+    disableFutureDates?: boolean;
+  };
+};
+
+type LeadFormSection = {
+  name?: string;
+  rank?: number;
+  isActive?: boolean;
+  fields?: LeadFormField[];
+};
+
+type LeadFormApiPayload = {
+  data?: {
+    items?: {
+      sections?: LeadFormSection[];
+    };
+  };
+};
+
+type LeadFieldTarget = LeadFormField & {
+  normalizedLabel: string;
+};
+
+type ElementBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function getLeadFlowSeed(envName: string) {
+  return (
+    leadFlowConfig[envName as LeadFlowConfigKey] ??
+    leadFlowConfig.uat ??
+    leadFlowConfig.qa
+  );
 }
 
 async function clickWithFallback(
@@ -100,9 +175,18 @@ function randomDigits(length: number) {
   return String(Math.floor(Math.random() * (max - min + 1)) + min);
 }
 
+function randomAlphaNumeric(length: number) {
+  const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  return Array.from({ length }, () => characters[Math.floor(Math.random() * characters.length)]).join("");
+}
+
+async function logStep(title: string) {
+  await base.step(title, async () => {});
+}
+
 export function buildLeadSeed(envName: string): LeadSeed {
-  const envSeed = leadFlowConfig[envName as keyof typeof leadFlowConfig];
-  const suffix = randomDigits(4);
+  const envSeed = getLeadFlowSeed(envName);
+  const suffix = randomAlphaNumeric(6);
 
   return {
     projectName: envSeed.projectName,
@@ -116,6 +200,7 @@ export function buildLeadSeed(envName: string): LeadSeed {
 }
 
 export async function goToManageLeads(page: Page, app: AppConfig) {
+  await logStep("Open manage leads page");
   await page.goto("/admin/developer/cpms/manage-construction", {
     waitUntil: "networkidle",
   });
@@ -139,9 +224,17 @@ export async function goToManageLeads(page: Page, app: AppConfig) {
         .catch(() => false),
   );
   await page.getByRole("button", { name: /manage leads/i }).click();
-  await page.waitForURL(/engagement-intelligence\/manage-leads/, {
-    timeout: 60000,
-  });
+  const manageLeadsOpened = await page
+    .waitForURL(/engagement-intelligence\/manage-leads/, {
+      timeout: 15000,
+    })
+    .then(() => true)
+    .catch(() => false);
+  if (!manageLeadsOpened) {
+    await page.goto("/admin/developer/engagement-intelligence/manage-leads", {
+      waitUntil: "domcontentloaded",
+    });
+  }
   await waitForListingReady(page);
 }
 
@@ -151,76 +244,256 @@ function dropdownFor(page: Page, label: string): Locator {
     .locator("xpath=following::button[1]");
 }
 
-async function waitForDropdownOptions(page: Page) {
-  const optionLocator = page.locator(
-    '#root-modal button[class*="text-left"], #root-modal button[class*="hover:text-gray-300"]',
-  );
+async function locatorBox(locator?: Locator): Promise<ElementBox | null> {
+  return (await locator?.boundingBox().catch(() => null)) ?? null;
+}
+
+async function waitForDropdownOptions(page: Page, anchor?: Locator) {
+  const anchorBox = await locatorBox(anchor);
+  const optionLocator = page.locator(DROPDOWN_OPTION_SELECTOR);
   await expect(optionLocator.first()).toBeVisible({ timeout: 15000 });
 
   await expect
-    .poll(
-      async () => {
-        const optionTexts = await page.evaluate(() => {
-          return Array.from(document.querySelectorAll("#root-modal button"))
-            .filter(
-              (button) =>
-                button.className.includes("text-left") ||
-                button.className.includes("hover:text-gray-300"),
-            )
-            .map((button) => button.textContent?.trim())
-            .filter(
-              (text): text is string =>
-                Boolean(text) && text.toLowerCase() !== "clear",
-            );
-        });
-
-        return optionTexts.length;
-      },
-      { timeout: 15000 },
-    )
-    .toBeGreaterThan(0);
+    .poll(() => visibleDropdownOptionTexts(page, anchorBox), {
+      timeout: 15000,
+    })
+    .not.toHaveLength(0);
 }
 
-async function chooseFirstOption(page: Page, preferredOptions: string[] = []) {
-  const optionLocator = page.locator(
-    '#root-modal button[class*="text-left"], #root-modal button[class*="hover:text-gray-300"]',
-  );
-  await waitForDropdownOptions(page);
+async function dropdownHasVisibleOptions(page: Page, anchor?: Locator) {
+  return (await visibleDropdownOptionTexts(page, await locatorBox(anchor)))
+    .length > 0;
+}
 
-  const optionTexts = await page.evaluate((preferred) => {
-    const buttons = Array.from(
-      document.querySelectorAll("#root-modal button"),
-    ).filter(
-      (button) =>
-        button.className.includes("text-left") ||
-        button.className.includes("hover:text-gray-300"),
-    );
-    const texts = buttons
-      .map((button) => button.textContent?.trim())
-      .filter(
-        (text): text is string =>
-          Boolean(text) && text.toLowerCase() !== "clear",
-      );
+async function openDropdownWithRetry(page: Page, label: string) {
+  const dropdown = dropdownFor(page, label);
+  const startedAt = Date.now();
 
-    const preferredMatch = preferred.find((option) => texts.includes(option));
-    if (preferredMatch) {
-      return { selected: preferredMatch, all: texts };
+  await page.waitForTimeout(800);
+
+  while (Date.now() - startedAt < 10000) {
+    await dropdown.click({ force: true });
+
+    const opened = await expect
+      .poll(() => dropdownHasVisibleOptions(page, dropdown), {
+        intervals: [100, 200, 200],
+        timeout: 500,
+      })
+      .toBeTruthy()
+      .then(() => true)
+      .catch(() => false);
+
+    if (opened) {
+      return dropdown;
     }
 
-    return { selected: texts[0] ?? null, all: texts };
-  }, preferredOptions);
+    await page.waitForTimeout(500);
+  }
 
-  if (!optionTexts.selected) {
+  await dropdown.click({ force: true });
+  await waitForDropdownOptions(page, dropdown);
+  return dropdown;
+}
+
+async function chooseFirstOption(
+  page: Page,
+  preferredOptions: string[] = [],
+  anchor?: Locator,
+) {
+  const anchorBox = await locatorBox(anchor);
+  await waitForDropdownOptions(page, anchor);
+
+  for (const preferredOption of preferredOptions) {
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      if (await clickVisibleDropdownOption(page, preferredOption, anchorBox)) {
+        return preferredOption;
+      }
+
+      if (!(await scrollVisibleDropdownOptions(page, anchorBox))) {
+        break;
+      }
+      await page.waitForTimeout(150);
+    }
+  }
+
+  const firstVisibleOption = await clickFirstVisibleDropdownOption(page, anchorBox);
+  if (!firstVisibleOption) {
+    const optionTexts = await visibleDropdownOptionTexts(page, anchorBox);
     throw new Error(
-      `No dropdown option found. Visible option texts: ${optionTexts.all.join(", ")}`,
+      `No dropdown option found. Visible option texts: ${optionTexts.join(", ")}`,
     );
   }
 
-  await optionLocator
-    .filter({ hasText: optionTexts.selected })
-    .first()
-    .click({ force: true });
-  return optionTexts.selected;
+  return firstVisibleOption;
+}
+
+async function visibleDropdownOptionTexts(
+  page: Page,
+  anchorBox?: ElementBox | null,
+) {
+  return await page.evaluate((box) => {
+    const optionSelector =
+      'button[class*="text-left"], button[class*="hover:text-gray-300"], [role="option"]';
+
+    function isVisibleOption(element: HTMLElement) {
+      const text = element.textContent?.replace(/\s+/g, " ").trim();
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return (
+        Boolean(text) &&
+        text?.toLowerCase() !== "clear" &&
+        !/^select here$/i.test(text ?? "") &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        (!box ||
+          (rect.top >= box.y + box.height - 8 &&
+            rect.left <= box.x + box.width + 80 &&
+            rect.right >= box.x - 80)) &&
+        style.visibility !== "hidden" &&
+        style.display !== "none"
+      );
+    }
+
+    return Array.from(document.querySelectorAll<HTMLElement>(optionSelector))
+      .filter(isVisibleOption)
+      .map((element) => element.textContent?.replace(/\s+/g, " ").trim())
+      .filter((text): text is string => Boolean(text));
+  }, anchorBox ?? null);
+}
+
+async function clickVisibleDropdownOption(
+  page: Page,
+  selectedText: string,
+  anchorBox?: ElementBox | null,
+) {
+  return await page.evaluate(({ optionText, box }) => {
+    const optionSelector =
+      'button[class*="text-left"], button[class*="hover:text-gray-300"], [role="option"]';
+
+    const options = Array.from(
+      document.querySelectorAll<HTMLElement>(optionSelector),
+    )
+      .filter((element) => {
+        const text = element.textContent?.replace(/\s+/g, " ").trim();
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          text === optionText &&
+          rect.width > 0 &&
+          rect.height > 0 &&
+          (!box ||
+            (rect.top >= box.y + box.height - 8 &&
+              rect.left <= box.x + box.width + 80 &&
+              rect.right >= box.x - 80)) &&
+          style.visibility !== "hidden" &&
+          style.display !== "none"
+        );
+      })
+      .sort((left, right) => {
+        const leftZIndex = Number(window.getComputedStyle(left).zIndex) || 0;
+        const rightZIndex = Number(window.getComputedStyle(right).zIndex) || 0;
+        return rightZIndex - leftZIndex;
+      });
+
+    const target = options[0];
+    if (!target) {
+      return false;
+    }
+
+    target.click();
+    return true;
+  }, { optionText: selectedText, box: anchorBox ?? null });
+}
+
+async function clickFirstVisibleDropdownOption(
+  page: Page,
+  anchorBox?: ElementBox | null,
+) {
+  return await page.evaluate((box) => {
+    const optionSelector =
+      'button[class*="text-left"], button[class*="hover:text-gray-300"], [role="option"]';
+    const options = Array.from(
+      document.querySelectorAll<HTMLElement>(optionSelector),
+    ).filter((element) => {
+      const text = element.textContent?.replace(/\s+/g, " ").trim();
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return (
+        Boolean(text) &&
+        text?.toLowerCase() !== "clear" &&
+        !/^select here$/i.test(text ?? "") &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        (!box ||
+          (rect.top >= box.y + box.height - 8 &&
+            rect.left <= box.x + box.width + 80 &&
+            rect.right >= box.x - 80)) &&
+        style.visibility !== "hidden" &&
+        style.display !== "none"
+      );
+    });
+
+    const target = options[0];
+    target?.click();
+    return target?.textContent?.replace(/\s+/g, " ").trim() ?? null;
+  }, anchorBox ?? null);
+}
+
+async function scrollVisibleDropdownOptions(
+  page: Page,
+  anchorBox?: ElementBox | null,
+) {
+  return await page.evaluate((box) => {
+    const optionSelector =
+      'button[class*="text-left"], button[class*="hover:text-gray-300"], [role="option"]';
+    const visibleOptions = Array.from(
+      document.querySelectorAll<HTMLElement>(optionSelector),
+    ).filter((element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        (!box ||
+          (rect.top >= box.y + box.height - 8 &&
+            rect.left <= box.x + box.width + 80 &&
+            rect.right >= box.x - 80)) &&
+        style.visibility !== "hidden" &&
+        style.display !== "none"
+      );
+    });
+
+    const scrollables = visibleOptions
+      .flatMap((option) => {
+        const ancestors: HTMLElement[] = [];
+        let current = option.parentElement;
+        while (current) {
+          ancestors.push(current);
+          current = current.parentElement;
+        }
+        return ancestors;
+      })
+      .filter((element, index, list) => list.indexOf(element) === index)
+      .filter((element) => element.scrollHeight > element.clientHeight + 4)
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return leftRect.height - rightRect.height;
+      });
+
+    for (const element of scrollables) {
+      const previousTop = element.scrollTop;
+      element.scrollTop = Math.min(
+        element.scrollTop + Math.max(element.clientHeight * 0.8, 160),
+        element.scrollHeight - element.clientHeight,
+      );
+      if (element.scrollTop !== previousTop) {
+        return true;
+      }
+    }
+
+    return false;
+  }, anchorBox ?? null);
 }
 
 async function waitForDropdownValue(
@@ -228,10 +501,23 @@ async function waitForDropdownValue(
   label: string,
   expectedValue: string,
 ) {
+  const normalizedLabel = normalizeFieldLabel(label);
+  const labelRegex = new RegExp(
+    `^\\s*${escapeRegex(normalizedLabel)}\\s*\\*?\\s*$`,
+    "i",
+  );
+  const fieldContainer = page
+    .locator("#root-modal h3")
+    .filter({ hasText: labelRegex })
+    .first()
+    .locator(
+      'xpath=ancestor::div[.//h3 and (.//input or .//textarea or .//button[not(normalize-space(.)="Clear")])][1]',
+    );
+
   await expect
     .poll(
       async () => {
-        const text = await dropdownFor(page, label).innerText();
+        const text = await fieldContainer.innerText();
         return text.replace(/\s+/g, " ").trim();
       },
       { timeout: 15000 },
@@ -239,50 +525,109 @@ async function waitForDropdownValue(
     .toContain(expectedValue);
 }
 
-async function waitForSubSourceReady(page: Page) {
-  await expect
-    .poll(
-      async () => {
-        const className = await dropdownFor(page, "Sub Source *").getAttribute(
-          "class",
-        );
-        return className || "";
-      },
-      { timeout: 15000 },
+function normalizeFieldLabel(value: string) {
+  return value.replace(/\*/g, "").replace(/\s+/g, " ").trim();
+}
+
+function extractLeadFormFields(payload: LeadFormApiPayload): LeadFieldTarget[] {
+  const sections = payload.data?.items?.sections ?? [];
+
+  return sections
+    .filter((section) => section.isActive !== false)
+    .sort((left, right) => (left.rank ?? 0) - (right.rank ?? 0))
+    .flatMap((section) =>
+      (section.fields ?? [])
+        .filter((field) => field.isActive !== false && field.isVisible !== false)
+        .sort((left, right) => (left.rank ?? 0) - (right.rank ?? 0))
+        .map((field) => ({
+          ...field,
+          normalizedLabel: normalizeFieldLabel(field.label),
+        })),
     )
-    .not.toContain("cursor-not-allowed");
-
-  await page.waitForTimeout(2000);
+    .filter(
+      (field) => field.isMandatory || REQUIRED_LEAD_IDENTITY_KEYS.has(field.key),
+    );
 }
 
-async function waitForDependentSelection(
-  page: Page,
-  kind: "project" | "source" | "subSource",
-  expectedValue: string,
-) {
-  if (kind === "project") {
-    await page.waitForTimeout(2000);
-    return;
-  }
+async function waitForLeadFormApiFields(page: Page) {
+  const response = await page.waitForResponse(
+    (candidate) => {
+      const request = candidate.request();
+      const url = new URL(candidate.url());
+      return (
+        request.method() === "GET" &&
+        url.pathname.endsWith("/lead-form") &&
+        candidate.ok()
+      );
+    },
+    { timeout: 30000 },
+  );
 
-  if (kind === "source") {
-    await waitForSubSourceReady(page);
-    await page.waitForTimeout(1200);
-    return;
-  }
-
-  await page.waitForTimeout(800);
+  const payload = (await response.json()) as LeadFormApiPayload;
+  return extractLeadFormFields(payload);
 }
 
-export async function fillLeadForm(page: Page, app: AppConfig) {
-  const leadSeed = buildLeadSeed(app.envName);
-  leadSeed.projectName = app.activeProjectName;
-  const envSeed = leadFlowConfig[app.envName as keyof typeof leadFlowConfig];
-  const sourcePreferences =
-    leadFlowConfig[app.envName as keyof typeof leadFlowConfig]
-      .fallbackSourcePreferences;
-  await waitForListingReady(page);
+async function collectMandatoryFieldsFromDom(page: Page): Promise<LeadFieldTarget[]> {
+  const modal = page.locator("#root-modal");
+  const fields = await modal.locator("h3").evaluateAll((headings) =>
+    headings
+      .filter((heading) => {
+        const text = (heading.textContent ?? "").replace(/\s+/g, " ").trim();
+        const rect = heading.getBoundingClientRect();
+        const style = window.getComputedStyle(heading);
+        return (
+          text.includes("*") &&
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== "none" &&
+          style.visibility !== "hidden"
+        );
+      })
+      .map((heading) => {
+        const label = (heading.textContent ?? "")
+          .replace(/\*/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
 
+        return {
+          key: label
+            .replace(/[^A-Za-z0-9]+(.)/g, (_, next: string) =>
+              next.toUpperCase(),
+            )
+            .replace(/^[A-Z]/, (match) => match.toLowerCase()),
+          label,
+        };
+      }),
+  );
+
+  return fields.map((field) => ({
+    ...field,
+    normalizedLabel: normalizeFieldLabel(field.label),
+    isMandatory: true,
+    isVisible: true,
+    isActive: true,
+  }));
+}
+
+function dedupeLeadFields(fields: LeadFieldTarget[]) {
+  const seen = new Set<string>();
+  const seenLabels = new Set<string>();
+
+  return fields.filter((field) => {
+    const id = `${field.key}:${field.normalizedLabel.toLowerCase()}`;
+    const label = field.normalizedLabel.toLowerCase();
+    if (seen.has(id) || seenLabels.has(label)) {
+      return false;
+    }
+
+    seen.add(id);
+    seenLabels.add(label);
+    return true;
+  });
+}
+
+async function openLeadCreationForm(page: Page) {
+  await logStep("Open create lead form");
   const addLeadButton = page.getByText("Add Lead", { exact: true });
   await clickWithFallback(page, addLeadButton, async () => {
     const leadFormVisible = await page
@@ -304,64 +649,612 @@ export async function fillLeadForm(page: Page, app: AppConfig) {
   }
 
   await expect(leadForm).toBeVisible({ timeout: 30000 });
+}
 
-  await page.locator("#fullName").fill(leadSeed.fullName);
-
-  await dropdownFor(page, "Project Name *").click();
-  const selectedProject = await chooseFirstOption(page, [
-    app.activeProjectName,
-    envSeed.projectName,
-  ]);
-  await waitForDependentSelection(page, "project", selectedProject);
-
-  await dropdownFor(page, "Source *").click();
-  const selectedSource = await chooseFirstOption(page, sourcePreferences);
-  await waitForDependentSelection(page, "source", selectedSource);
-
-  await waitForSubSourceReady(page);
-  await dropdownFor(page, "Sub Source *").click();
-  const selectedSubSource = await chooseFirstOption(page);
-  await waitForDependentSelection(page, "subSource", selectedSubSource);
-
-  await page.locator("#whatsAppNumber").fill(leadSeed.whatsappNumber);
-  await page.locator("#sourceCategory").fill(leadSeed.sourceCategory);
-
-  if (
-    await page
-      .locator("#companyName")
-      .isVisible()
-      .catch(() => false)
-  ) {
-    await page.locator("#companyName").fill(leadSeed.companyName);
-  }
-
-  if (
-    await page
-      .locator("#preferredLocation")
-      .isVisible()
-      .catch(() => false)
-  ) {
-    await page.locator("#preferredLocation").fill(leadSeed.preferredLocation);
-  }
-
-  if (
-    await page
-      .locator("#otherPreferences")
-      .isVisible()
-      .catch(() => false)
-  ) {
-    await page.locator("#otherPreferences").fill(leadSeed.otherPreferences);
-  }
-
-  await page
-    .locator("#root-modal")
-    .getByRole("button", { name: /^save$/i })
-    .click();
-  await waitForHiddenWithFallback(
-    page.getByText("Lead Form", { exact: true }),
-    page,
-    60000,
+async function visibleFieldContainer(page: Page, field: LeadFieldTarget) {
+  const modal = page.locator("#root-modal");
+  const labelRegex = new RegExp(
+    `^\\s*${escapeRegex(field.normalizedLabel)}\\s*\\*?\\s*$`,
+    "i",
   );
+  const headings = modal.locator("h3").filter({ hasText: labelRegex });
+  const count = await headings.count().catch(() => 0);
+
+  for (let index = 0; index < count; index += 1) {
+    const heading = headings.nth(index);
+    if (!(await heading.isVisible().catch(() => false))) {
+      continue;
+    }
+
+    const container = heading.locator(
+      'xpath=ancestor::div[.//h3 and (.//input or .//textarea or .//button[not(normalize-space(.)="Clear")])][1]',
+    );
+    if (await container.isVisible().catch(() => false)) {
+      return container;
+    }
+  }
+
+  throw new Error(`Lead form field "${field.normalizedLabel}" was not visible.`);
+}
+
+async function firstVisible(locator: Locator) {
+  const count = await locator.count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    const candidate = locator.nth(index);
+    if (await candidate.isVisible().catch(() => false)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function formattedDate(date: Date) {
+  return {
+    iso: date.toISOString().slice(0, 10),
+    display: date.toLocaleDateString("en-GB"),
+    month: date.toLocaleString("en-US", { month: "long" }),
+    day: String(date.getDate()),
+    year: String(date.getFullYear()),
+  };
+}
+
+function dateForLeadField(field: LeadFieldTarget) {
+  const fieldName = `${field.key} ${field.normalizedLabel}`.toLowerCase();
+  const date = new Date();
+
+  if (/birth|dob/.test(fieldName)) {
+    date.setFullYear(date.getFullYear() - 35);
+    return date;
+  }
+
+  if (/anniversary/.test(fieldName)) {
+    date.setFullYear(date.getFullYear() - 5);
+    return date;
+  }
+
+  if (/deadline|follow|next|future|schedule|booking|visit/.test(fieldName)) {
+    date.setDate(date.getDate() + 7);
+    return date;
+  }
+
+  return date;
+}
+
+function valueForLeadField(
+  field: LeadFieldTarget,
+  leadSeed: LeadSeed,
+  app: AppConfig,
+) {
+  const fieldName = `${field.key} ${field.normalizedLabel}`.toLowerCase();
+
+  if (field.key === "fullName" || /full name/.test(fieldName)) {
+    return leadSeed.fullName;
+  }
+
+  if (field.key === "whatsAppNumber" || /whats\s*app/.test(fieldName)) {
+    return leadSeed.whatsappNumber;
+  }
+
+  if (field.key === "projectName" || /project/.test(fieldName)) {
+    return app.activeProjectName;
+  }
+
+  if (field.key === "sourceCategory") {
+    return leadSeed.sourceCategory;
+  }
+
+  if (/company|organisation|organization/.test(fieldName)) {
+    return leadSeed.companyName;
+  }
+
+  if (/preferred location|location|city/.test(fieldName)) {
+    return leadSeed.preferredLocation;
+  }
+
+  if (/other preference|preference|description|remark|comment|address/.test(fieldName)) {
+    return leadSeed.otherPreferences;
+  }
+
+  if (/email/.test(fieldName)) {
+    return `automation.lead.${randomDigits(5)}@example.com`;
+  }
+
+  if (/phone|mobile|alternate number|contact/.test(fieldName)) {
+    return `8${randomDigits(9)}`;
+  }
+
+  if (/age/.test(fieldName)) {
+    return "35";
+  }
+
+  if (/budget/.test(fieldName)) {
+    return "5000000";
+  }
+
+  if (/time/.test(fieldName)) {
+    return "10:30";
+  }
+
+  if (field.type === "number") {
+    return "1";
+  }
+
+  return `Automation ${field.normalizedLabel}`.slice(0, 40);
+}
+
+function preferredOptionsForField(
+  field: LeadFieldTarget,
+  leadSeed: LeadSeed,
+  app: AppConfig,
+  sourcePreferences: string[],
+) {
+  const fieldName = `${field.key} ${field.normalizedLabel}`.toLowerCase();
+
+  if (field.key === "projectName" || /project/.test(fieldName)) {
+    return [app.activeProjectName, leadSeed.projectName];
+  }
+
+  if (field.key === "sourceOfLead" || /^source\b/.test(fieldName)) {
+    return sourcePreferences;
+  }
+
+  if (/gender/.test(fieldName)) {
+    return ["Male", "Female"];
+  }
+
+  if (/purpose/.test(fieldName)) {
+    return ["Personal Use", "Investment"];
+  }
+
+  if (/funding|loan/.test(fieldName)) {
+    return ["Self funded", "Loan"];
+  }
+
+  return (field.options ?? [])
+    .map((option) => option.label ?? option.value ?? "")
+    .filter(Boolean);
+}
+
+async function clickInlineOption(
+  container: Locator,
+  preferredOptions: string[],
+) {
+  const buttonLocator = container.locator("button");
+  const count = await buttonLocator.count().catch(() => 0);
+  const candidates: { button: Locator; text: string }[] = [];
+
+  for (let index = 0; index < count; index += 1) {
+    const button = buttonLocator.nth(index);
+    const text = (await button.innerText().catch(() => ""))
+      .replace(/\s+/g, " ")
+      .trim();
+    if (
+      !text ||
+      /^select here$/i.test(text) ||
+      /^clear$/i.test(text) ||
+      !(await button.isVisible().catch(() => false))
+    ) {
+      continue;
+    }
+
+    candidates.push({ button, text });
+  }
+
+  const preferred = preferredOptions.find((option) =>
+    candidates.some((candidate) => candidate.text === option),
+  );
+  const selected =
+    candidates.find((candidate) => candidate.text === preferred) ??
+    candidates[0];
+
+  if (!selected) {
+    return false;
+  }
+
+  await selected.button.click({ force: true });
+  return true;
+}
+
+async function selectDropdownField(
+  page: Page,
+  field: LeadFieldTarget,
+  preferredOptions: string[] = [],
+) {
+  const container = await visibleFieldContainer(page, field);
+  await container.scrollIntoViewIfNeeded().catch(() => {});
+
+  if (field.options?.length) {
+    const clickedInline = await clickInlineOption(container, preferredOptions);
+    if (clickedInline) {
+      return;
+    }
+  }
+
+  const trigger = await firstVisible(container.locator("button"));
+  if (!trigger) {
+    throw new Error(`Lead form field "${field.normalizedLabel}" has no dropdown trigger.`);
+  }
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 15000) {
+    await trigger.click({ force: true });
+    const opened = await expect
+      .poll(() => dropdownHasVisibleOptions(page, trigger), {
+        intervals: [150, 250, 400],
+        timeout: 1200,
+      })
+      .toBeTruthy()
+      .then(() => true)
+      .catch(() => false);
+
+    if (opened) {
+      break;
+    }
+
+    await page.waitForTimeout(500);
+  }
+
+  await chooseFirstOption(page, preferredOptions, trigger);
+}
+
+async function fillTextField(
+  field: LeadFieldTarget,
+  container: Locator,
+  value: string,
+) {
+  const input = await firstVisible(
+    container.locator("textarea, input:not([type='hidden'])"),
+  );
+  if (!input) {
+    throw new Error(`Lead form field "${field.normalizedLabel}" has no editable input.`);
+  }
+
+  await input.scrollIntoViewIfNeeded().catch(() => {});
+  const maxLength = Number(await input.getAttribute("maxlength").catch(() => ""));
+  const finalValue = maxLength > 0 ? value.slice(0, maxLength) : value;
+  await input.fill(finalValue);
+}
+
+async function selectReactDate(page: Page, field: LeadFieldTarget, target: Date) {
+  const container = await visibleFieldContainer(page, field);
+  const directDateInput = await firstVisible(container.locator("input[type='date']"));
+  const date = formattedDate(target);
+
+  if (directDateInput) {
+    await directDateInput.fill(date.iso);
+    return;
+  }
+
+  const trigger = await firstVisible(container.locator("button"));
+  if (!trigger) {
+    const directTextInput = await firstVisible(
+      container.locator("input:not([type='hidden'])"),
+    );
+    if (directTextInput) {
+      await directTextInput.fill(date.display);
+      return;
+    }
+
+    throw new Error(`Lead form field "${field.normalizedLabel}" has no date trigger.`);
+  }
+
+  await trigger.click({ force: true });
+  const picker = page.locator(".react-datepicker").last();
+  await expect(picker).toBeVisible({ timeout: 10000 });
+
+  await selectCalendarYear(page, picker, target.getFullYear());
+  await selectCalendarMonth(page, picker, target);
+
+  const dayOption = picker
+    .locator(`[role="option"][aria-label*="${date.month}"][aria-label*="${date.year}"]`)
+    .filter({ hasText: new RegExp(`^${date.day}$`) })
+    .first();
+  if (
+    await dayOption
+      .waitFor({ state: "visible", timeout: 5000 })
+      .then(() => true)
+      .catch(() => false)
+  ) {
+    await dayOption.click({ force: true });
+    return;
+  }
+
+  const visibleDay = picker
+    .locator("[role='option']")
+    .filter({ hasText: new RegExp(`^${date.day}$`) })
+    .first();
+  await expect(visibleDay).toBeVisible({ timeout: 5000 });
+  await visibleDay.click({ force: true });
+}
+
+async function selectCalendarYear(page: Page, picker: Locator, targetYear: number) {
+  const yearSelect = picker.locator("select.react-datepicker__year-select");
+  if (await yearSelect.isVisible().catch(() => false)) {
+    await yearSelect.selectOption(String(targetYear));
+    return;
+  }
+
+  const yearText = String(targetYear);
+  const currentYear = new Date().getFullYear();
+
+  if (currentYear === targetYear) {
+    return;
+  }
+
+  const yearToggle = picker
+    .locator("button, div, span")
+    .filter({ hasText: new RegExp(`^${currentYear}$`) })
+    .first();
+  if (await yearToggle.isVisible().catch(() => false)) {
+    await yearToggle.click({ force: true });
+  }
+
+  const scrollDirection = currentYear && targetYear < currentYear ? -1 : 1;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (await clickCalendarText(page, yearText)) {
+      return;
+    }
+
+    if (!(await scrollCalendarOptionList(page, scrollDirection))) {
+      break;
+    }
+    await page.waitForTimeout(100);
+  }
+}
+
+async function selectCalendarMonth(page: Page, picker: Locator, target: Date) {
+  const monthSelect = picker.locator("select.react-datepicker__month-select");
+  if (await monthSelect.isVisible().catch(() => false)) {
+    await monthSelect.selectOption(String(target.getMonth()));
+    return;
+  }
+
+  const month = target.toLocaleString("en-US", { month: "long" });
+  const currentMonthText = await picker
+    .locator("button, div, span")
+    .filter({
+      hasText: /January|February|March|April|May|June|July|August|September|October|November|December/,
+    })
+    .first()
+    .innerText()
+    .catch(() => "");
+
+  if (currentMonthText.includes(month)) {
+    return;
+  }
+
+  const monthToggle = picker
+    .locator("button, div, span")
+    .filter({
+      hasText: /January|February|March|April|May|June|July|August|September|October|November|December/,
+    })
+    .first();
+  if (await monthToggle.isVisible().catch(() => false)) {
+    await monthToggle.click({ force: true });
+    await clickCalendarText(page, month);
+  }
+}
+
+async function clickCalendarText(page: Page, text: string) {
+  return await page.evaluate((targetText) => {
+    const picker = document.querySelector<HTMLElement>(".react-datepicker");
+    if (!picker) {
+      return false;
+    }
+
+    const candidates = Array.from(
+      picker.querySelectorAll<HTMLElement>("button, div, span, [role='option']"),
+    ).filter((element) => {
+      const elementText = element.textContent?.replace(/\s+/g, " ").trim();
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return (
+        elementText === targetText &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.visibility !== "hidden" &&
+        style.display !== "none"
+      );
+    });
+
+    const target = candidates[0];
+    if (!target) {
+      return false;
+    }
+
+    target.click();
+    return true;
+  }, text);
+}
+
+async function scrollCalendarOptionList(page: Page, direction: number) {
+  return await page.evaluate((scrollDirection) => {
+    const picker = document.querySelector<HTMLElement>(".react-datepicker");
+    if (!picker) {
+      return false;
+    }
+
+    const scrollables = Array.from(
+      picker.querySelectorAll<HTMLElement>("div, ul"),
+    )
+      .filter((element) => element.scrollHeight > element.clientHeight + 4)
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return leftRect.height - rightRect.height;
+      });
+
+    for (const element of scrollables) {
+      const previousTop = element.scrollTop;
+      const distance = Math.max(element.clientHeight * 0.8, 120) * scrollDirection;
+      element.scrollTop = Math.max(
+        0,
+        Math.min(element.scrollTop + distance, element.scrollHeight - element.clientHeight),
+      );
+      if (element.scrollTop !== previousTop) {
+        return true;
+      }
+    }
+
+    return false;
+  }, direction);
+}
+
+async function fillLeadField(
+  page: Page,
+  field: LeadFieldTarget,
+  leadSeed: LeadSeed,
+  app: AppConfig,
+  sourcePreferences: string[],
+) {
+  const fieldName = `${field.key} ${field.normalizedLabel}`.toLowerCase();
+  const type = (field.type ?? "").toLowerCase();
+
+  if (type.includes("date") || field.config?.datePicker) {
+    await selectReactDate(page, field, dateForLeadField(field));
+    return;
+  }
+
+  if (type.includes("time")) {
+    const container = await visibleFieldContainer(page, field);
+    await fillTextField(field, container, valueForLeadField(field, leadSeed, app));
+    return;
+  }
+
+  const container = await visibleFieldContainer(page, field);
+  const hasInput = Boolean(
+    await firstVisible(container.locator("textarea, input:not([type='hidden'])")),
+  );
+  const hasTrigger = Boolean(await firstVisible(container.locator("button")));
+  const shouldUseDropdown =
+    field.options?.length ||
+    field.key === "projectName" ||
+    field.key === "sourceOfLead" ||
+    field.key === "subSourceOfLead" ||
+    /assigned|owner|source|project|gender|occupation|qualification|purpose|status|type|funding|loan/.test(
+      fieldName,
+    );
+
+  if (shouldUseDropdown && hasTrigger) {
+    await selectDropdownField(
+      page,
+      field,
+      preferredOptionsForField(field, leadSeed, app, sourcePreferences),
+    );
+    return;
+  }
+
+  if (hasInput) {
+    await fillTextField(field, container, valueForLeadField(field, leadSeed, app));
+    return;
+  }
+
+  if (hasTrigger) {
+    await selectDropdownField(
+      page,
+      field,
+      preferredOptionsForField(field, leadSeed, app, sourcePreferences),
+    );
+    return;
+  }
+
+  throw new Error(
+    `Lead form field "${field.normalizedLabel}" has no supported visible control.`,
+  );
+}
+
+async function fillAdaptiveLeadFields(
+  page: Page,
+  fields: LeadFieldTarget[],
+  leadSeed: LeadSeed,
+  app: AppConfig,
+  sourcePreferences: string[],
+) {
+  const orderedFields = fields.filter((field) => !CORE_LEAD_FIELD_KEYS.has(field.key));
+  if (orderedFields.length) {
+    await logStep(`Fill ${orderedFields.length} mandatory custom field${orderedFields.length === 1 ? "" : "s"}`);
+  }
+
+  for (const field of orderedFields) {
+    await fillLeadField(page, field, leadSeed, app, sourcePreferences);
+  }
+}
+
+async function fillCoreLeadFields(
+  page: Page,
+  leadSeed: LeadSeed,
+  app: AppConfig,
+  sourcePreferences: string[],
+) {
+  await base.step("Enter lead name", async () => {
+    await page.locator("#fullName").fill(leadSeed.fullName);
+  });
+
+  await base.step("Select project", async () => {
+    const projectDropdown = await openDropdownWithRetry(page, "Project Name *");
+    await chooseFirstOption(page, [app.activeProjectName, leadSeed.projectName], projectDropdown);
+    await waitForDropdownValue(page, "Project Name *", app.activeProjectName);
+  });
+
+  await base.step("Select source", async () => {
+    const sourceDropdown = await openDropdownWithRetry(page, "Source *");
+    const selectedSource = await chooseFirstOption(page, sourcePreferences, sourceDropdown);
+    await waitForDropdownValue(page, "Source *", selectedSource);
+  });
+
+  await base.step("Select sub source", async () => {
+    const subSourceDropdown = await openDropdownWithRetry(page, "Sub Source *");
+    const selectedSubSource = await chooseFirstOption(page, [], subSourceDropdown);
+    await waitForDropdownValue(page, "Sub Source *", selectedSubSource);
+  });
+
+  await base.step("Enter WhatsApp number", async () => {
+    await page.locator("#whatsAppNumber").fill(leadSeed.whatsappNumber);
+  });
+}
+
+export async function prepareLeadForm(page: Page, app: AppConfig) {
+  const leadSeed = buildLeadSeed(app.envName);
+  leadSeed.projectName = app.activeProjectName;
+  const envSeed = getLeadFlowSeed(app.envName);
+  const sourcePreferences = envSeed.fallbackSourcePreferences;
+  await waitForListingReady(page);
+
+  const apiFieldsPromise = waitForLeadFormApiFields(page).catch(() => []);
+  await openLeadCreationForm(page);
+
+  const [apiFields, domMandatoryFields] = await Promise.all([
+    apiFieldsPromise,
+    collectMandatoryFieldsFromDom(page),
+  ]);
+  const fields = dedupeLeadFields([...apiFields, ...domMandatoryFields]);
+  await fillCoreLeadFields(page, leadSeed, app, sourcePreferences);
+  await fillAdaptiveLeadFields(
+    page,
+    fields,
+    leadSeed,
+    app,
+    sourcePreferences,
+  );
+
+  return leadSeed;
+}
+
+export async function fillLeadForm(page: Page, app: AppConfig) {
+  const leadSeed = await prepareLeadForm(page, app);
+
+  await base.step("Save lead", async () => {
+    await page
+      .locator("#root-modal")
+      .getByRole("button", { name: /^save$/i })
+      .click();
+    await waitForHiddenWithFallback(
+      page.getByText("Lead Form", { exact: true }),
+      page,
+      60000,
+    );
+  });
 
   return leadSeed;
 }
@@ -371,6 +1264,7 @@ export async function assertLeadCreated(
   leadName: string,
   projectName: string,
 ) {
+  await logStep("Verify lead created");
   await expect(page.getByRole("button", { name: new RegExp(projectName, "i") }))
     .toBeVisible({ timeout: 10000 })
     .catch(() => {});
@@ -384,6 +1278,7 @@ export async function assertLeadCreated(
 }
 
 export async function openLeadByName(page: Page, leadName: string) {
+  await logStep("Open created lead");
   const searchInput = page.locator("#search");
   await searchInput.fill(leadName);
   await searchInput.press("Enter").catch(() => {});
@@ -583,6 +1478,7 @@ async function waitForLeadProfile(page: Page) {
 }
 
 export async function openAnyLeadFromListing(page: Page, app: AppConfig) {
+  await logStep("Open existing lead");
   await goToManageLeads(page, app);
   await page.waitForTimeout(3000);
   await waitForListingReady(page);
@@ -639,6 +1535,7 @@ export async function editOpenedLeadName(
   page: Page,
   nextName?: string,
 ): Promise<EditedLead> {
+  await logStep("Open edit lead form");
   const editLeadButtonCandidates = [
     page.getByRole("button", { name: /edit lead form/i }),
     page.getByText("Edit Lead Form", { exact: true }),
@@ -694,7 +1591,9 @@ export async function editOpenedLeadName(
   const updatedName = (
     nextName ?? `Edited Prefix ${randomDigits(4)} ${previousName}`
   ).slice(0, nameLimit);
-  await fullNameInput.fill(updatedName);
+  await base.step("Update lead name", async () => {
+    await fullNameInput.fill(updatedName);
+  });
 
   const updatedEmail = "demouser@test.com";
   const emailInputCandidates = [
@@ -713,7 +1612,9 @@ export async function editOpenedLeadName(
     const input = locator.first();
     if (await input.isVisible().catch(() => false)) {
       await input.scrollIntoViewIfNeeded().catch(() => {});
-      await input.fill(updatedEmail);
+      await base.step("Update lead email", async () => {
+        await input.fill(updatedEmail);
+      });
       emailUpdated = true;
       break;
     }
@@ -723,15 +1624,17 @@ export async function editOpenedLeadName(
     throw new Error("Email field was not visible while editing the lead.");
   }
 
-  await page
-    .locator("#root-modal")
-    .getByRole("button", { name: /^save$/i })
-    .click();
-  await waitForHiddenWithFallback(
-    page.getByText("Lead Form", { exact: true }),
-    page,
-    60000,
-  );
+  await base.step("Save lead changes", async () => {
+    await page
+      .locator("#root-modal")
+      .getByRole("button", { name: /^save$/i })
+      .click();
+    await waitForHiddenWithFallback(
+      page.getByText("Lead Form", { exact: true }),
+      page,
+      60000,
+    );
+  });
   await expect(page.locator("body")).toContainText(updatedName, {
     timeout: 60000,
   });
@@ -746,6 +1649,7 @@ export async function addRemarkToOpenedLead(
   page: Page,
   remarkText?: string,
 ): Promise<AddedRemark> {
+  await logStep("Add remark");
   const finalRemark = remarkText ?? `Automation remark ${randomDigits(6)}`;
   const addRemarkButtonCandidates = [
     page.getByRole("button", { name: /add remark/i }),
@@ -827,6 +1731,7 @@ export async function addRemarkToOpenedLead(
 export async function assertGenerateCostSheetRenderingOnOpenedLead(
   page: Page,
 ): Promise<CostSheetRenderResult> {
+  await logStep("Open generated cost sheet preview");
   const tabStrip = page
     .locator("div")
     .filter({ has: page.getByText("Overview", { exact: true }) })
@@ -859,6 +1764,7 @@ export async function assertGenerateCostSheetRenderingOnOpenedLead(
 export async function assertAddCommentPanelOnOpenedLead(
   page: Page,
 ): Promise<CommentPanelResult> {
+  await logStep("Open add comment panel");
   const addCommentButtonCandidates = [
     page.getByRole("button", { name: /add comment/i }),
     page.getByText("Add comment", { exact: true }),
@@ -881,6 +1787,7 @@ export async function addReEnquiryToOpenedLead(
   source = "Direct Site Visit",
   subSource = "Walk In",
 ): Promise<ReEnquiryResult> {
+  await logStep("Add re-enquiry");
   const reEnquiryButtonCandidates = [
     page.getByRole("button", { name: /^re-enquiry/i }),
     page.getByText(/^Re-Enquiry/i).first(),
@@ -945,74 +1852,862 @@ export async function addReEnquiryToOpenedLead(
   return { source, subSource };
 }
 
-export async function moveOpenedLeadToSiteVisitInProgress(page: Page) {
-  await expect(page.getByRole("button", { name: /change stage/i })).toBeVisible(
-    { timeout: 60000 },
-  );
-  await clickWithFallback(
-    page,
-    page.getByRole("button", { name: /change stage/i }),
-    async () =>
-      await page
-        .getByText("Choose a stage", { exact: true })
-        .isVisible()
-        .catch(() => false),
-  );
+export async function moveOpenedLeadToSiteVisitInProgress(
+  page: Page,
+  leadName: string,
+  otpMode: SiteVisitOtpMode = "otp",
+) {
+  await logStep("Move site visit to in progress");
+  await openChangeStageTab(page);
 
   await expect(page.getByText("Choose a stage", { exact: true })).toBeVisible({
     timeout: 30000,
   });
 
-  const siteVisitStage = page.getByText(/^Site Visit$/i).last();
-  await expect(siteVisitStage).toBeVisible({ timeout: 30000 });
-  await clickWithFallback(
-    page,
-    siteVisitStage,
-    async () => {
-      const subStageVisible = await page
-        .getByText("Choose a sub stage *", { exact: true })
-        .isVisible()
-        .catch(() => false);
-      const dateVisible = await page
-        .getByText(/^Select Date \*$/i)
-        .isVisible()
-        .catch(() => false);
-      return subStageVisible || dateVisible;
-    },
-    { force: true },
-  );
-
-  await expect(
-    page.getByText("Choose a sub stage *", { exact: true }),
-  ).toBeVisible({ timeout: 30000 });
   const inProgressOption = page.getByText(/^In Progress$/i).last();
   await expect(inProgressOption).toBeVisible({ timeout: 30000 });
   await inProgressOption.click({ force: true });
 
-  const modalSave = page
-    .locator("#root-modal")
-    .getByRole("button", { name: /^save$/i });
-  if (await modalSave.isVisible().catch(() => false)) {
-    await modalSave.click();
+  if (await clickStartSiteVisitCta(page)) {
+    await completeSiteVisitStartAuthentication(page, otpMode);
   } else {
-    const genericSave = page.getByRole("button", { name: /^save$/i }).last();
-    if (await genericSave.isVisible().catch(() => false)) {
-      await genericSave.click();
-    }
+    await saveInProgressStageDetails(page);
   }
+
+  await expectSiteVisitInProgress(page, leadName);
+}
+
+async function clickStartSiteVisitCta(page: Page) {
+  const startSiteVisitLocators = [
+    page.getByRole("button", { name: /start site visit/i }).first(),
+    page.locator("button, [role='button'], a").filter({ hasText: /start site visit/i }).first(),
+    page.getByText(/start site visit/i).first(),
+  ];
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    for (const locator of startSiteVisitLocators) {
+      if (await locator.isVisible().catch(() => false)) {
+        await locator.scrollIntoViewIfNeeded().catch(() => {});
+        await locator.click({ force: true });
+        await page.waitForTimeout(1500);
+        return true;
+      }
+    }
+
+    const clickedWithDom = await page.evaluate(() => {
+      const elements = Array.from(document.querySelectorAll<HTMLElement>("button, [role='button'], a, div, span"));
+      const target = elements.find((element) => {
+        const text = (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          /start site visit/i.test(text) &&
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none"
+        );
+      });
+
+      const clickable = target?.closest<HTMLElement>("button, [role='button'], a") || target;
+      if (!clickable) {
+        return false;
+      }
+
+      clickable.scrollIntoView({ block: "center", inline: "center" });
+      clickable.click();
+      return true;
+    });
+
+    if (clickedWithDom) {
+      await page.waitForTimeout(1500);
+      const authActionVisible = await page
+        .locator("button, [role='button'], a")
+        .filter({ hasText: /^(skip|send otp|visit in progress)$/i })
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (authActionVisible) {
+        return true;
+      }
+    }
+
+    const scrolled = await scrollStageFormSection(page);
+    if (!scrolled) {
+      await wheelRightStagePane(page);
+    }
+    await page.waitForTimeout(300);
+  }
+
+  return false;
+}
+
+async function completeSiteVisitStartAuthentication(page: Page, otpMode: SiteVisitOtpMode) {
+  if (otpMode === "skip") {
+    const skipped = await base.step("Skip site visit OTP", async () => {
+      const clickedWithDom = await clickVisibleTextActionWithDom(page, /^skip$/i);
+      if (clickedWithDom) {
+        return true;
+      }
+
+      const skipButton = await findVisibleAction(page, /^skip$/i, false);
+      if (!skipButton) {
+        return false;
+      }
+
+      await skipButton.click({ force: true });
+      return true;
+    });
+
+    if (skipped && await confirmVisitInProgress(page)) {
+      return;
+    }
+
+    if (await findVisibleAction(page, /^send otp$/i, false)) {
+      await completeVisibleOtpAuthentication(page);
+      return;
+    }
+
+    if (!skipped) {
+      await saveInProgressStageDetails(page);
+    }
+    return;
+  }
+
+  await completeVisibleOtpAuthentication(page);
+}
+
+async function confirmVisitInProgress(page: Page) {
+  return await base.step("Confirm visit in progress", async () => {
+    await page.waitForTimeout(700);
+
+    const visitInProgress = await findVisibleAction(page, /visit in progress/i, false);
+    if (visitInProgress) {
+      await visitInProgress.click({ force: true }).catch(() => {});
+      return true;
+    }
+
+    return await clickVisibleTextActionWithDom(page, /visit in progress/i);
+  });
+}
+
+async function saveInProgressStageDetails(page: Page) {
+  await base.step("Save in-progress stage details", async () => {
+    await fillVisibleStageFields(page, "automation started site visit.");
+    const saved = await clickVisibleSaveButton(page, /Stage Updated to Opportunity|Lead Stage Changed/i);
+    if (!saved) {
+      throw new Error('Save button was not visible after selecting "In Progress" site visit condition.');
+    }
+  });
+}
+
+async function completeVisibleOtpAuthentication(page: Page) {
+  await logStep("Send site visit OTP");
+  const sentOtp = await clickVisibleTextActionWithDom(page, /^send otp$/i);
+  if (!sentOtp) {
+    const sendOtpButton = await findVisibleAction(page, /^send otp$/i);
+    await sendOtpButton.click({ force: true });
+  }
+
+  await scrollStageFormSection(page, 1);
+  await page.mouse.wheel(0, 500).catch(() => {});
+  await page.waitForTimeout(700);
+
+  const otpDigits = ["1", "2", "3", "4"];
+  await base.step("Enter site visit OTP", async () => {
+    for (const [index, digit] of otpDigits.entries()) {
+      const otpInput = await findVisibleOtpInput(page, index);
+      await otpInput.fill(digit);
+    }
+  });
+
+  await base.step("Submit site visit OTP", async () => {
+    const continueButton = await findVisibleAction(page, /continue/i);
+    await continueButton.click({ force: true });
+  });
+
+  await confirmVisitInProgress(page);
+}
+
+async function completeOpenedSiteVisit(
+  page: Page,
+  leadName: string,
+  otpMode: SiteVisitOtpMode,
+) {
+  await logStep("Complete site visit");
+  await page.reload({ waitUntil: "networkidle" });
+  await waitForLeadProfile(page);
+  await openChangeStageTab(page);
+
+  let endVisitButton = await findVisibleAction(page, /^end visit$/i, false);
+  if (!endVisitButton && otpMode === "skip") {
+    await moveOpenedLeadToSiteVisitInProgress(page, leadName, "skip");
+    await page.reload({ waitUntil: "networkidle" });
+    await waitForLeadProfile(page);
+    await openChangeStageTab(page);
+    endVisitButton = await findVisibleAction(page, /^end visit$/i, false);
+  }
+
+  if (!endVisitButton) {
+    throw new Error('End Visit button was not visible after opening the Change Stage form.');
+  }
+
+  await endVisitButton.click({ force: true });
+  const completedStatus = await findVisibleAction(page, /^site visit completed$/i);
+  await completedStatus.click({ force: true });
+
+  await expectSiteVisitDone(page, leadName);
+}
+
+export async function completeOpenedSiteVisitWithOtp(page: Page, leadName: string) {
+  await completeOpenedSiteVisit(page, leadName, "otp");
+}
+
+export async function completeOpenedSiteVisitWithSkip(page: Page, leadName: string) {
+  await completeOpenedSiteVisit(page, leadName, "skip");
+}
+
+async function expectSiteVisitDone(page: Page, leadName: string) {
+  const leadStatusPattern = new RegExp(
+    `${escapeRegex(leadName)}[\\s\\S]{0,700}Site Visit[\\s\\S]{0,300}Visit Done`,
+    "i",
+  );
 
   await expect
     .poll(
       async () => {
-        const bodyText = await page.locator("body").innerText();
-        return /In Progress/i.test(bodyText);
+        const bodyText = await page.locator("body").innerText().catch(() => "");
+        return leadStatusPattern.test(bodyText) || /Site Visit Completed/i.test(bodyText);
       },
       { timeout: 60000 },
     )
     .toBeTruthy();
 }
 
+export async function markOpenedSiteVisitNoShow(page: Page, leadName: string) {
+  await logStep("Mark site visit as no show");
+  await openChangeStageTab(page);
+
+  await clickVisibleStageAction(page, /^no show$/i);
+
+  await fillVisibleStageFields(page, "automation marked site visit as no show.");
+
+  if (!(await isSiteVisitNoShowApplied(page, leadName))) {
+    const saved = await clickVisibleSaveButton(page);
+    if (!saved && !(await isSiteVisitNoShowApplied(page, leadName, 10000))) {
+      throw new Error("No Show site visit outcome was not saved and no Save button was visible.");
+    }
+  }
+
+  await expectSiteVisitNoShow(page, leadName);
+}
+
+async function isSiteVisitNoShowApplied(page: Page, leadName: string, timeout = 5000) {
+  return await expect
+    .poll(
+      async () => await hasSiteVisitNoShowState(page, leadName),
+      { timeout },
+    )
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
+}
+
+async function expectSiteVisitNoShow(page: Page, leadName: string) {
+  await expect
+    .poll(
+      async () => await hasSiteVisitNoShowState(page, leadName),
+      { timeout: 60000 },
+    )
+    .toBeTruthy();
+}
+
+async function hasSiteVisitNoShowState(page: Page, leadName: string) {
+  const leadStatusPattern = new RegExp(
+    `${escapeRegex(leadName)}[\\s\\S]{0,700}Site Visit[\\s\\S]{0,300}No Show`,
+    "i",
+  );
+  const statusText = await visibleLeadStatusCardText(page, leadName);
+  if (leadStatusPattern.test(statusText)) {
+    return true;
+  }
+
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  return leadStatusPattern.test(bodyText) || /Stage Updated to No Show|Lead Stage Changed Successfully/i.test(bodyText);
+}
+
+export async function moveCompletedSiteVisitToOpportunity(page: Page, leadName: string) {
+  await logStep("Move lead to opportunity");
+  await base.step("Ensure lead profile is open", async () => {
+    await ensureLeadProfileIsOpen(page, leadName);
+  });
+
+  await base.step("Open Change Stage tab", async () => {
+    await openChangeStageTab(page);
+  });
+
+  await base.step("Select Opportunity stage", async () => {
+    await clickOpportunityStageOption(page);
+  });
+
+  await base.step("Enter Opportunity remark and follow-up date", async () => {
+    await fillOpportunityStageFields(page, "Automation lead move to opportunity");
+  });
+
+  if (!(await isSiteVisitOpportunityApplied(page, leadName))) {
+    await base.step("Save Opportunity stage", async () => {
+      const saved = await clickVisibleSaveButton(page, /Stage Updated to Opportunity|Lead Stage Changed/i);
+      if (!saved && !(await isSiteVisitOpportunityApplied(page, leadName, 10000))) {
+        throw new Error('Opportunity stage was not saved and no Save button was visible.');
+      }
+    });
+  }
+
+  await base.step("Verify lead moved to Opportunity", async () => {
+    await expectSiteVisitOpportunity(page, leadName);
+  });
+}
+
+
+async function clickOpportunityStageOption(page: Page) {
+  await resetStageFormScroll(page);
+
+  const chooseStage = page.getByText("Choose a stage", { exact: true }).first();
+  await expect(chooseStage).toBeVisible({ timeout: 30000 });
+
+  const result = await clickOpportunityStageUntilReady(page);
+  if (result === "ready") {
+    return;
+  }
+
+  if (result === "contact-required") {
+    throw new Error(
+      'The app rejected Opportunity stage because the lead is not contacted yet. Add a contacted/call outcome step before moving this site visit lead to Opportunity.',
+    );
+  }
+
+  const visibleStageText = await visibleChangeStageText(page);
+  throw new Error(`Opportunity stage was clicked, but the Opportunity details form did not open. Visible stage text: ${visibleStageText}`);
+}
+
+async function clickOpportunityStageUntilReady(page: Page) {
+  const attempts: Array<() => Promise<boolean>> = [
+    async () => {
+      const opportunityFromCodegen = page.getByText("Opportunity", { exact: true }).nth(1);
+      await revealLocator(page, opportunityFromCodegen);
+      await opportunityFromCodegen.click();
+      return true;
+    },
+    async () => {
+      const opportunityFromCodegen = page.getByText("Opportunity", { exact: true }).nth(1);
+      await revealLocator(page, opportunityFromCodegen);
+      await opportunityFromCodegen.click({ force: true });
+      return true;
+    },
+    async () => await clickStageChipInChangeStagePanel(page, "Opportunity"),
+    async () => {
+      const opportunityFromCodegen = page.getByText("Opportunity", { exact: true }).nth(1);
+      await revealLocator(page, opportunityFromCodegen);
+      const box = await opportunityFromCodegen.boundingBox();
+      if (!box) {
+        return false;
+      }
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      return true;
+    },
+  ];
+
+  for (const attempt of attempts) {
+    await resetStageFormScroll(page);
+    const clicked = await attempt().catch(() => false);
+    if (!clicked) {
+      continue;
+    }
+
+    const selectionResult = await waitForOpportunityStageSelection(page);
+    if (selectionResult !== "not-ready") {
+      return selectionResult;
+    }
+  }
+
+  return "not-ready" as const;
+}
+
+async function waitForOpportunityStageSelection(page: Page) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await isOpportunityDetailsFormVisible(page)) {
+      return "ready" as const;
+    }
+
+    const bodyText = await page.locator("body").innerText().catch(() => "");
+    if (/New Lead Not Contacted|not been contacted yet/i.test(bodyText)) {
+      return "contact-required" as const;
+    }
+
+    await page.waitForTimeout(500);
+  }
+
+  return "not-ready" as const;
+}
+
+async function isOpportunityDetailsFormVisible(page: Page) {
+  return (
+    (await page.getByRole("textbox", { name: /remarks?\s*\*/i }).first().isVisible().catch(() => false)) ||
+    (await page.getByRole("textbox", { name: /remarks?/i }).first().isVisible().catch(() => false)) ||
+    (await page.locator('textarea[placeholder*="Remark" i]').first().isVisible().catch(() => false)) ||
+    (await page.locator('textarea[name*="remark" i]').first().isVisible().catch(() => false)) ||
+    (await page.locator("textarea").first().isVisible().catch(() => false))
+  );
+}
+
+async function clickStageChipInChangeStagePanel(page: Page, stageName: string) {
+  return await page.evaluate((targetStageName) => {
+    const normalize = (value: string | null | undefined) =>
+      (value || "").replace(/\s+/g, " ").trim();
+
+    const isVisible = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.visibility !== "hidden" &&
+        style.display !== "none" &&
+        style.pointerEvents !== "none"
+      );
+    };
+
+    const stageHeading = Array.from(document.querySelectorAll<HTMLElement>("h1, h2, h3, h4, p, span, div"))
+      .find((element) => normalize(element.innerText || element.textContent) === "Choose a stage" && isVisible(element));
+    if (!stageHeading) {
+      return false;
+    }
+
+    const stageScopeCandidates: HTMLElement[] = [];
+    let current: HTMLElement | null = stageHeading.parentElement;
+    for (let depth = 0; current && depth < 8; depth += 1) {
+      const text = normalize(current.innerText || current.textContent);
+      if (/New Lead/i.test(text) && /Site Visit/i.test(text) && /Opportunity/i.test(text)) {
+        stageScopeCandidates.push(current);
+      }
+      current = current.parentElement;
+    }
+
+    const stageScope = stageScopeCandidates
+      .sort((left, right) => normalize(left.innerText).length - normalize(right.innerText).length)[0];
+    if (!stageScope) {
+      return false;
+    }
+
+    const matches = Array.from(stageScope.querySelectorAll<HTMLElement>("button, [role='button'], a, p, span, div"))
+      .filter((element) => normalize(element.innerText || element.textContent) === targetStageName && isVisible(element))
+      .sort((left, right) => {
+        const leftStyle = window.getComputedStyle(left);
+        const rightStyle = window.getComputedStyle(right);
+        const leftPriority = left.matches("button, [role='button'], a") || leftStyle.cursor === "pointer" ? 0 : 1;
+        const rightPriority = right.matches("button, [role='button'], a") || rightStyle.cursor === "pointer" ? 0 : 1;
+        if (leftPriority !== rightPriority) {
+          return leftPriority - rightPriority;
+        }
+        return normalize(left.innerText || left.textContent).length - normalize(right.innerText || right.textContent).length;
+      });
+
+    const target = matches[0];
+    if (!target) {
+      return false;
+    }
+
+    let clickable: HTMLElement | null = target;
+    let parent = target.parentElement;
+    for (let depth = 0; parent && depth < 4; depth += 1) {
+      const parentText = normalize(parent.innerText || parent.textContent);
+      const parentStyle = window.getComputedStyle(parent);
+      if (parentText === targetStageName && (parent.matches("button, [role='button'], a") || parentStyle.cursor === "pointer")) {
+        clickable = parent;
+        break;
+      }
+      parent = parent.parentElement;
+    }
+
+    const scrollParents: HTMLElement[] = [];
+    parent = clickable.parentElement;
+    while (parent && parent !== document.body) {
+      const style = window.getComputedStyle(parent);
+      if (parent.scrollHeight > parent.clientHeight && /(auto|scroll|overlay)/.test(style.overflowY)) {
+        scrollParents.push(parent);
+      }
+      parent = parent.parentElement;
+    }
+
+    for (const container of scrollParents.reverse()) {
+      const containerRect = container.getBoundingClientRect();
+      const targetRect = clickable.getBoundingClientRect();
+      container.scrollTop +=
+        targetRect.top -
+        containerRect.top -
+        Math.max(24, Math.floor((container.clientHeight - targetRect.height) / 2));
+    }
+
+    clickable.scrollIntoView({ block: "center", inline: "center" });
+    clickable.click();
+    return true;
+  }, stageName);
+}
+
+async function fillOpportunityStageFields(page: Page, remark: string) {
+  const remarkFilled = await fillFirstVisibleStageField(
+    page,
+    [
+      page.getByRole("textbox", { name: /remarks?\s*\*/i }).first(),
+      page.getByRole("textbox", { name: /remarks?/i }).first(),
+      page.locator('textarea[placeholder*="Remark" i]').first(),
+      page.locator('textarea[name*="remark" i]').first(),
+      page.locator("textarea").first(),
+    ],
+    remark,
+  );
+  if (!remarkFilled) {
+    throw new Error('Remarks field was not visible after selecting "Opportunity".');
+  }
+
+  const dateSelected = await selectOpportunityFollowUpDate(page);
+  if (!dateSelected) {
+    throw new Error('Start Date field was not visible after selecting "Opportunity".');
+  }
+}
+
+async function isSiteVisitOpportunityApplied(page: Page, leadName: string, timeout = 5000) {
+  return await expect
+    .poll(
+      async () => await hasSiteVisitOpportunityState(page, leadName),
+      { timeout },
+    )
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
+}
+
+async function expectSiteVisitOpportunity(page: Page, leadName: string) {
+  await expect
+    .poll(
+      async () => await hasSiteVisitOpportunityState(page, leadName),
+      { timeout: 60000 },
+    )
+    .toBeTruthy();
+}
+
+async function hasSiteVisitOpportunityState(page: Page, leadName: string) {
+  const leadStatusPattern = new RegExp(
+    `${escapeRegex(leadName)}[\\s\\S]{0,700}Opportunity`,
+    "i",
+  );
+  const statusText = await visibleLeadStatusCardText(page, leadName);
+  if (leadStatusPattern.test(statusText) || /Opportunity/i.test(statusText)) {
+    return true;
+  }
+
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  return /Stage Updated to Opportunity/i.test(bodyText);
+}
+
+async function ensureLeadProfileIsOpen(page: Page, leadName: string) {
+  if (await isLeadProfileOpen(page, leadName)) {
+    return;
+  }
+
+  await openLeadByName(page, leadName);
+  await waitForLeadProfile(page);
+}
+
+async function isLeadProfileOpen(page: Page, leadName: string) {
+  return await page
+    .locator("body")
+    .innerText({ timeout: 5000 })
+    .then((bodyText) => (
+      bodyText.includes(leadName) &&
+      /Lead Profile/i.test(bodyText) &&
+      /Change Stage/i.test(bodyText)
+    ))
+    .catch(() => false);
+}
+
+async function findVisibleOtpInput(page: Page, index: number) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const labelledInput = page
+      .getByRole("textbox", { name: new RegExp(`^${index + 1}$`) })
+      .first();
+    if (await labelledInput.isVisible().catch(() => false)) {
+      await labelledInput.scrollIntoViewIfNeeded().catch(() => {});
+      return labelledInput;
+    }
+
+    const rawOtpInput = page
+      .locator('input[inputmode="numeric"], input[maxlength="1"]')
+      .nth(index);
+    if (await rawOtpInput.isVisible().catch(() => false)) {
+      await rawOtpInput.scrollIntoViewIfNeeded().catch(() => {});
+      return rawOtpInput;
+    }
+
+    const direction = attempt < 8 ? 1 : -1;
+    const scrolled = await scrollStageFormSection(page, direction);
+    if (!scrolled) {
+      await page.mouse.wheel(0, direction * 500).catch(() => {});
+    }
+    await page.waitForTimeout(350);
+  }
+
+  throw new Error(`OTP digit ${index + 1} input was not visible after scrolling the site visit section.`);
+}
+
+async function findVisibleAction(page: Page, name: RegExp, required = true) {
+  const actions = [
+    page.getByRole("button", { name }),
+    page.locator("button, [role='button'], a").filter({ hasText: name }),
+    page.getByText(name),
+  ];
+
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    for (const locator of actions) {
+      const count = Math.min(await locator.count().catch(() => 0), 40);
+      for (let index = 0; index < count; index += 1) {
+        const action = locator.nth(index);
+        await revealLocator(page, action);
+        if (await action.isVisible().catch(() => false)) {
+          return action;
+        }
+      }
+    }
+
+    const direction = attempt < 8 ? 1 : -1;
+    const scrolled = await scrollStageFormSection(page, direction);
+    if (!scrolled) {
+      await page.mouse.wheel(0, direction * 500).catch(() => {});
+    }
+    await page.waitForTimeout(350);
+  }
+
+  if (!required) {
+    return null;
+  }
+
+  throw new Error(`Action matching ${name} was not visible after scrolling the site visit section.`);
+}
+
+async function clickVisibleStageAction(page: Page, name: RegExp) {
+  const source = name.source;
+  const flags = name.flags;
+
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const clicked = await page.evaluate(
+      ({ source: patternSource, flags: patternFlags }) => {
+        const matcher = new RegExp(patternSource, patternFlags);
+
+        function normalize(value: string | null | undefined) {
+          return (value || "").replace(/\s+/g, " ").trim();
+        }
+
+        function isVisible(element: HTMLElement) {
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            style.pointerEvents !== "none"
+          );
+        }
+
+        function stageScopeFor(element: HTMLElement) {
+          let current: HTMLElement | null = element;
+          for (let depth = 0; current && depth < 10; depth += 1) {
+            const text = normalize(current.innerText || current.textContent);
+            if (
+              /Choose a stage|Choose a sub stage/i.test(text) &&
+              /Open|Qualified|Site Visit|Opportunity|Dropped|Booked|In Progress|No Show/i.test(text)
+            ) {
+              return current;
+            }
+            current = current.parentElement;
+          }
+          return null;
+        }
+
+        function reveal(element: HTMLElement) {
+          const scrollableParents: HTMLElement[] = [];
+          let parent = element.parentElement;
+          while (parent && parent !== document.body) {
+            const style = window.getComputedStyle(parent);
+            if (
+              (parent.scrollHeight > parent.clientHeight && /(auto|scroll|overlay)/.test(style.overflowY)) ||
+              (parent.scrollWidth > parent.clientWidth && /(auto|scroll|overlay)/.test(style.overflowX))
+            ) {
+              scrollableParents.push(parent);
+            }
+            parent = parent.parentElement;
+          }
+
+          for (const container of scrollableParents.reverse()) {
+            const containerRect = container.getBoundingClientRect();
+            const elementRect = element.getBoundingClientRect();
+            container.scrollTop +=
+              elementRect.top -
+              containerRect.top -
+              Math.max(24, Math.floor((container.clientHeight - elementRect.height) / 2));
+            container.scrollLeft +=
+              elementRect.left -
+              containerRect.left -
+              Math.max(0, Math.floor((container.clientWidth - elementRect.width) / 2));
+          }
+
+          element.scrollIntoView({ block: "center", inline: "nearest" });
+        }
+
+        const candidates = Array.from(
+          document.querySelectorAll<HTMLElement>("button, [role='button'], a, p, span, div"),
+        ).filter((element) => {
+          const text = normalize(element.innerText || element.textContent);
+          return matcher.test(text) && Boolean(stageScopeFor(element));
+        });
+
+        candidates.sort((left, right) => {
+          const leftTagPriority = /^(BUTTON|A)$/.test(left.tagName) || left.getAttribute("role") === "button" ? 0 : 1;
+          const rightTagPriority = /^(BUTTON|A)$/.test(right.tagName) || right.getAttribute("role") === "button" ? 0 : 1;
+          if (leftTagPriority !== rightTagPriority) {
+            return leftTagPriority - rightTagPriority;
+          }
+          return normalize(left.innerText || left.textContent).length - normalize(right.innerText || right.textContent).length;
+        });
+
+        for (const candidate of candidates) {
+          reveal(candidate);
+          if (isVisible(candidate)) {
+            candidate.click();
+            return true;
+          }
+        }
+
+        return false;
+      },
+      { source, flags },
+    );
+
+    if (clicked) {
+      await page.waitForTimeout(500);
+      return;
+    }
+
+    const direction = attempt < 8 ? 1 : -1;
+    const scrolled = await scrollStageFormSection(page, direction);
+    if (!scrolled) {
+      await page.mouse.wheel(0, direction * 500).catch(() => {});
+    }
+    await page.waitForTimeout(350);
+  }
+
+  throw new Error(`Stage action matching ${name} was not visible inside the Change Stage form.`);
+}
+
+async function clickVisibleTextActionWithDom(page: Page, name: RegExp) {
+  const source = name.source;
+  const flags = name.flags;
+
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const clicked = await page.evaluate(
+      ({ source: patternSource, flags: patternFlags }) => {
+        const matcher = new RegExp(patternSource, patternFlags);
+        const elements = Array.from(
+          document.querySelectorAll<HTMLElement>("button, [role='button'], a, p, span, div"),
+        );
+        const matches = elements
+          .map((element) => {
+            const text = (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+            return { element, text };
+          })
+          .filter(({ element, text }) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+
+            return (
+              matcher.test(text) &&
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== "hidden" &&
+              style.display !== "none"
+            );
+          })
+          .sort((left, right) => left.text.length - right.text.length);
+
+        const target = matches[0]?.element;
+
+        const clickable = target?.closest<HTMLElement>("button, [role='button'], a") || target;
+        if (!clickable) {
+          return false;
+        }
+
+        clickable.scrollIntoView({ block: "center", inline: "center" });
+        clickable.click();
+        return true;
+      },
+      { source, flags },
+    );
+
+    if (clicked) {
+      await page.waitForTimeout(700);
+      return true;
+    }
+
+    const direction = attempt < 8 ? 1 : -1;
+    const scrolled = await scrollStageFormSection(page, direction);
+    if (!scrolled) {
+      await page.mouse.wheel(0, direction * 500).catch(() => {});
+    }
+    await page.waitForTimeout(350);
+  }
+
+  return false;
+}
+
+async function expectSiteVisitInProgress(page: Page, leadName: string) {
+  await expect
+    .poll(
+      async () => {
+        const statusText = await visibleLeadStatusCardText(page, leadName);
+        return /Site Visit/i.test(statusText) && /In Progress/i.test(statusText);
+      },
+      { timeout: 60000 },
+    )
+    .toBeTruthy();
+}
+
+async function visibleLeadStatusCardText(page: Page, leadName: string) {
+  return await page.evaluate((targetLeadName) => {
+    const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
+    const visibleElements = Array.from(document.querySelectorAll<HTMLElement>("article, section, aside, div"))
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        const text = normalize(element.innerText || element.textContent || "");
+        return { element, rect, style, text };
+      })
+      .filter(({ rect, style, text }) => (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.visibility !== "hidden" &&
+        style.display !== "none" &&
+        text.includes(targetLeadName) &&
+        /Lead ID/i.test(text) &&
+        /Site Visit/i.test(text)
+      ))
+      .sort((left, right) => left.text.length - right.text.length);
+
+    return visibleElements[0]?.text || "";
+  }, leadName);
+}
+
 export async function assertSiteVisitStageCasesOnOpenedLead(page: Page) {
+  await logStep("Schedule site visit");
   await openChangeStageTab(page);
 
   const siteVisitStage = page
@@ -1050,6 +2745,34 @@ export async function assertSiteVisitStageCasesOnOpenedLead(page: Page) {
         return /Site Visit/i.test(bodyText);
       },
       { timeout: 60000 },
+    )
+    .toBeTruthy();
+}
+
+export async function assertScheduledSiteVisitReady(page: Page, leadName: string) {
+  await logStep("Verify scheduled site visit");
+  await expect(page.locator("body")).toContainText(
+    new RegExp(`${escapeRegex(leadName)}[\\s\\S]{0,700}Site Visit[\\s\\S]{0,300}Scheduled`, "i"),
+    { timeout: 60000 },
+  );
+
+  const startSiteVisitCta = page
+    .locator("button, [role='button'], a")
+    .filter({ hasText: /start site visit/i })
+    .first();
+
+  if (!(await startSiteVisitCta.isVisible().catch(() => false))) {
+    await page.mouse.wheel(0, 700).catch(() => {});
+  }
+
+  await expect
+    .poll(
+      async () => {
+        const bodyText = await page.locator("body").innerText().catch(() => "");
+        const ctaVisible = await startSiteVisitCta.isVisible().catch(() => false);
+        return ctaVisible || /Site Visit\s+Scheduled|Scheduled/i.test(bodyText);
+      },
+      { timeout: 10000 },
     )
     .toBeTruthy();
 }
@@ -1278,12 +3001,7 @@ async function fillVisibleStageFields(page: Page, remark: string) {
     page.locator('input[name*="remark" i]').first(),
   ];
 
-  for (const locator of remarkLocators) {
-    if (await locator.isVisible().catch(() => false)) {
-      await locator.fill(remark);
-      break;
-    }
-  }
+  await fillFirstVisibleStageField(page, remarkLocators, remark);
 
   const followUpLocators = [
     page.locator('input[type="date"]').first(),
@@ -1292,12 +3010,8 @@ async function fillVisibleStageFields(page: Page, remark: string) {
     page.locator('input[id*="follow" i]').first(),
   ];
 
-  for (const locator of followUpLocators) {
-    if (await locator.isVisible().catch(() => false)) {
-      await locator.fill(tomorrowIsoDate());
-      break;
-    }
-  }
+  await fillFirstVisibleStageField(page, followUpLocators, tomorrowIsoDate());
+  await selectCustomDateIfVisible(page, 1);
 
   const followUpTimeLocators = [
     page.locator('input[type="time"]').first(),
@@ -1306,12 +3020,130 @@ async function fillVisibleStageFields(page: Page, remark: string) {
     page.locator('input[id*="time" i]').first(),
   ];
 
-  for (const locator of followUpTimeLocators) {
-    if (await locator.isVisible().catch(() => false)) {
-      await locator.fill("10:30");
-      break;
+  await fillFirstVisibleStageField(page, followUpTimeLocators, "10:30");
+  await selectCustomTimeIfVisible(page);
+}
+
+async function fillFirstVisibleStageField(page: Page, locators: Locator[], value: string) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    for (const locator of locators) {
+      if (!(await locator.isVisible().catch(() => false))) {
+        continue;
+      }
+
+      await revealLocator(page, locator);
+      await locator.click().catch(() => {});
+      if (await locator.fill(value).then(() => true).catch(() => false)) {
+        return true;
+      }
+    }
+
+    const direction = attempt < 7 ? 1 : -1;
+    const scrolled = await scrollStageFormSection(page, direction);
+    if (!scrolled) {
+      await page.mouse.wheel(0, direction * 500).catch(() => {});
+    }
+    await page.waitForTimeout(250);
+  }
+
+  return false;
+}
+
+async function selectOpportunityFollowUpDate(page: Page) {
+  const startDateButtons = [
+    page.getByRole("button", { name: /^start date$/i }).first(),
+    page.getByRole("button", { name: /start date|select date|follow.*date/i }).first(),
+    page.locator("button, [role='button']").filter({ hasText: /start date|select date/i }).first(),
+  ];
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    for (const startDateButton of startDateButtons) {
+      await revealLocator(page, startDateButton);
+      if (!(await startDateButton.isVisible().catch(() => false))) {
+        continue;
+      }
+
+      await startDateButton.click({ force: true }).catch(() => {});
+      for (let optionAttempt = 0; optionAttempt < 8; optionAttempt += 1) {
+        const preferredDate = page.getByRole("option", { name: dateOptionName(3) }).first();
+        const anyFutureDate = page
+          .getByRole("option", { name: /Choose (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),/i })
+          .first();
+
+        for (const dateOption of [preferredDate, anyFutureDate]) {
+          await revealLocator(page, dateOption);
+          if (await dateOption.isVisible().catch(() => false)) {
+            await dateOption.click({ force: true });
+            return true;
+          }
+        }
+
+        const scrolled = await scrollVisiblePopup(page);
+        if (!scrolled) {
+          break;
+        }
+        await page.waitForTimeout(250);
+      }
+    }
+
+    const direction = attempt < 5 ? 1 : -1;
+    const scrolled = await scrollStageFormSection(page, direction);
+    if (!scrolled) {
+      await page.mouse.wheel(0, direction * 500).catch(() => {});
+    }
+    await page.waitForTimeout(250);
+  }
+
+  return false;
+}
+
+async function selectCustomDateIfVisible(page: Page, daysAhead: number) {
+  const dateButtonCandidates = [
+    page.getByRole("button", { name: /select date|start date|follow.*date/i }).first(),
+    page.locator("button, [role='button'], div").filter({ hasText: /select date|start date/i }).first(),
+  ];
+
+  for (const dateButton of dateButtonCandidates) {
+    if (!(await dateButton.isVisible().catch(() => false))) {
+      continue;
+    }
+
+    await revealLocator(page, dateButton);
+    await dateButton.click({ force: true }).catch(() => {});
+    const dateOption = page.getByRole("option", { name: dateOptionName(daysAhead) }).first();
+    if (await dateOption.isVisible().catch(() => false)) {
+      await dateOption.click({ force: true });
+      return true;
     }
   }
+
+  return false;
+}
+
+async function selectCustomTimeIfVisible(page: Page) {
+  const timeButtonCandidates = [
+    page.getByRole("button", { name: /select time/i }).first(),
+    page.locator("button, [role='button'], div").filter({ hasText: /^Select Time$/i }).first(),
+  ];
+
+  for (const timeButton of timeButtonCandidates) {
+    if (!(await timeButton.isVisible().catch(() => false))) {
+      continue;
+    }
+
+    await revealLocator(page, timeButton);
+    await timeButton.click({ force: true }).catch(() => {});
+    const timeOption = page
+      .locator("button, [role='option'], div, span")
+      .filter({ hasText: /^(10|11):[0-5]\d\s?(AM|PM)$/i })
+      .first();
+    if (await timeOption.isVisible().catch(() => false)) {
+      await timeOption.click({ force: true });
+      return true;
+    }
+  }
+
+  return false;
 }
 
 async function fillSiteVisitCancellationReason(
@@ -1377,71 +3209,298 @@ async function fillSiteVisitCancellationReason(
   }
 }
 
-async function clickVisibleSaveButton(page: Page) {
+async function clickVisibleSaveButton(page: Page, postSaveText?: RegExp) {
   const saveButtons = [
     page.locator("#root-modal").getByRole("button", { name: /^save$/i }),
     page.getByRole("button", { name: /^save$/i }),
   ];
 
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (attempt > 0) {
+      await scrollStageFormToBottom(page);
+      await wheelRightStagePane(page);
+    }
+
     for (const locator of saveButtons) {
       const count = await locator.count().catch(() => 0);
       for (let index = count - 1; index >= 0; index -= 1) {
         const button = locator.nth(index);
-        await button.scrollIntoViewIfNeeded().catch(() => {});
+        await revealLocator(page, button);
         if (await button.isVisible().catch(() => false)) {
           await button.click({ force: true });
+          if (postSaveText) {
+            await expect(page.locator("body")).toContainText(postSaveText, {
+              timeout: 15000,
+            }).catch(() => {});
+          }
           return true;
         }
       }
     }
 
+    if (await clickVisibleSaveButtonWithDom(page)) {
+      if (postSaveText) {
+        await expect(page.locator("body")).toContainText(postSaveText, {
+          timeout: 15000,
+        }).catch(() => {});
+      }
+      return true;
+    }
+
     const scrolled = await scrollStageFormSection(page);
     if (!scrolled) {
-      await page.mouse.wheel(0, 600).catch(() => {});
+      await wheelRightStagePane(page);
     }
   }
 
   return false;
 }
 
-async function scrollStageFormSection(page: Page) {
-  return await page.evaluate(() => {
-    const scrollables = Array.from(
-      document.querySelectorAll("div, section, main"),
-    ).filter((element) => {
-      const html = element as HTMLElement;
-      const style = window.getComputedStyle(html);
-      const rect = html.getBoundingClientRect();
-      const text = (html.innerText || "").trim();
+async function scrollStageFormToBottom(page: Page) {
+  await page.evaluate(() => {
+    const normalize = (value: string | null | undefined) =>
+      (value || "").replace(/\s+/g, " ").trim();
 
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>("main, section, article, div"))
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        const text = normalize(element.innerText || element.textContent);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          element.scrollHeight > element.clientHeight &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          (rect.left > window.innerWidth * 0.25 || /Choose a stage|Remarks|Add Follow up|Next Follow Up/i.test(text))
+        );
+      })
+      .sort((left, right) => {
+        const leftText = normalize(left.innerText || left.textContent);
+        const rightText = normalize(right.innerText || right.textContent);
+        const leftPriority = /Choose a stage|Remarks|Add Follow up|Next Follow Up/i.test(leftText) ? 0 : 1;
+        const rightPriority = /Choose a stage|Remarks|Add Follow up|Next Follow Up/i.test(rightText) ? 0 : 1;
+        if (leftPriority !== rightPriority) {
+          return leftPriority - rightPriority;
+        }
+        return right.getBoundingClientRect().left - left.getBoundingClientRect().left;
+      });
+
+    for (const element of candidates) {
+      element.scrollTop = element.scrollHeight;
+    }
+
+    document.scrollingElement?.scrollTo({ top: document.scrollingElement.scrollHeight });
+  }).catch(() => {});
+  await page.waitForTimeout(250);
+}
+
+async function wheelRightStagePane(page: Page, deltaY = 900) {
+  const viewport = page.viewportSize();
+  if (viewport) {
+    await page.mouse.move(Math.max(0, viewport.width - 360), Math.max(0, viewport.height - 260)).catch(() => {});
+  }
+  await page.mouse.wheel(0, deltaY).catch(() => {});
+  await page.waitForTimeout(250);
+}
+
+async function clickVisibleSaveButtonWithDom(page: Page) {
+  return await page.evaluate(() => {
+    const normalize = (value: string | null | undefined) =>
+      (value || "").replace(/\s+/g, " ").trim();
+    const isVisible = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
       return (
         rect.width > 0 &&
         rect.height > 0 &&
-        html.scrollHeight > html.clientHeight &&
-        (style.overflowY === "auto" ||
-          style.overflowY === "scroll" ||
-          style.overflowY === "overlay") &&
-        /Choose a stage|Choose a sub stage|Remarks|Site Visit|Cancelled|No Show/i.test(
-          text,
-        )
+        rect.bottom >= 0 &&
+        rect.top <= window.innerHeight &&
+        style.visibility !== "hidden" &&
+        style.display !== "none" &&
+        style.pointerEvents !== "none"
       );
-    });
+    };
 
-    for (const element of scrollables) {
-      const html = element as HTMLElement;
-      const previousTop = html.scrollTop;
-      html.scrollTop = Math.min(
-        html.scrollTop + Math.max(Math.floor(html.clientHeight * 0.85), 320),
-        html.scrollHeight,
+    const matches = Array.from(document.querySelectorAll<HTMLElement>("button, [role='button']"))
+      .filter((element) => normalize(element.innerText || element.textContent) === "Save" && isVisible(element))
+      .sort((left, right) => right.getBoundingClientRect().left - left.getBoundingClientRect().left);
+
+    const button = matches[0];
+    if (!button) {
+      return false;
+    }
+
+    button.scrollIntoView({ block: "center", inline: "center" });
+    button.click();
+    return true;
+  }).catch(() => false);
+}
+
+async function revealLocator(page: Page, locator: Locator) {
+  const handle = await locator.elementHandle().catch(() => null);
+  if (!handle) {
+    return false;
+  }
+
+  await handle
+    .evaluate((element) => {
+      const target = element as HTMLElement;
+      const scrollableParents: HTMLElement[] = [];
+      let parent = target.parentElement;
+
+      while (parent && parent !== document.body) {
+        const style = window.getComputedStyle(parent);
+        const canScrollY =
+          parent.scrollHeight > parent.clientHeight &&
+          /(auto|scroll|overlay)/.test(style.overflowY);
+        const canScrollX =
+          parent.scrollWidth > parent.clientWidth &&
+          /(auto|scroll|overlay)/.test(style.overflowX);
+
+        if (canScrollY || canScrollX) {
+          scrollableParents.push(parent);
+        }
+
+        parent = parent.parentElement;
+      }
+
+      for (const container of scrollableParents.reverse()) {
+        const containerRect = container.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+
+        container.scrollTop +=
+          targetRect.top -
+          containerRect.top -
+          Math.max(24, Math.floor((container.clientHeight - targetRect.height) / 2));
+        container.scrollLeft +=
+          targetRect.left -
+          containerRect.left -
+          Math.max(0, Math.floor((container.clientWidth - targetRect.width) / 2));
+      }
+
+      target.scrollIntoView({ block: "center", inline: "nearest" });
+    })
+    .catch(() => {});
+  await locator.scrollIntoViewIfNeeded().catch(() => {});
+  await page.waitForTimeout(100);
+  return true;
+}
+
+async function resetStageFormScroll(page: Page) {
+  await page.evaluate(() => {
+    const normalize = (value: string | null | undefined) =>
+      (value || "").replace(/\s+/g, " ").trim();
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>("main, section, article, div"))
+      .filter((element) => {
+        const style = window.getComputedStyle(element);
+        const text = normalize(element.innerText || element.textContent);
+        return (
+          element.scrollHeight > element.clientHeight &&
+          /(auto|scroll|overlay)/.test(style.overflowY) &&
+          /Choose a stage|Choose a sub stage|Remarks|Add Follow up/i.test(text)
+        );
+      });
+
+    for (const element of candidates) {
+      element.scrollTop = 0;
+    }
+
+    document.scrollingElement?.scrollTo({ top: 0 });
+  }).catch(() => {});
+  await page.waitForTimeout(150);
+}
+
+async function visibleChangeStageText(page: Page) {
+  return await page.evaluate(() => {
+    const normalize = (value: string | null | undefined) =>
+      (value || "").replace(/\s+/g, " ").trim();
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>("section, article, div"))
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        const text = normalize(element.innerText || element.textContent);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          /Choose a stage|Choose a sub stage|Remarks|Add Follow up/i.test(text)
+        );
+      })
+      .sort((left, right) => normalize(left.innerText).length - normalize(right.innerText).length);
+
+    return normalize(candidates[0]?.innerText || candidates[0]?.textContent).slice(0, 500);
+  }).catch(() => "");
+}
+
+async function scrollStageFormSection(page: Page, direction = 1) {
+  return await page.evaluate((scrollDirection) => {
+    const normalize = (value: string | null | undefined) =>
+      (value || "").replace(/\s+/g, " ").trim();
+
+    const scrollables = Array.from(
+      document.querySelectorAll<HTMLElement>("div, section, main"),
+    )
+      .map((element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        const text = normalize(element.innerText || element.textContent);
+        const canScroll =
+          rect.width > 0 &&
+          rect.height > 0 &&
+          element.scrollHeight > element.clientHeight &&
+          /(auto|scroll|overlay)/.test(style.overflowY);
+
+        if (!canScroll) {
+          return null;
+        }
+
+        let priority = 99;
+        if (/Choose a stage|Choose a sub stage/i.test(text)) {
+          priority = 0;
+        } else if (/Remarks|Add Follow up|Select Date|Select Time/i.test(text)) {
+          priority = 1;
+        } else if (/End Visit|Send OTP|Visit In Progress|No Show|Cancelled/i.test(text)) {
+          priority = 2;
+        } else if (/Site Visit/i.test(text)) {
+          priority = 8;
+        }
+
+        if (priority === 99) {
+          return null;
+        }
+
+        return { element, priority, textLength: text.length, left: rect.left };
+      })
+      .filter((candidate): candidate is { element: HTMLElement; priority: number; textLength: number; left: number } => Boolean(candidate))
+      .sort((left, right) => {
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority;
+        }
+
+        // The Change Stage form is the right-side pane; prefer it over the left lead details pane.
+        if (Math.abs(left.left - right.left) > 20) {
+          return right.left - left.left;
+        }
+
+        return left.textLength - right.textLength;
+      });
+
+    for (const { element } of scrollables) {
+      const previousTop = element.scrollTop;
+      const distance = Math.max(Math.floor(element.clientHeight * 0.85), 320) * scrollDirection;
+      element.scrollTop = Math.max(
+        0,
+        Math.min(element.scrollTop + distance, element.scrollHeight - element.clientHeight),
       );
-      if (html.scrollTop !== previousTop) {
+      if (element.scrollTop !== previousTop) {
         return true;
       }
     }
 
     return false;
-  });
+  }, direction);
 }
 
 async function scrollJourneySection(page: Page) {
@@ -1502,21 +3561,43 @@ async function stagePanelIsOpen(
   changeStageTab: Locator,
   aiInsightsTab: Locator,
 ) {
-  const chooseStage = page.getByText("Choose a stage", { exact: true });
-  const chooseSubStage = page.getByText("Choose a sub stage *", {
-    exact: true,
-  });
-  const statusLabel = page.getByText(/^Status$/i).first();
-
+  const chooseStage = page.getByText("Choose a stage", { exact: true }).first();
   if (await chooseStage.isVisible().catch(() => false)) {
     return true;
   }
 
+  const chooseSubStage = page.getByText(/Choose a sub stage/i).first();
   if (await chooseSubStage.isVisible().catch(() => false)) {
     return true;
   }
 
+  const panelText = await tabStrip
+    .locator("xpath=following::div[1]")
+    .innerText()
+    .catch(() => "");
+
+  if (/Choose a stage/i.test(panelText)) {
+    return true;
+  }
+
+  if (/Choose a sub stage/i.test(panelText)) {
+    return true;
+  }
+
+  const statusLabel = page.getByText(/^Status$/i).first();
+  const stageChips = page
+    .locator("button, [role='button'], div, span")
+    .filter({ hasText: /^(Open|Qualified|Site Visit|Opportunity|Dropped|Booked)$/i });
   if (await statusLabel.isVisible().catch(() => false)) {
+    const stageChipCount = Math.min(await stageChips.count().catch(() => 0), 30);
+    for (let index = 0; index < stageChipCount; index += 1) {
+      if (await stageChips.nth(index).isVisible().catch(() => false)) {
+        return true;
+      }
+    }
+  }
+
+  if (/^Status\b/i.test(panelText) && /Open|Qualified|Site Visit|Opportunity|Dropped/i.test(panelText)) {
     return true;
   }
 
@@ -1524,13 +3605,7 @@ async function stagePanelIsOpen(
   const aiInsightsActive = await isTabActive(aiInsightsTab);
 
   if (changeStageActive && !aiInsightsActive) {
-    const panelText = await tabStrip
-      .locator("xpath=following::div[1]")
-      .innerText()
-      .catch(() => "");
-    return /Choose a stage|Choose a sub stage|Status|Open|Qualified|Site Visit|Opportunity|Dropped/i.test(
-      panelText,
-    );
+    return /Choose a stage|Choose a sub stage/i.test(panelText);
   }
 
   return false;
@@ -1723,15 +3798,37 @@ export async function openLeadTaskFromDashboard(
     );
   }
 
-  await expect(
-    page.getByText(new RegExp(escapeRegex(leadName), "i")).first(),
-  ).toBeVisible({ timeout: 60000 });
-
-  const leadTaskCard = page
-    .locator("div, article, section")
-    .filter({ hasText: new RegExp(escapeRegex(leadName), "i") })
+  const exactLeadName = page.getByText(new RegExp(escapeRegex(leadName), "i")).first();
+  const searchedSiteVisitTableRow = page
+    .locator("tbody tr")
     .filter({ hasText: /Site Visit/i })
+    .filter({ hasText: /Pending|Overdue|Completed|Aakarsh|Test1303/i })
+    .first();
+  const searchedSiteVisitCard = page
+    .locator("div, article, section")
+    .filter({ hasText: /Site Visit/i })
+    .filter({ hasText: /Pending|Overdue|Completed|Aakarsh|Test1303/i })
     .last();
+
+  await expect
+    .poll(
+      async () =>
+        (await exactLeadName.isVisible().catch(() => false)) ||
+        (await searchedSiteVisitTableRow.isVisible().catch(() => false)) ||
+        (await searchedSiteVisitCard.isVisible().catch(() => false)),
+      { timeout: 60000 },
+    )
+    .toBeTruthy();
+
+  const leadTaskCard = (await searchedSiteVisitTableRow.isVisible().catch(() => false))
+    ? searchedSiteVisitTableRow
+    : (await exactLeadName.isVisible().catch(() => false))
+      ? page
+          .locator("div, article, section")
+          .filter({ hasText: new RegExp(escapeRegex(leadName), "i") })
+          .filter({ hasText: /Site Visit/i })
+          .last()
+      : searchedSiteVisitCard;
 
   await expect(leadTaskCard).toBeVisible({ timeout: 60000 });
 
@@ -1739,7 +3836,7 @@ export async function openLeadTaskFromDashboard(
     .getByRole("button", { name: /take action/i })
     .first();
   await leadTaskCard.click({ force: true }).catch(() => {});
-  const navigatedFromCard = await page
+  let navigatedFromCard = await page
     .waitForURL(/engagement-intelligence\/manage-leads\/?\?id=/, {
       timeout: 10000,
     })
@@ -1753,6 +3850,12 @@ export async function openLeadTaskFromDashboard(
     await clickWithFallback(page, takeActionButton, async () =>
       /engagement-intelligence\/manage-leads\/?\?id=/.test(page.url()),
     );
+    navigatedFromCard = /engagement-intelligence\/manage-leads\/?\?id=/.test(page.url());
+  }
+
+  if (!navigatedFromCard) {
+    await goToManageLeads(page, app);
+    await openLeadByName(page, leadName);
   }
 
   await waitForLeadProfile(page);
@@ -1807,6 +3910,7 @@ export async function cancelSiteVisitFromOpenedLead(
     ],
     siteVisitIsoDate(),
   );
+  await selectCustomDateIfVisible(page, 1);
 
   await fillFirstVisibleField(
     page,
@@ -1817,6 +3921,7 @@ export async function cancelSiteVisitFromOpenedLead(
     ],
     "14:00",
   );
+  await selectCustomTimeIfVisible(page);
 
   const saved = await clickVisibleSaveButton(page);
   if (!saved) {

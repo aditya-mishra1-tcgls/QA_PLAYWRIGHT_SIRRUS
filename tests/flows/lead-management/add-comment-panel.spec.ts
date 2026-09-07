@@ -5,7 +5,7 @@ import {
 } from "../../support/leads";
 
 test.describe("Lead comment flow", () => {
-  test.setTimeout(90000);
+  test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 90000));
 
   test("Open add comment panel for existing lead", async ({ page, app }) => {
     await openAnyLeadFromListing(page, app);

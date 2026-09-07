@@ -11,7 +11,7 @@ import {
 } from "../../support/leads";
 
 test.describe("Site visit task card action flow", () => {
-  test.setTimeout(180000);
+  test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 180000));
 
   test("Cancel site visit from dashboard task card", async ({ page, app }) => {
     let leadName = "";

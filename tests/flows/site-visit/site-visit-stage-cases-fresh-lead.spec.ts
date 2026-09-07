@@ -8,7 +8,7 @@ import {
 } from "../../support/leads";
 
 test.describe("Site visit stage cases with fresh lead", () => {
-  test.setTimeout(150000);
+  test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 150000));
 
   test("Create lead and verify site visit stage cases", async ({ page, app }) => {
     await goToManageLeads(page, app);

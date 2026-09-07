@@ -3,7 +3,7 @@
 ## Implemented flows
 
 - Login baseline with saved auth state
-- Lead creation flow structure
+- Lead creation flow with runtime mandatory-field filling from the `lead-form` API
 - Lead edit and lead mutation support helpers
 - Site visit read-only validations against current UAT staged leads
 - Feature documentation workflow under `docs/features/`
@@ -15,7 +15,7 @@
 
 ## Current blockers
 
-- Fresh lead creation verification is not fully stable yet because table refresh and search timing can lag after save.
+- Fresh lead creation still depends on listing refresh/search settling after save.
 - Full mutation from newly created lead to `Site Visit -> In Progress -> Visit Done` is not implemented yet.
 - OTP and skip-OTP completion paths need dedicated non-shared staging leads before safe automation.
 

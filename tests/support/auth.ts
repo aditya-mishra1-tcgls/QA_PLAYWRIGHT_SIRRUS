@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, type Locator } from "@playwright/test";
+import { expect, test as base, type Locator } from "@playwright/test";
 
 type AppConfig = {
   envName: string;
@@ -42,38 +42,42 @@ async function clickWithFallback(
 
 async function waitForProjectSwitcher(page: Page) {
   await page.waitForLoadState("domcontentloaded").catch(() => {});
-  await page.waitForLoadState("networkidle").catch(() => {});
-  await page.waitForTimeout(1500);
 
-  const projectSwitcherCandidates = [
-    page.locator("button").filter({ has: page.locator("img") }).last(),
-    page.locator("button").filter({ hasText: /\S/ }).last(),
-    page.locator("button").nth(0)
-  ];
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const projectSwitcherCandidates = await page.locator("button").all();
 
-  for (const candidate of projectSwitcherCandidates) {
-    const text = (await candidate.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
-    const isVisible = await candidate.isVisible().catch(() => false);
-    if (!isVisible) {
-      continue;
+    for (const candidate of projectSwitcherCandidates) {
+      const text = (await candidate.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+      const isVisible = await candidate.isVisible().catch(() => false);
+      if (!isVisible) {
+        continue;
+      }
+
+      const isProfileOrAccountButton = /aakarsh|admin|logout|account/i.test(text);
+      const looksLikeProjectButton = /tower|test|project|builders|residency/i.test(text);
+
+      if (looksLikeProjectButton && !isProfileOrAccountButton) {
+        return candidate;
+      }
     }
 
-    const box = await candidate.boundingBox().catch(() => null);
-    const inTopRight = Boolean(box && box.x > 700 && box.y < 220);
-    const looksLikeProjectButton = /tower|test|project|builders|residency/i.test(text) || inTopRight;
-
-    if (looksLikeProjectButton) {
-      return candidate;
-    }
+    await page.waitForTimeout(500);
   }
 
   throw new Error("Project switcher was not visible after login.");
 }
 
 async function waitForProjectApplied(page: Page, projectName: string) {
-  await page.waitForLoadState("networkidle").catch(() => {});
-  await page.waitForTimeout(2000);
-  await expect(page.getByRole("button", { name: new RegExp(projectName, "i") }).last()).toBeVisible({ timeout: 30000 });
+  const selectedProject = page.getByRole("button", { name: new RegExp(projectName, "i") }).last();
+  await expect
+    .poll(
+      async () => await selectedProject.isVisible().catch(() => false),
+      {
+        intervals: [500, 500, 500, 500, 500, 500, 500, 500],
+        timeout: 10000,
+      },
+    )
+    .toBeTruthy();
 }
 
 async function scrollProjectDropdown(page: Page) {
@@ -129,7 +133,7 @@ async function chooseConfiguredProject(page: Page, projectName: string) {
     return;
   }
 
-  for (let attempt = 0; attempt < 12; attempt += 1) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     if (await matchingOption.isVisible().catch(() => false)) {
       await matchingOption.click({ force: true });
       return;
@@ -140,7 +144,7 @@ async function chooseConfiguredProject(page: Page, projectName: string) {
       break;
     }
 
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(500);
   }
 
   throw new Error(`Configured project "${projectName}" was not visible in the project switcher.`);
@@ -168,46 +172,63 @@ export async function ensureActiveProject(page: Page, projectName: string) {
 }
 
 export async function loginToPlatform(page: Page, app: AppConfig) {
-  await page.goto(app.baseUrl, { waitUntil: "domcontentloaded" });
-  await clickWithFallback(
-    page.getByRole("link", { name: /log in/i }),
-    page,
-    async () => await page.locator("#mobile_number").isVisible().catch(() => false)
-  );
+  await base.step("Open login page", async () => {
+    await page.goto(app.baseUrl, { waitUntil: "domcontentloaded" });
+    await clickWithFallback(
+      page.getByRole("link", { name: /log in/i }),
+      page,
+      async () => await page.locator("#mobile_number").isVisible().catch(() => false)
+    );
 
-  await expect(page).toHaveURL(/\/admin\/login/);
-  await page.locator("#mobile_number").fill(app.mobileNumber);
+    await expect(page).toHaveURL(/\/admin\/login/);
+  });
+
+  await base.step("Enter mobile number", async () => {
+    await page.locator("#mobile_number").fill(app.mobileNumber);
+  });
+
   const otpInputs = page.locator('input[inputmode="numeric"]');
-  await clickWithFallback(
-    page.getByRole("button", { name: "Continue" }),
-    page,
-    async () => (await otpInputs.count().catch(() => 0)) === 4
-  );
+  await base.step("Request OTP", async () => {
+    await clickWithFallback(
+      page.getByRole("button", { name: "Continue" }),
+      page,
+      async () => (await otpInputs.count().catch(() => 0)) === 4
+    );
 
-  await expect(otpInputs).toHaveCount(4);
+    await expect(otpInputs).toHaveCount(4, { timeout: 30000 });
+  });
 
-  for (const [index, digit] of app.otp.split("").entries()) {
-    await otpInputs.nth(index).click();
-    await otpInputs.nth(index).pressSequentially(digit, { delay: 10 });
-  }
+  await base.step("Enter OTP", async () => {
+    for (const [index, digit] of app.otp.split("").entries()) {
+      await otpInputs.nth(index).click();
+      await otpInputs.nth(index).pressSequentially(digit, { delay: 10 });
+    }
+  });
 
-  const continueButton = page.getByRole("button", { name: "Continue" });
-  const loggedInUserResponse = page.waitForResponse((response) => {
-    return response.url().includes("/users/loggedInUser") && response.ok();
-  }, { timeout: 60000 });
+  await base.step("Submit login", async () => {
+    const continueButton = page.getByRole("button", { name: "Continue" });
+    const loggedInUserResponse = page.waitForResponse((response) => {
+      return response.url().includes("/users/loggedInUser") && response.ok();
+    }, { timeout: 60000 });
 
-  if (await continueButton.isVisible()) {
-    await continueButton.click();
-  }
+    if (await continueButton.isVisible()) {
+      await continueButton.click();
+    }
 
-  await loggedInUserResponse;
-  await page.waitForURL(/\/admin\/(?!login)/, { timeout: 60000 });
-  await expect(page).toHaveURL(/\/admin\/(?!login)/);
-  await ensureActiveProject(page, app.activeProjectName);
+    await loggedInUserResponse;
+    await page.waitForURL(/\/admin\/(?!login)/, { timeout: 60000 });
+    await expect(page).toHaveURL(/\/admin\/(?!login)/);
+  });
+
+  await base.step("Select active project", async () => {
+    await ensureActiveProject(page, app.activeProjectName);
+  });
 }
 
 export async function saveAuthenticatedState(page: Page, envName: string) {
-  const authStatePath = getAuthStatePath(envName);
-  fs.mkdirSync(path.dirname(authStatePath), { recursive: true });
-  await page.context().storageState({ path: authStatePath });
+  await base.step("Save authenticated session", async () => {
+    const authStatePath = getAuthStatePath(envName);
+    fs.mkdirSync(path.dirname(authStatePath), { recursive: true });
+    await page.context().storageState({ path: authStatePath });
+  });
 }

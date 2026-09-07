@@ -2,7 +2,7 @@ import { test, expect } from "../../support/test";
 import { assertGenerateCostSheetRenderingOnOpenedLead, openAnyLeadFromListing } from "../../support/leads";
 
 test.describe("Lead quotation flow", () => {
-  test.setTimeout(90000);
+  test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 90000));
 
   test("Open generated cost sheet preview for lead", async ({ page, app }) => {
     await openAnyLeadFromListing(page, app);

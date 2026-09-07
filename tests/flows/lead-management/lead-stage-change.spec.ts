@@ -9,7 +9,7 @@ import {
 } from "../../support/leads";
 
 test.describe("Lead stage progression flow", () => {
-  test.setTimeout(150000);
+  test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 150000));
 
   test("Create lead and validate multi-stage journey", async ({ page, app }) => {
     await goToManageLeads(page, app);

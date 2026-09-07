@@ -8,7 +8,7 @@ import {
 } from "../../support/leads";
 
 test.describe("Lead create and edit flow", () => {
-  test.setTimeout(120000);
+  test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 120000));
 
   test("Create lead and update the same lead profile", async ({ page, app }) => {
     await goToManageLeads(page, app);

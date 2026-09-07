@@ -1,5 +1,5 @@
 import type { Page, Locator } from "@playwright/test";
-import { expect } from "@playwright/test";
+import { expect, test as base } from "@playwright/test";
 import { ensureActiveProject } from "./auth";
 
 type AppConfig = {
@@ -731,10 +731,18 @@ export async function createLeadReportDashboardAndChart(page: Page, app: AppConf
   const dashboardName = `Automation Dashboard ${randomDigits(4)}`;
   const chartName = `Automation Report ${randomDigits(4)}`;
 
-  await goToLeadReports(page, app);
-  await createDashboard(page, dashboardName);
-  await createChart(page, dashboardName, chartName);
-  await deleteDashboard(page, dashboardName);
+  await base.step("Open lead reports page", async () => {
+    await goToLeadReports(page, app);
+  });
+  await base.step("Create report dashboard", async () => {
+    await createDashboard(page, dashboardName);
+  });
+  await base.step("Create source chart", async () => {
+    await createChart(page, dashboardName, chartName);
+  });
+  await base.step("Delete automation dashboard", async () => {
+    await deleteDashboard(page, dashboardName);
+  });
 
   return { dashboardName, chartName, dashboardDeleted: true };
 }

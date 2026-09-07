@@ -6,7 +6,7 @@ import {
 } from "../../support/leads";
 
 test.describe("Lead creation flow", () => {
-  test.setTimeout(120000);
+  test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 120000));
 
   test("Create new lead from Engagement Intelligence", async ({
     page,
