@@ -75,6 +75,14 @@ QA_DASHBOARD_AUTH_USERNAME=admin
 QA_DASHBOARD_AUTH_PASSWORD=<strong-password>
 ```
 
+For Docker/server runs, pass the same variables to the container because `.env` is not copied into the image:
+
+```bash
+docker run --env-file .env -p 9324:9324 <image-name>
+```
+
+If Playwright reports that the Chromium executable does not exist on the server, rebuild the Docker image after dependency changes. The Docker base image version must match the `@playwright/test` version in `package.json`.
+
 These values bootstrap the first dashboard admin. After login, the admin-only **Dashboard Users** section can create more dashboard users. Created users are stored locally in `config/dashboard-users.local.json`, which is ignored by git. Normal users can open the dashboard and run/view tests, but only admins can create dashboard users.
 
 Each dashboard user can save their own app-test login from the **Configuration** page. Runs started by that user use their saved app login for the selected environment. If no user-specific app login is saved, tests fall back to the current shared `config/accounts.local.json` credentials.

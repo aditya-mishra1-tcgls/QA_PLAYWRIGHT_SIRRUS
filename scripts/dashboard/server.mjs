@@ -12,6 +12,9 @@ const rootDir = path.resolve(__dirname, "../..");
 const dashboardDir = path.join(rootDir, "dashboard");
 const runsRoot = path.join(rootDir, "data", "test-runs");
 const dashboardUsersPath = path.join(rootDir, "config", "dashboard-users.local.json");
+
+loadDotEnvFile();
+
 const dashboardBasePath = normalizeBasePath(process.env.QA_DASHBOARD_BASE_PATH || "");
 const legacyDashboardAuth = getDashboardAuthConfig();
 const eventPrefix = "@@QA_DASHBOARD_EVENT@@";
@@ -22,6 +25,36 @@ const saveQueues = new Map();
 const dashboardSessions = new Map();
 
 mkdirSync(runsRoot, { recursive: true });
+
+function loadDotEnvFile() {
+  const envPath = path.join(rootDir, ".env");
+  if (!existsSync(envPath)) {
+    return;
+  }
+
+  for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    const separatorIndex = trimmed.indexOf("=");
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, separatorIndex).trim();
+    let value = trimmed.slice(separatorIndex + 1).trim();
+    if (!key || Object.prototype.hasOwnProperty.call(process.env, key)) {
+      continue;
+    }
+
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}
 
 function normalizeBasePath(value) {
   const trimmed = String(value || "").trim().replace(/\/+$/, "");

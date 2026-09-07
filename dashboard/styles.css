@@ -207,6 +207,23 @@ h2 {
   padding: 16px;
 }
 
+.history {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 104px);
+  overflow: hidden;
+  position: sticky;
+  top: 20px;
+}
+
+.history .runs-list {
+  margin-right: -6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-width: thin;
+}
+
 .controls form {
   display: grid;
   gap: 14px;
@@ -901,6 +918,8 @@ button:disabled {
 
   .history {
     grid-column: 1 / -1;
+    max-height: 360px;
+    position: static;
   }
 }
 
@@ -913,6 +932,10 @@ button:disabled {
   .layout {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .history {
+    max-height: 320px;
   }
 
   .config-layout {
