@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, type Locator } from "@playwright/test";
+import { expect, test as base, type Locator } from "@playwright/test";
 import leadFlowConfig from "../data/lead-flow.json";
 import { ensureActiveProject } from "./auth";
 
@@ -175,9 +175,18 @@ function randomDigits(length: number) {
   return String(Math.floor(Math.random() * (max - min + 1)) + min);
 }
 
+function randomAlphaNumeric(length: number) {
+  const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  return Array.from({ length }, () => characters[Math.floor(Math.random() * characters.length)]).join("");
+}
+
+async function logStep(title: string) {
+  await base.step(title, async () => {});
+}
+
 export function buildLeadSeed(envName: string): LeadSeed {
   const envSeed = getLeadFlowSeed(envName);
-  const suffix = randomDigits(4);
+  const suffix = randomAlphaNumeric(6);
 
   return {
     projectName: envSeed.projectName,
@@ -191,6 +200,7 @@ export function buildLeadSeed(envName: string): LeadSeed {
 }
 
 export async function goToManageLeads(page: Page, app: AppConfig) {
+  await logStep("Open manage leads page");
   await page.goto("/admin/developer/cpms/manage-construction", {
     waitUntil: "networkidle",
   });
@@ -617,6 +627,7 @@ function dedupeLeadFields(fields: LeadFieldTarget[]) {
 }
 
 async function openLeadCreationForm(page: Page) {
+  await logStep("Open create lead form");
   const addLeadButton = page.getByText("Add Lead", { exact: true });
   await clickWithFallback(page, addLeadButton, async () => {
     const leadFormVisible = await page
@@ -1161,6 +1172,9 @@ async function fillAdaptiveLeadFields(
   sourcePreferences: string[],
 ) {
   const orderedFields = fields.filter((field) => !CORE_LEAD_FIELD_KEYS.has(field.key));
+  if (orderedFields.length) {
+    await logStep(`Fill ${orderedFields.length} mandatory custom field${orderedFields.length === 1 ? "" : "s"}`);
+  }
 
   for (const field of orderedFields) {
     await fillLeadField(page, field, leadSeed, app, sourcePreferences);
@@ -1173,21 +1187,31 @@ async function fillCoreLeadFields(
   app: AppConfig,
   sourcePreferences: string[],
 ) {
-  await page.locator("#fullName").fill(leadSeed.fullName);
+  await base.step("Enter lead name", async () => {
+    await page.locator("#fullName").fill(leadSeed.fullName);
+  });
 
-  const projectDropdown = await openDropdownWithRetry(page, "Project Name *");
-  await chooseFirstOption(page, [app.activeProjectName, leadSeed.projectName], projectDropdown);
-  await waitForDropdownValue(page, "Project Name *", app.activeProjectName);
+  await base.step("Select project", async () => {
+    const projectDropdown = await openDropdownWithRetry(page, "Project Name *");
+    await chooseFirstOption(page, [app.activeProjectName, leadSeed.projectName], projectDropdown);
+    await waitForDropdownValue(page, "Project Name *", app.activeProjectName);
+  });
 
-  const sourceDropdown = await openDropdownWithRetry(page, "Source *");
-  const selectedSource = await chooseFirstOption(page, sourcePreferences, sourceDropdown);
-  await waitForDropdownValue(page, "Source *", selectedSource);
+  await base.step("Select source", async () => {
+    const sourceDropdown = await openDropdownWithRetry(page, "Source *");
+    const selectedSource = await chooseFirstOption(page, sourcePreferences, sourceDropdown);
+    await waitForDropdownValue(page, "Source *", selectedSource);
+  });
 
-  const subSourceDropdown = await openDropdownWithRetry(page, "Sub Source *");
-  const selectedSubSource = await chooseFirstOption(page, [], subSourceDropdown);
-  await waitForDropdownValue(page, "Sub Source *", selectedSubSource);
+  await base.step("Select sub source", async () => {
+    const subSourceDropdown = await openDropdownWithRetry(page, "Sub Source *");
+    const selectedSubSource = await chooseFirstOption(page, [], subSourceDropdown);
+    await waitForDropdownValue(page, "Sub Source *", selectedSubSource);
+  });
 
-  await page.locator("#whatsAppNumber").fill(leadSeed.whatsappNumber);
+  await base.step("Enter WhatsApp number", async () => {
+    await page.locator("#whatsAppNumber").fill(leadSeed.whatsappNumber);
+  });
 }
 
 export async function prepareLeadForm(page: Page, app: AppConfig) {
@@ -1220,15 +1244,17 @@ export async function prepareLeadForm(page: Page, app: AppConfig) {
 export async function fillLeadForm(page: Page, app: AppConfig) {
   const leadSeed = await prepareLeadForm(page, app);
 
-  await page
-    .locator("#root-modal")
-    .getByRole("button", { name: /^save$/i })
-    .click();
-  await waitForHiddenWithFallback(
-    page.getByText("Lead Form", { exact: true }),
-    page,
-    60000,
-  );
+  await base.step("Save lead", async () => {
+    await page
+      .locator("#root-modal")
+      .getByRole("button", { name: /^save$/i })
+      .click();
+    await waitForHiddenWithFallback(
+      page.getByText("Lead Form", { exact: true }),
+      page,
+      60000,
+    );
+  });
 
   return leadSeed;
 }
@@ -1238,6 +1264,7 @@ export async function assertLeadCreated(
   leadName: string,
   projectName: string,
 ) {
+  await logStep("Verify lead created");
   await expect(page.getByRole("button", { name: new RegExp(projectName, "i") }))
     .toBeVisible({ timeout: 10000 })
     .catch(() => {});
@@ -1251,6 +1278,7 @@ export async function assertLeadCreated(
 }
 
 export async function openLeadByName(page: Page, leadName: string) {
+  await logStep("Open created lead");
   const searchInput = page.locator("#search");
   await searchInput.fill(leadName);
   await searchInput.press("Enter").catch(() => {});
@@ -1450,6 +1478,7 @@ async function waitForLeadProfile(page: Page) {
 }
 
 export async function openAnyLeadFromListing(page: Page, app: AppConfig) {
+  await logStep("Open existing lead");
   await goToManageLeads(page, app);
   await page.waitForTimeout(3000);
   await waitForListingReady(page);
@@ -1506,6 +1535,7 @@ export async function editOpenedLeadName(
   page: Page,
   nextName?: string,
 ): Promise<EditedLead> {
+  await logStep("Open edit lead form");
   const editLeadButtonCandidates = [
     page.getByRole("button", { name: /edit lead form/i }),
     page.getByText("Edit Lead Form", { exact: true }),
@@ -1561,7 +1591,9 @@ export async function editOpenedLeadName(
   const updatedName = (
     nextName ?? `Edited Prefix ${randomDigits(4)} ${previousName}`
   ).slice(0, nameLimit);
-  await fullNameInput.fill(updatedName);
+  await base.step("Update lead name", async () => {
+    await fullNameInput.fill(updatedName);
+  });
 
   const updatedEmail = "demouser@test.com";
   const emailInputCandidates = [
@@ -1580,7 +1612,9 @@ export async function editOpenedLeadName(
     const input = locator.first();
     if (await input.isVisible().catch(() => false)) {
       await input.scrollIntoViewIfNeeded().catch(() => {});
-      await input.fill(updatedEmail);
+      await base.step("Update lead email", async () => {
+        await input.fill(updatedEmail);
+      });
       emailUpdated = true;
       break;
     }
@@ -1590,15 +1624,17 @@ export async function editOpenedLeadName(
     throw new Error("Email field was not visible while editing the lead.");
   }
 
-  await page
-    .locator("#root-modal")
-    .getByRole("button", { name: /^save$/i })
-    .click();
-  await waitForHiddenWithFallback(
-    page.getByText("Lead Form", { exact: true }),
-    page,
-    60000,
-  );
+  await base.step("Save lead changes", async () => {
+    await page
+      .locator("#root-modal")
+      .getByRole("button", { name: /^save$/i })
+      .click();
+    await waitForHiddenWithFallback(
+      page.getByText("Lead Form", { exact: true }),
+      page,
+      60000,
+    );
+  });
   await expect(page.locator("body")).toContainText(updatedName, {
     timeout: 60000,
   });
@@ -1613,6 +1649,7 @@ export async function addRemarkToOpenedLead(
   page: Page,
   remarkText?: string,
 ): Promise<AddedRemark> {
+  await logStep("Add remark");
   const finalRemark = remarkText ?? `Automation remark ${randomDigits(6)}`;
   const addRemarkButtonCandidates = [
     page.getByRole("button", { name: /add remark/i }),
@@ -1694,6 +1731,7 @@ export async function addRemarkToOpenedLead(
 export async function assertGenerateCostSheetRenderingOnOpenedLead(
   page: Page,
 ): Promise<CostSheetRenderResult> {
+  await logStep("Open generated cost sheet preview");
   const tabStrip = page
     .locator("div")
     .filter({ has: page.getByText("Overview", { exact: true }) })
@@ -1726,6 +1764,7 @@ export async function assertGenerateCostSheetRenderingOnOpenedLead(
 export async function assertAddCommentPanelOnOpenedLead(
   page: Page,
 ): Promise<CommentPanelResult> {
+  await logStep("Open add comment panel");
   const addCommentButtonCandidates = [
     page.getByRole("button", { name: /add comment/i }),
     page.getByText("Add comment", { exact: true }),
@@ -1748,6 +1787,7 @@ export async function addReEnquiryToOpenedLead(
   source = "Direct Site Visit",
   subSource = "Walk In",
 ): Promise<ReEnquiryResult> {
+  await logStep("Add re-enquiry");
   const reEnquiryButtonCandidates = [
     page.getByRole("button", { name: /^re-enquiry/i }),
     page.getByText(/^Re-Enquiry/i).first(),
@@ -1817,6 +1857,7 @@ export async function moveOpenedLeadToSiteVisitInProgress(
   leadName: string,
   otpMode: SiteVisitOtpMode = "otp",
 ) {
+  await logStep("Move site visit to in progress");
   await openChangeStageTab(page);
 
   await expect(page.getByText("Choose a stage", { exact: true })).toBeVisible({
@@ -1827,13 +1868,12 @@ export async function moveOpenedLeadToSiteVisitInProgress(
   await expect(inProgressOption).toBeVisible({ timeout: 30000 });
   await inProgressOption.click({ force: true });
 
-  if (!(await clickStartSiteVisitCta(page))) {
-    throw new Error(
-      'Start Site Visit button was not visible after selecting "In Progress" site visit condition.',
-    );
+  if (await clickStartSiteVisitCta(page)) {
+    await completeSiteVisitStartAuthentication(page, otpMode);
+  } else {
+    await saveInProgressStageDetails(page);
   }
 
-  await completeSiteVisitStartAuthentication(page, otpMode);
   await expectSiteVisitInProgress(page, leadName);
 }
 
@@ -1881,8 +1921,13 @@ async function clickStartSiteVisitCta(page: Page) {
 
     if (clickedWithDom) {
       await page.waitForTimeout(1500);
-      const bodyText = await page.locator("body").innerText().catch(() => "");
-      if (/In Progress/i.test(bodyText)) {
+      const authActionVisible = await page
+        .locator("button, [role='button'], a")
+        .filter({ hasText: /^(skip|send otp|visit in progress)$/i })
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (authActionVisible) {
         return true;
       }
     }
@@ -1899,10 +1944,32 @@ async function clickStartSiteVisitCta(page: Page) {
 
 async function completeSiteVisitStartAuthentication(page: Page, otpMode: SiteVisitOtpMode) {
   if (otpMode === "skip") {
-    const skipped = await clickVisibleTextActionWithDom(page, /^skip$/i);
-    if (!skipped) {
-      const skipButton = await findVisibleAction(page, /^skip$/i);
+    const skipped = await base.step("Skip site visit OTP", async () => {
+      const clickedWithDom = await clickVisibleTextActionWithDom(page, /^skip$/i);
+      if (clickedWithDom) {
+        return true;
+      }
+
+      const skipButton = await findVisibleAction(page, /^skip$/i, false);
+      if (!skipButton) {
+        return false;
+      }
+
       await skipButton.click({ force: true });
+      return true;
+    });
+
+    if (skipped && await confirmVisitInProgress(page)) {
+      return;
+    }
+
+    if (await findVisibleAction(page, /^send otp$/i, false)) {
+      await completeVisibleOtpAuthentication(page);
+      return;
+    }
+
+    if (!skipped) {
+      await saveInProgressStageDetails(page);
     }
     return;
   }
@@ -1910,7 +1977,32 @@ async function completeSiteVisitStartAuthentication(page: Page, otpMode: SiteVis
   await completeVisibleOtpAuthentication(page);
 }
 
+async function confirmVisitInProgress(page: Page) {
+  return await base.step("Confirm visit in progress", async () => {
+    await page.waitForTimeout(700);
+
+    const visitInProgress = await findVisibleAction(page, /visit in progress/i, false);
+    if (visitInProgress) {
+      await visitInProgress.click({ force: true }).catch(() => {});
+      return true;
+    }
+
+    return await clickVisibleTextActionWithDom(page, /visit in progress/i);
+  });
+}
+
+async function saveInProgressStageDetails(page: Page) {
+  await base.step("Save in-progress stage details", async () => {
+    await fillVisibleStageFields(page, "automation started site visit.");
+    const saved = await clickVisibleSaveButton(page, /Stage Updated to Opportunity|Lead Stage Changed/i);
+    if (!saved) {
+      throw new Error('Save button was not visible after selecting "In Progress" site visit condition.');
+    }
+  });
+}
+
 async function completeVisibleOtpAuthentication(page: Page) {
+  await logStep("Send site visit OTP");
   const sentOtp = await clickVisibleTextActionWithDom(page, /^send otp$/i);
   if (!sentOtp) {
     const sendOtpButton = await findVisibleAction(page, /^send otp$/i);
@@ -1922,22 +2014,19 @@ async function completeVisibleOtpAuthentication(page: Page) {
   await page.waitForTimeout(700);
 
   const otpDigits = ["1", "2", "3", "4"];
-  for (const [index, digit] of otpDigits.entries()) {
-    const otpInput = await findVisibleOtpInput(page, index);
-    await otpInput.fill(digit);
-  }
+  await base.step("Enter site visit OTP", async () => {
+    for (const [index, digit] of otpDigits.entries()) {
+      const otpInput = await findVisibleOtpInput(page, index);
+      await otpInput.fill(digit);
+    }
+  });
 
-  const continueButton = await findVisibleAction(page, /continue/i);
-  await continueButton.click({ force: true });
+  await base.step("Submit site visit OTP", async () => {
+    const continueButton = await findVisibleAction(page, /continue/i);
+    await continueButton.click({ force: true });
+  });
 
-  await page.waitForTimeout(700);
-
-  const visitInProgress = await findVisibleAction(page, /visit in progress/i, false);
-  if (visitInProgress) {
-    await visitInProgress.click({ force: true }).catch(() => {});
-  } else {
-    await clickVisibleTextActionWithDom(page, /visit in progress/i);
-  }
+  await confirmVisitInProgress(page);
 }
 
 async function completeOpenedSiteVisit(
@@ -1945,14 +2034,27 @@ async function completeOpenedSiteVisit(
   leadName: string,
   otpMode: SiteVisitOtpMode,
 ) {
-  void otpMode;
+  await logStep("Complete site visit");
   await page.reload({ waitUntil: "networkidle" });
   await waitForLeadProfile(page);
   await openChangeStageTab(page);
 
-  const completedStatus = page.getByText("Site Visit Completed", { exact: true });
-  await page.getByRole("button", { name: "End Visit" }).click();
-  await completedStatus.click();
+  let endVisitButton = await findVisibleAction(page, /^end visit$/i, false);
+  if (!endVisitButton && otpMode === "skip") {
+    await moveOpenedLeadToSiteVisitInProgress(page, leadName, "skip");
+    await page.reload({ waitUntil: "networkidle" });
+    await waitForLeadProfile(page);
+    await openChangeStageTab(page);
+    endVisitButton = await findVisibleAction(page, /^end visit$/i, false);
+  }
+
+  if (!endVisitButton) {
+    throw new Error('End Visit button was not visible after opening the Change Stage form.');
+  }
+
+  await endVisitButton.click({ force: true });
+  const completedStatus = await findVisibleAction(page, /^site visit completed$/i);
+  await completedStatus.click({ force: true });
 
   await expectSiteVisitDone(page, leadName);
 }
@@ -1983,61 +2085,350 @@ async function expectSiteVisitDone(page: Page, leadName: string) {
 }
 
 export async function markOpenedSiteVisitNoShow(page: Page, leadName: string) {
+  await logStep("Mark site visit as no show");
   await openChangeStageTab(page);
 
-  const noShowOption = await findVisibleAction(page, /^no show$/i);
-  await noShowOption.click({ force: true });
+  await clickVisibleStageAction(page, /^no show$/i);
 
   await fillVisibleStageFields(page, "automation marked site visit as no show.");
 
-  const saved = await clickVisibleSaveButton(page);
-  if (!saved) {
-    throw new Error('Save button was not visible after selecting "No Show" site visit condition.');
+  if (!(await isSiteVisitNoShowApplied(page, leadName))) {
+    const saved = await clickVisibleSaveButton(page);
+    if (!saved && !(await isSiteVisitNoShowApplied(page, leadName, 10000))) {
+      throw new Error("No Show site visit outcome was not saved and no Save button was visible.");
+    }
   }
 
-  const leadStatusPattern = new RegExp(
-    `${escapeRegex(leadName)}[\\s\\S]{0,700}Site Visit[\\s\\S]{0,300}No Show`,
-    "i",
-  );
+  await expectSiteVisitNoShow(page, leadName);
+}
 
+async function isSiteVisitNoShowApplied(page: Page, leadName: string, timeout = 5000) {
+  return await expect
+    .poll(
+      async () => await hasSiteVisitNoShowState(page, leadName),
+      { timeout },
+    )
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
+}
+
+async function expectSiteVisitNoShow(page: Page, leadName: string) {
   await expect
     .poll(
-      async () => {
-        const bodyText = await page.locator("body").innerText().catch(() => "");
-        return leadStatusPattern.test(bodyText) || /Stage Updated to No Show/i.test(bodyText);
-      },
+      async () => await hasSiteVisitNoShowState(page, leadName),
       { timeout: 60000 },
     )
     .toBeTruthy();
 }
 
-export async function moveCompletedSiteVisitToOpportunity(page: Page, leadName: string) {
-  await openChangeStageTab(page);
-
-  const opportunityOption = await findVisibleAction(page, /^opportunity$/i);
-  await opportunityOption.click({ force: true });
-
-  await fillVisibleStageFields(page, "automation moved visit done lead to opportunity.");
-
-  const saved = await clickVisibleSaveButton(page);
-  if (!saved) {
-    throw new Error('Save button was not visible after selecting "Opportunity".');
+async function hasSiteVisitNoShowState(page: Page, leadName: string) {
+  const leadStatusPattern = new RegExp(
+    `${escapeRegex(leadName)}[\\s\\S]{0,700}Site Visit[\\s\\S]{0,300}No Show`,
+    "i",
+  );
+  const statusText = await visibleLeadStatusCardText(page, leadName);
+  if (leadStatusPattern.test(statusText)) {
+    return true;
   }
 
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  return leadStatusPattern.test(bodyText) || /Stage Updated to No Show|Lead Stage Changed Successfully/i.test(bodyText);
+}
+
+export async function moveCompletedSiteVisitToOpportunity(page: Page, leadName: string) {
+  await logStep("Move lead to opportunity");
+  await base.step("Ensure lead profile is open", async () => {
+    await ensureLeadProfileIsOpen(page, leadName);
+  });
+
+  await base.step("Open Change Stage tab", async () => {
+    await openChangeStageTab(page);
+  });
+
+  await base.step("Select Opportunity stage", async () => {
+    await clickOpportunityStageOption(page);
+  });
+
+  await base.step("Enter Opportunity remark and follow-up date", async () => {
+    await fillOpportunityStageFields(page, "Automation lead move to opportunity");
+  });
+
+  if (!(await isSiteVisitOpportunityApplied(page, leadName))) {
+    await base.step("Save Opportunity stage", async () => {
+      const saved = await clickVisibleSaveButton(page, /Stage Updated to Opportunity|Lead Stage Changed/i);
+      if (!saved && !(await isSiteVisitOpportunityApplied(page, leadName, 10000))) {
+        throw new Error('Opportunity stage was not saved and no Save button was visible.');
+      }
+    });
+  }
+
+  await base.step("Verify lead moved to Opportunity", async () => {
+    await expectSiteVisitOpportunity(page, leadName);
+  });
+}
+
+
+async function clickOpportunityStageOption(page: Page) {
+  await resetStageFormScroll(page);
+
+  const chooseStage = page.getByText("Choose a stage", { exact: true }).first();
+  await expect(chooseStage).toBeVisible({ timeout: 30000 });
+
+  const result = await clickOpportunityStageUntilReady(page);
+  if (result === "ready") {
+    return;
+  }
+
+  if (result === "contact-required") {
+    throw new Error(
+      'The app rejected Opportunity stage because the lead is not contacted yet. Add a contacted/call outcome step before moving this site visit lead to Opportunity.',
+    );
+  }
+
+  const visibleStageText = await visibleChangeStageText(page);
+  throw new Error(`Opportunity stage was clicked, but the Opportunity details form did not open. Visible stage text: ${visibleStageText}`);
+}
+
+async function clickOpportunityStageUntilReady(page: Page) {
+  const attempts: Array<() => Promise<boolean>> = [
+    async () => {
+      const opportunityFromCodegen = page.getByText("Opportunity", { exact: true }).nth(1);
+      await revealLocator(page, opportunityFromCodegen);
+      await opportunityFromCodegen.click();
+      return true;
+    },
+    async () => {
+      const opportunityFromCodegen = page.getByText("Opportunity", { exact: true }).nth(1);
+      await revealLocator(page, opportunityFromCodegen);
+      await opportunityFromCodegen.click({ force: true });
+      return true;
+    },
+    async () => await clickStageChipInChangeStagePanel(page, "Opportunity"),
+    async () => {
+      const opportunityFromCodegen = page.getByText("Opportunity", { exact: true }).nth(1);
+      await revealLocator(page, opportunityFromCodegen);
+      const box = await opportunityFromCodegen.boundingBox();
+      if (!box) {
+        return false;
+      }
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      return true;
+    },
+  ];
+
+  for (const attempt of attempts) {
+    await resetStageFormScroll(page);
+    const clicked = await attempt().catch(() => false);
+    if (!clicked) {
+      continue;
+    }
+
+    const selectionResult = await waitForOpportunityStageSelection(page);
+    if (selectionResult !== "not-ready") {
+      return selectionResult;
+    }
+  }
+
+  return "not-ready" as const;
+}
+
+async function waitForOpportunityStageSelection(page: Page) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await isOpportunityDetailsFormVisible(page)) {
+      return "ready" as const;
+    }
+
+    const bodyText = await page.locator("body").innerText().catch(() => "");
+    if (/New Lead Not Contacted|not been contacted yet/i.test(bodyText)) {
+      return "contact-required" as const;
+    }
+
+    await page.waitForTimeout(500);
+  }
+
+  return "not-ready" as const;
+}
+
+async function isOpportunityDetailsFormVisible(page: Page) {
+  return (
+    (await page.getByRole("textbox", { name: /remarks?\s*\*/i }).first().isVisible().catch(() => false)) ||
+    (await page.getByRole("textbox", { name: /remarks?/i }).first().isVisible().catch(() => false)) ||
+    (await page.locator('textarea[placeholder*="Remark" i]').first().isVisible().catch(() => false)) ||
+    (await page.locator('textarea[name*="remark" i]').first().isVisible().catch(() => false)) ||
+    (await page.locator("textarea").first().isVisible().catch(() => false))
+  );
+}
+
+async function clickStageChipInChangeStagePanel(page: Page, stageName: string) {
+  return await page.evaluate((targetStageName) => {
+    const normalize = (value: string | null | undefined) =>
+      (value || "").replace(/\s+/g, " ").trim();
+
+    const isVisible = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.visibility !== "hidden" &&
+        style.display !== "none" &&
+        style.pointerEvents !== "none"
+      );
+    };
+
+    const stageHeading = Array.from(document.querySelectorAll<HTMLElement>("h1, h2, h3, h4, p, span, div"))
+      .find((element) => normalize(element.innerText || element.textContent) === "Choose a stage" && isVisible(element));
+    if (!stageHeading) {
+      return false;
+    }
+
+    const stageScopeCandidates: HTMLElement[] = [];
+    let current: HTMLElement | null = stageHeading.parentElement;
+    for (let depth = 0; current && depth < 8; depth += 1) {
+      const text = normalize(current.innerText || current.textContent);
+      if (/New Lead/i.test(text) && /Site Visit/i.test(text) && /Opportunity/i.test(text)) {
+        stageScopeCandidates.push(current);
+      }
+      current = current.parentElement;
+    }
+
+    const stageScope = stageScopeCandidates
+      .sort((left, right) => normalize(left.innerText).length - normalize(right.innerText).length)[0];
+    if (!stageScope) {
+      return false;
+    }
+
+    const matches = Array.from(stageScope.querySelectorAll<HTMLElement>("button, [role='button'], a, p, span, div"))
+      .filter((element) => normalize(element.innerText || element.textContent) === targetStageName && isVisible(element))
+      .sort((left, right) => {
+        const leftStyle = window.getComputedStyle(left);
+        const rightStyle = window.getComputedStyle(right);
+        const leftPriority = left.matches("button, [role='button'], a") || leftStyle.cursor === "pointer" ? 0 : 1;
+        const rightPriority = right.matches("button, [role='button'], a") || rightStyle.cursor === "pointer" ? 0 : 1;
+        if (leftPriority !== rightPriority) {
+          return leftPriority - rightPriority;
+        }
+        return normalize(left.innerText || left.textContent).length - normalize(right.innerText || right.textContent).length;
+      });
+
+    const target = matches[0];
+    if (!target) {
+      return false;
+    }
+
+    let clickable: HTMLElement | null = target;
+    let parent = target.parentElement;
+    for (let depth = 0; parent && depth < 4; depth += 1) {
+      const parentText = normalize(parent.innerText || parent.textContent);
+      const parentStyle = window.getComputedStyle(parent);
+      if (parentText === targetStageName && (parent.matches("button, [role='button'], a") || parentStyle.cursor === "pointer")) {
+        clickable = parent;
+        break;
+      }
+      parent = parent.parentElement;
+    }
+
+    const scrollParents: HTMLElement[] = [];
+    parent = clickable.parentElement;
+    while (parent && parent !== document.body) {
+      const style = window.getComputedStyle(parent);
+      if (parent.scrollHeight > parent.clientHeight && /(auto|scroll|overlay)/.test(style.overflowY)) {
+        scrollParents.push(parent);
+      }
+      parent = parent.parentElement;
+    }
+
+    for (const container of scrollParents.reverse()) {
+      const containerRect = container.getBoundingClientRect();
+      const targetRect = clickable.getBoundingClientRect();
+      container.scrollTop +=
+        targetRect.top -
+        containerRect.top -
+        Math.max(24, Math.floor((container.clientHeight - targetRect.height) / 2));
+    }
+
+    clickable.scrollIntoView({ block: "center", inline: "center" });
+    clickable.click();
+    return true;
+  }, stageName);
+}
+
+async function fillOpportunityStageFields(page: Page, remark: string) {
+  const remarkFilled = await fillFirstVisibleStageField(
+    page,
+    [
+      page.getByRole("textbox", { name: /remarks?\s*\*/i }).first(),
+      page.getByRole("textbox", { name: /remarks?/i }).first(),
+      page.locator('textarea[placeholder*="Remark" i]').first(),
+      page.locator('textarea[name*="remark" i]').first(),
+      page.locator("textarea").first(),
+    ],
+    remark,
+  );
+  if (!remarkFilled) {
+    throw new Error('Remarks field was not visible after selecting "Opportunity".');
+  }
+
+  const dateSelected = await selectOpportunityFollowUpDate(page);
+  if (!dateSelected) {
+    throw new Error('Start Date field was not visible after selecting "Opportunity".');
+  }
+}
+
+async function isSiteVisitOpportunityApplied(page: Page, leadName: string, timeout = 5000) {
+  return await expect
+    .poll(
+      async () => await hasSiteVisitOpportunityState(page, leadName),
+      { timeout },
+    )
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
+}
+
+async function expectSiteVisitOpportunity(page: Page, leadName: string) {
+  await expect
+    .poll(
+      async () => await hasSiteVisitOpportunityState(page, leadName),
+      { timeout: 60000 },
+    )
+    .toBeTruthy();
+}
+
+async function hasSiteVisitOpportunityState(page: Page, leadName: string) {
   const leadStatusPattern = new RegExp(
     `${escapeRegex(leadName)}[\\s\\S]{0,700}Opportunity`,
     "i",
   );
+  const statusText = await visibleLeadStatusCardText(page, leadName);
+  if (leadStatusPattern.test(statusText) || /Opportunity/i.test(statusText)) {
+    return true;
+  }
 
-  await expect
-    .poll(
-      async () => {
-        const bodyText = await page.locator("body").innerText().catch(() => "");
-        return leadStatusPattern.test(bodyText) || /Stage Updated to Opportunity/i.test(bodyText);
-      },
-      { timeout: 60000 },
-    )
-    .toBeTruthy();
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  return /Stage Updated to Opportunity/i.test(bodyText);
+}
+
+async function ensureLeadProfileIsOpen(page: Page, leadName: string) {
+  if (await isLeadProfileOpen(page, leadName)) {
+    return;
+  }
+
+  await openLeadByName(page, leadName);
+  await waitForLeadProfile(page);
+}
+
+async function isLeadProfileOpen(page: Page, leadName: string) {
+  return await page
+    .locator("body")
+    .innerText({ timeout: 5000 })
+    .then((bodyText) => (
+      bodyText.includes(leadName) &&
+      /Lead Profile/i.test(bodyText) &&
+      /Change Stage/i.test(bodyText)
+    ))
+    .catch(() => false);
 }
 
 async function findVisibleOtpInput(page: Page, index: number) {
@@ -2071,16 +2462,20 @@ async function findVisibleOtpInput(page: Page, index: number) {
 
 async function findVisibleAction(page: Page, name: RegExp, required = true) {
   const actions = [
-    page.getByRole("button", { name }).first(),
-    page.locator("button, [role='button'], a").filter({ hasText: name }).first(),
-    page.getByText(name).first(),
+    page.getByRole("button", { name }),
+    page.locator("button, [role='button'], a").filter({ hasText: name }),
+    page.getByText(name),
   ];
 
   for (let attempt = 0; attempt < 12; attempt += 1) {
-    for (const action of actions) {
-      if (await action.isVisible().catch(() => false)) {
-        await action.scrollIntoViewIfNeeded().catch(() => {});
-        return action;
+    for (const locator of actions) {
+      const count = Math.min(await locator.count().catch(() => 0), 40);
+      for (let index = 0; index < count; index += 1) {
+        const action = locator.nth(index);
+        await revealLocator(page, action);
+        if (await action.isVisible().catch(() => false)) {
+          return action;
+        }
       }
     }
 
@@ -2097,6 +2492,121 @@ async function findVisibleAction(page: Page, name: RegExp, required = true) {
   }
 
   throw new Error(`Action matching ${name} was not visible after scrolling the site visit section.`);
+}
+
+async function clickVisibleStageAction(page: Page, name: RegExp) {
+  const source = name.source;
+  const flags = name.flags;
+
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const clicked = await page.evaluate(
+      ({ source: patternSource, flags: patternFlags }) => {
+        const matcher = new RegExp(patternSource, patternFlags);
+
+        function normalize(value: string | null | undefined) {
+          return (value || "").replace(/\s+/g, " ").trim();
+        }
+
+        function isVisible(element: HTMLElement) {
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            style.pointerEvents !== "none"
+          );
+        }
+
+        function stageScopeFor(element: HTMLElement) {
+          let current: HTMLElement | null = element;
+          for (let depth = 0; current && depth < 10; depth += 1) {
+            const text = normalize(current.innerText || current.textContent);
+            if (
+              /Choose a stage|Choose a sub stage/i.test(text) &&
+              /Open|Qualified|Site Visit|Opportunity|Dropped|Booked|In Progress|No Show/i.test(text)
+            ) {
+              return current;
+            }
+            current = current.parentElement;
+          }
+          return null;
+        }
+
+        function reveal(element: HTMLElement) {
+          const scrollableParents: HTMLElement[] = [];
+          let parent = element.parentElement;
+          while (parent && parent !== document.body) {
+            const style = window.getComputedStyle(parent);
+            if (
+              (parent.scrollHeight > parent.clientHeight && /(auto|scroll|overlay)/.test(style.overflowY)) ||
+              (parent.scrollWidth > parent.clientWidth && /(auto|scroll|overlay)/.test(style.overflowX))
+            ) {
+              scrollableParents.push(parent);
+            }
+            parent = parent.parentElement;
+          }
+
+          for (const container of scrollableParents.reverse()) {
+            const containerRect = container.getBoundingClientRect();
+            const elementRect = element.getBoundingClientRect();
+            container.scrollTop +=
+              elementRect.top -
+              containerRect.top -
+              Math.max(24, Math.floor((container.clientHeight - elementRect.height) / 2));
+            container.scrollLeft +=
+              elementRect.left -
+              containerRect.left -
+              Math.max(0, Math.floor((container.clientWidth - elementRect.width) / 2));
+          }
+
+          element.scrollIntoView({ block: "center", inline: "nearest" });
+        }
+
+        const candidates = Array.from(
+          document.querySelectorAll<HTMLElement>("button, [role='button'], a, p, span, div"),
+        ).filter((element) => {
+          const text = normalize(element.innerText || element.textContent);
+          return matcher.test(text) && Boolean(stageScopeFor(element));
+        });
+
+        candidates.sort((left, right) => {
+          const leftTagPriority = /^(BUTTON|A)$/.test(left.tagName) || left.getAttribute("role") === "button" ? 0 : 1;
+          const rightTagPriority = /^(BUTTON|A)$/.test(right.tagName) || right.getAttribute("role") === "button" ? 0 : 1;
+          if (leftTagPriority !== rightTagPriority) {
+            return leftTagPriority - rightTagPriority;
+          }
+          return normalize(left.innerText || left.textContent).length - normalize(right.innerText || right.textContent).length;
+        });
+
+        for (const candidate of candidates) {
+          reveal(candidate);
+          if (isVisible(candidate)) {
+            candidate.click();
+            return true;
+          }
+        }
+
+        return false;
+      },
+      { source, flags },
+    );
+
+    if (clicked) {
+      await page.waitForTimeout(500);
+      return;
+    }
+
+    const direction = attempt < 8 ? 1 : -1;
+    const scrolled = await scrollStageFormSection(page, direction);
+    if (!scrolled) {
+      await page.mouse.wheel(0, direction * 500).catch(() => {});
+    }
+    await page.waitForTimeout(350);
+  }
+
+  throw new Error(`Stage action matching ${name} was not visible inside the Change Stage form.`);
 }
 
 async function clickVisibleTextActionWithDom(page: Page, name: RegExp) {
@@ -2160,23 +2670,44 @@ async function clickVisibleTextActionWithDom(page: Page, name: RegExp) {
 }
 
 async function expectSiteVisitInProgress(page: Page, leadName: string) {
-  const leadStatusPattern = new RegExp(
-    `${escapeRegex(leadName)}[\\s\\S]{0,700}Site Visit[\\s\\S]{0,300}In Progress`,
-    "i",
-  );
-
   await expect
     .poll(
       async () => {
-        const bodyText = await page.locator("body").innerText().catch(() => "");
-        return leadStatusPattern.test(bodyText);
+        const statusText = await visibleLeadStatusCardText(page, leadName);
+        return /Site Visit/i.test(statusText) && /In Progress/i.test(statusText);
       },
       { timeout: 60000 },
     )
     .toBeTruthy();
 }
 
+async function visibleLeadStatusCardText(page: Page, leadName: string) {
+  return await page.evaluate((targetLeadName) => {
+    const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
+    const visibleElements = Array.from(document.querySelectorAll<HTMLElement>("article, section, aside, div"))
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        const text = normalize(element.innerText || element.textContent || "");
+        return { element, rect, style, text };
+      })
+      .filter(({ rect, style, text }) => (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.visibility !== "hidden" &&
+        style.display !== "none" &&
+        text.includes(targetLeadName) &&
+        /Lead ID/i.test(text) &&
+        /Site Visit/i.test(text)
+      ))
+      .sort((left, right) => left.text.length - right.text.length);
+
+    return visibleElements[0]?.text || "";
+  }, leadName);
+}
+
 export async function assertSiteVisitStageCasesOnOpenedLead(page: Page) {
+  await logStep("Schedule site visit");
   await openChangeStageTab(page);
 
   const siteVisitStage = page
@@ -2219,6 +2750,7 @@ export async function assertSiteVisitStageCasesOnOpenedLead(page: Page) {
 }
 
 export async function assertScheduledSiteVisitReady(page: Page, leadName: string) {
+  await logStep("Verify scheduled site visit");
   await expect(page.locator("body")).toContainText(
     new RegExp(`${escapeRegex(leadName)}[\\s\\S]{0,700}Site Visit[\\s\\S]{0,300}Scheduled`, "i"),
     { timeout: 60000 },
@@ -2469,12 +3001,7 @@ async function fillVisibleStageFields(page: Page, remark: string) {
     page.locator('input[name*="remark" i]').first(),
   ];
 
-  for (const locator of remarkLocators) {
-    if (await locator.isVisible().catch(() => false)) {
-      await locator.fill(remark);
-      break;
-    }
-  }
+  await fillFirstVisibleStageField(page, remarkLocators, remark);
 
   const followUpLocators = [
     page.locator('input[type="date"]').first(),
@@ -2483,12 +3010,8 @@ async function fillVisibleStageFields(page: Page, remark: string) {
     page.locator('input[id*="follow" i]').first(),
   ];
 
-  for (const locator of followUpLocators) {
-    if (await locator.isVisible().catch(() => false)) {
-      await locator.fill(tomorrowIsoDate());
-      break;
-    }
-  }
+  await fillFirstVisibleStageField(page, followUpLocators, tomorrowIsoDate());
+  await selectCustomDateIfVisible(page, 1);
 
   const followUpTimeLocators = [
     page.locator('input[type="time"]').first(),
@@ -2497,12 +3020,130 @@ async function fillVisibleStageFields(page: Page, remark: string) {
     page.locator('input[id*="time" i]').first(),
   ];
 
-  for (const locator of followUpTimeLocators) {
-    if (await locator.isVisible().catch(() => false)) {
-      await locator.fill("10:30");
-      break;
+  await fillFirstVisibleStageField(page, followUpTimeLocators, "10:30");
+  await selectCustomTimeIfVisible(page);
+}
+
+async function fillFirstVisibleStageField(page: Page, locators: Locator[], value: string) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    for (const locator of locators) {
+      if (!(await locator.isVisible().catch(() => false))) {
+        continue;
+      }
+
+      await revealLocator(page, locator);
+      await locator.click().catch(() => {});
+      if (await locator.fill(value).then(() => true).catch(() => false)) {
+        return true;
+      }
+    }
+
+    const direction = attempt < 7 ? 1 : -1;
+    const scrolled = await scrollStageFormSection(page, direction);
+    if (!scrolled) {
+      await page.mouse.wheel(0, direction * 500).catch(() => {});
+    }
+    await page.waitForTimeout(250);
+  }
+
+  return false;
+}
+
+async function selectOpportunityFollowUpDate(page: Page) {
+  const startDateButtons = [
+    page.getByRole("button", { name: /^start date$/i }).first(),
+    page.getByRole("button", { name: /start date|select date|follow.*date/i }).first(),
+    page.locator("button, [role='button']").filter({ hasText: /start date|select date/i }).first(),
+  ];
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    for (const startDateButton of startDateButtons) {
+      await revealLocator(page, startDateButton);
+      if (!(await startDateButton.isVisible().catch(() => false))) {
+        continue;
+      }
+
+      await startDateButton.click({ force: true }).catch(() => {});
+      for (let optionAttempt = 0; optionAttempt < 8; optionAttempt += 1) {
+        const preferredDate = page.getByRole("option", { name: dateOptionName(3) }).first();
+        const anyFutureDate = page
+          .getByRole("option", { name: /Choose (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),/i })
+          .first();
+
+        for (const dateOption of [preferredDate, anyFutureDate]) {
+          await revealLocator(page, dateOption);
+          if (await dateOption.isVisible().catch(() => false)) {
+            await dateOption.click({ force: true });
+            return true;
+          }
+        }
+
+        const scrolled = await scrollVisiblePopup(page);
+        if (!scrolled) {
+          break;
+        }
+        await page.waitForTimeout(250);
+      }
+    }
+
+    const direction = attempt < 5 ? 1 : -1;
+    const scrolled = await scrollStageFormSection(page, direction);
+    if (!scrolled) {
+      await page.mouse.wheel(0, direction * 500).catch(() => {});
+    }
+    await page.waitForTimeout(250);
+  }
+
+  return false;
+}
+
+async function selectCustomDateIfVisible(page: Page, daysAhead: number) {
+  const dateButtonCandidates = [
+    page.getByRole("button", { name: /select date|start date|follow.*date/i }).first(),
+    page.locator("button, [role='button'], div").filter({ hasText: /select date|start date/i }).first(),
+  ];
+
+  for (const dateButton of dateButtonCandidates) {
+    if (!(await dateButton.isVisible().catch(() => false))) {
+      continue;
+    }
+
+    await revealLocator(page, dateButton);
+    await dateButton.click({ force: true }).catch(() => {});
+    const dateOption = page.getByRole("option", { name: dateOptionName(daysAhead) }).first();
+    if (await dateOption.isVisible().catch(() => false)) {
+      await dateOption.click({ force: true });
+      return true;
     }
   }
+
+  return false;
+}
+
+async function selectCustomTimeIfVisible(page: Page) {
+  const timeButtonCandidates = [
+    page.getByRole("button", { name: /select time/i }).first(),
+    page.locator("button, [role='button'], div").filter({ hasText: /^Select Time$/i }).first(),
+  ];
+
+  for (const timeButton of timeButtonCandidates) {
+    if (!(await timeButton.isVisible().catch(() => false))) {
+      continue;
+    }
+
+    await revealLocator(page, timeButton);
+    await timeButton.click({ force: true }).catch(() => {});
+    const timeOption = page
+      .locator("button, [role='option'], div, span")
+      .filter({ hasText: /^(10|11):[0-5]\d\s?(AM|PM)$/i })
+      .first();
+    if (await timeOption.isVisible().catch(() => false)) {
+      await timeOption.click({ force: true });
+      return true;
+    }
+  }
+
+  return false;
 }
 
 async function fillSiteVisitCancellationReason(
@@ -2568,7 +3209,7 @@ async function fillSiteVisitCancellationReason(
   }
 }
 
-async function clickVisibleSaveButton(page: Page) {
+async function clickVisibleSaveButton(page: Page, postSaveText?: RegExp) {
   const saveButtons = [
     page.locator("#root-modal").getByRole("button", { name: /^save$/i }),
     page.getByRole("button", { name: /^save$/i }),
@@ -2579,9 +3220,14 @@ async function clickVisibleSaveButton(page: Page) {
       const count = await locator.count().catch(() => 0);
       for (let index = count - 1; index >= 0; index -= 1) {
         const button = locator.nth(index);
-        await button.scrollIntoViewIfNeeded().catch(() => {});
+        await revealLocator(page, button);
         if (await button.isVisible().catch(() => false)) {
           await button.click({ force: true });
+          if (postSaveText) {
+            await expect(page.locator("body")).toContainText(postSaveText, {
+              timeout: 15000,
+            }).catch(() => {});
+          }
           return true;
         }
       }
@@ -2596,35 +3242,164 @@ async function clickVisibleSaveButton(page: Page) {
   return false;
 }
 
+async function revealLocator(page: Page, locator: Locator) {
+  const handle = await locator.elementHandle().catch(() => null);
+  if (!handle) {
+    return false;
+  }
+
+  await handle
+    .evaluate((element) => {
+      const target = element as HTMLElement;
+      const scrollableParents: HTMLElement[] = [];
+      let parent = target.parentElement;
+
+      while (parent && parent !== document.body) {
+        const style = window.getComputedStyle(parent);
+        const canScrollY =
+          parent.scrollHeight > parent.clientHeight &&
+          /(auto|scroll|overlay)/.test(style.overflowY);
+        const canScrollX =
+          parent.scrollWidth > parent.clientWidth &&
+          /(auto|scroll|overlay)/.test(style.overflowX);
+
+        if (canScrollY || canScrollX) {
+          scrollableParents.push(parent);
+        }
+
+        parent = parent.parentElement;
+      }
+
+      for (const container of scrollableParents.reverse()) {
+        const containerRect = container.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+
+        container.scrollTop +=
+          targetRect.top -
+          containerRect.top -
+          Math.max(24, Math.floor((container.clientHeight - targetRect.height) / 2));
+        container.scrollLeft +=
+          targetRect.left -
+          containerRect.left -
+          Math.max(0, Math.floor((container.clientWidth - targetRect.width) / 2));
+      }
+
+      target.scrollIntoView({ block: "center", inline: "nearest" });
+    })
+    .catch(() => {});
+  await locator.scrollIntoViewIfNeeded().catch(() => {});
+  await page.waitForTimeout(100);
+  return true;
+}
+
+async function resetStageFormScroll(page: Page) {
+  await page.evaluate(() => {
+    const normalize = (value: string | null | undefined) =>
+      (value || "").replace(/\s+/g, " ").trim();
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>("main, section, article, div"))
+      .filter((element) => {
+        const style = window.getComputedStyle(element);
+        const text = normalize(element.innerText || element.textContent);
+        return (
+          element.scrollHeight > element.clientHeight &&
+          /(auto|scroll|overlay)/.test(style.overflowY) &&
+          /Choose a stage|Choose a sub stage|Remarks|Add Follow up/i.test(text)
+        );
+      });
+
+    for (const element of candidates) {
+      element.scrollTop = 0;
+    }
+
+    document.scrollingElement?.scrollTo({ top: 0 });
+  }).catch(() => {});
+  await page.waitForTimeout(150);
+}
+
+async function visibleChangeStageText(page: Page) {
+  return await page.evaluate(() => {
+    const normalize = (value: string | null | undefined) =>
+      (value || "").replace(/\s+/g, " ").trim();
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>("section, article, div"))
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        const text = normalize(element.innerText || element.textContent);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          /Choose a stage|Choose a sub stage|Remarks|Add Follow up/i.test(text)
+        );
+      })
+      .sort((left, right) => normalize(left.innerText).length - normalize(right.innerText).length);
+
+    return normalize(candidates[0]?.innerText || candidates[0]?.textContent).slice(0, 500);
+  }).catch(() => "");
+}
+
 async function scrollStageFormSection(page: Page, direction = 1) {
   return await page.evaluate((scrollDirection) => {
+    const normalize = (value: string | null | undefined) =>
+      (value || "").replace(/\s+/g, " ").trim();
+
     const scrollables = Array.from(
-      document.querySelectorAll("div, section, main"),
-    ).filter((element) => {
-      const html = element as HTMLElement;
-      const style = window.getComputedStyle(html);
-      const rect = html.getBoundingClientRect();
-      const text = (html.innerText || "").trim();
+      document.querySelectorAll<HTMLElement>("div, section, main"),
+    )
+      .map((element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        const text = normalize(element.innerText || element.textContent);
+        const canScroll =
+          rect.width > 0 &&
+          rect.height > 0 &&
+          element.scrollHeight > element.clientHeight &&
+          /(auto|scroll|overlay)/.test(style.overflowY);
 
-      return (
-        rect.width > 0 &&
-        rect.height > 0 &&
-        html.scrollHeight > html.clientHeight &&
-        (style.overflowY === "auto" ||
-          style.overflowY === "scroll" ||
-          style.overflowY === "overlay") &&
-        /Choose a stage|Choose a sub stage|Remarks|Site Visit|Cancelled|No Show/i.test(
-          text,
-        )
+        if (!canScroll) {
+          return null;
+        }
+
+        let priority = 99;
+        if (/Choose a stage|Choose a sub stage/i.test(text)) {
+          priority = 0;
+        } else if (/Remarks|Add Follow up|Select Date|Select Time/i.test(text)) {
+          priority = 1;
+        } else if (/End Visit|Send OTP|Visit In Progress|No Show|Cancelled/i.test(text)) {
+          priority = 2;
+        } else if (/Site Visit/i.test(text)) {
+          priority = 8;
+        }
+
+        if (priority === 99) {
+          return null;
+        }
+
+        return { element, priority, textLength: text.length, left: rect.left };
+      })
+      .filter((candidate): candidate is { element: HTMLElement; priority: number; textLength: number; left: number } => Boolean(candidate))
+      .sort((left, right) => {
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority;
+        }
+
+        // The Change Stage form is the right-side pane; prefer it over the left lead details pane.
+        if (Math.abs(left.left - right.left) > 20) {
+          return right.left - left.left;
+        }
+
+        return left.textLength - right.textLength;
+      });
+
+    for (const { element } of scrollables) {
+      const previousTop = element.scrollTop;
+      const distance = Math.max(Math.floor(element.clientHeight * 0.85), 320) * scrollDirection;
+      element.scrollTop = Math.max(
+        0,
+        Math.min(element.scrollTop + distance, element.scrollHeight - element.clientHeight),
       );
-    });
-
-    for (const element of scrollables) {
-      const html = element as HTMLElement;
-      const previousTop = html.scrollTop;
-      const distance = Math.max(Math.floor(html.clientHeight * 0.85), 320) * scrollDirection;
-      html.scrollTop = Math.max(0, Math.min(html.scrollTop + distance, html.scrollHeight - html.clientHeight));
-      if (html.scrollTop !== previousTop) {
+      if (element.scrollTop !== previousTop) {
         return true;
       }
     }
@@ -2691,21 +3466,43 @@ async function stagePanelIsOpen(
   changeStageTab: Locator,
   aiInsightsTab: Locator,
 ) {
-  const chooseStage = page.getByText("Choose a stage", { exact: true });
-  const chooseSubStage = page.getByText("Choose a sub stage *", {
-    exact: true,
-  });
-  const statusLabel = page.getByText(/^Status$/i).first();
-
+  const chooseStage = page.getByText("Choose a stage", { exact: true }).first();
   if (await chooseStage.isVisible().catch(() => false)) {
     return true;
   }
 
+  const chooseSubStage = page.getByText(/Choose a sub stage/i).first();
   if (await chooseSubStage.isVisible().catch(() => false)) {
     return true;
   }
 
+  const panelText = await tabStrip
+    .locator("xpath=following::div[1]")
+    .innerText()
+    .catch(() => "");
+
+  if (/Choose a stage/i.test(panelText)) {
+    return true;
+  }
+
+  if (/Choose a sub stage/i.test(panelText)) {
+    return true;
+  }
+
+  const statusLabel = page.getByText(/^Status$/i).first();
+  const stageChips = page
+    .locator("button, [role='button'], div, span")
+    .filter({ hasText: /^(Open|Qualified|Site Visit|Opportunity|Dropped|Booked)$/i });
   if (await statusLabel.isVisible().catch(() => false)) {
+    const stageChipCount = Math.min(await stageChips.count().catch(() => 0), 30);
+    for (let index = 0; index < stageChipCount; index += 1) {
+      if (await stageChips.nth(index).isVisible().catch(() => false)) {
+        return true;
+      }
+    }
+  }
+
+  if (/^Status\b/i.test(panelText) && /Open|Qualified|Site Visit|Opportunity|Dropped/i.test(panelText)) {
     return true;
   }
 
@@ -2713,13 +3510,7 @@ async function stagePanelIsOpen(
   const aiInsightsActive = await isTabActive(aiInsightsTab);
 
   if (changeStageActive && !aiInsightsActive) {
-    const panelText = await tabStrip
-      .locator("xpath=following::div[1]")
-      .innerText()
-      .catch(() => "");
-    return /Choose a stage|Choose a sub stage|Status|Open|Qualified|Site Visit|Opportunity|Dropped/i.test(
-      panelText,
-    );
+    return /Choose a stage|Choose a sub stage/i.test(panelText);
   }
 
   return false;

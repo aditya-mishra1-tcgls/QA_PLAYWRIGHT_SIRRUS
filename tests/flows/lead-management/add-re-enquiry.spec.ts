@@ -5,7 +5,7 @@ import {
 } from "../../support/leads";
 
 test.describe("Lead re-enquiry flow", () => {
-  test.setTimeout(90000);
+  test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 90000));
 
   test("Add Direct Site Visit walk-in re-enquiry", async ({ page, app }) => {
     await openAnyLeadFromListing(page, app);

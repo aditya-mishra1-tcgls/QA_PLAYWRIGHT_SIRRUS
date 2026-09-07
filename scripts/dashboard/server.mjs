@@ -4,7 +4,7 @@ import { appendFile, copyFile, mkdir, readFile, rename, writeFile } from "node:f
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { databaseEnabled, getRemoteArtifact, initializePersistence, listPersistentRunSummaries, listPersistentRuns, loadPersistentRun, objectStorageEnabled, savePersistentRun, uploadRunArtifact, uploadRunArtifacts } from "./persistence.mjs";
+import { createPresignedGetUrl, databaseEnabled, getRemoteArtifact, getRemoteArtifactByKey, initializePersistence, listPersistentRunSummaries, listPersistentRuns, loadPersistentRun, objectStorageEnabled, savePersistentRun, uploadRunArtifact, uploadRunArtifacts } from "./persistence.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "../..");
@@ -146,6 +146,107 @@ async function recoverCorruptedRunFiles() {
   }
 }
 
+async function rebuildRunFromEvents(runId, seedRun = {}) {
+  const eventsPath = path.join(getRunDir(runId), "events.ndjson");
+  if (!existsSync(eventsPath)) {
+    return null;
+  }
+
+  const lines = (await readFile(eventsPath, "utf8")).split(/\r?\n/).filter(Boolean);
+  if (!lines.length) {
+    return null;
+  }
+
+  const run = {
+    id: runId,
+    status: seedRun.status || "running",
+    startedAt: seedRun.startedAt || new Date().toISOString(),
+    endedAt: seedRun.endedAt || null,
+    exitCode: seedRun.exitCode ?? null,
+    command: seedRun.command || "",
+    reportPath: seedRun.reportPath || path.relative(rootDir, path.join(getRunDir(runId), "html-report")),
+    options: seedRun.options || {},
+    summary: seedRun.summary || {},
+    expectedTotal: seedRun.expectedTotal || 0,
+    expectedTests: [],
+    currentTestId: null,
+    tests: {},
+    events: []
+  };
+
+  for (const line of lines) {
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    run.events.push(event);
+
+    if (event.type === "run_begin") {
+      run.expectedTotal = event.total || run.expectedTotal || 0;
+      run.expectedTests = Array.isArray(event.tests) ? event.tests : run.expectedTests;
+      run.startedAt = run.startedAt || event.timestamp;
+    }
+
+    if (event.type === "test_begin") {
+      run.currentTestId = event.testId;
+      run.tests[event.testId] = {
+        ...(run.tests[event.testId] || {}),
+        ...event,
+        status: "running",
+        steps: run.tests[event.testId]?.steps || [],
+        startedAt: event.timestamp
+      };
+    }
+
+    if (event.type === "step_begin" && run.tests[event.testId]) {
+      run.tests[event.testId].steps = run.tests[event.testId].steps || [];
+      run.tests[event.testId].steps.push({ ...event, status: "running", startedAt: event.timestamp });
+      run.tests[event.testId].steps = run.tests[event.testId].steps.slice(-maxStoredSteps);
+    }
+
+    if (event.type === "step_end" && run.tests[event.testId]) {
+      const step = (run.tests[event.testId].steps || []).find((candidate) => candidate.stepId === event.stepId);
+      if (step) {
+        Object.assign(step, event, { status: event.error ? "failed" : "passed", endedAt: event.timestamp });
+      }
+    }
+
+    if (event.type === "test_end") {
+      run.tests[event.testId] = {
+        ...(run.tests[event.testId] || {}),
+        ...event,
+        endedAt: event.timestamp
+      };
+      if (run.currentTestId === event.testId) {
+        run.currentTestId = null;
+      }
+    }
+
+    if (event.type === "test_update") {
+      run.tests[event.testId] = event.test;
+      run.status = event.runStatus || run.status;
+      run.summary = event.summary || run.summary;
+    }
+
+    if (event.type === "run_status") {
+      run.status = event.status || run.status;
+    }
+
+    if (event.type === "run_end") {
+      run.status = event.status || run.status;
+      run.exitCode = event.exitCode ?? run.exitCode;
+      run.endedAt = event.timestamp || run.endedAt;
+      run.currentTestId = null;
+    }
+  }
+
+  recomputeRunSummary(run);
+  return run.expectedTests.length || Object.keys(run.tests).length ? run : null;
+}
+
 async function syncLocalRunsToDatabase() {
   if (!databaseEnabled || !existsSync(runsRoot)) return;
 
@@ -159,7 +260,11 @@ async function syncLocalRunsToDatabase() {
     await preserveRunAttachments(run);
     applyUploadedArtifactUrls(run);
     recomputeRunSummary(run);
-    await savePersistentRun(run);
+    try {
+      await savePersistentRun(run);
+    } catch (error) {
+      console.warn(`Skipped DB sync for local run ${entry}: ${error.message}`);
+    }
   }
 }
 
@@ -167,13 +272,44 @@ async function readRun(runId) {
   const runPath = path.join(getRunDir(runId), "run.json");
   let run;
   if (databaseEnabled) {
-    run = await loadPersistentRun(runId);
+    try {
+      run = await loadPersistentRun(runId);
+    } catch (error) {
+      console.warn(`DB read failed for run ${runId}; falling back to local run file: ${error.message}`);
+    }
+    if ((!run || !isFullRunPayload(run)) && existsSync(runPath)) {
+      const localRun = await recoverRunFile(runPath, runId);
+      if (localRun && isFullRunPayload(localRun)) {
+        run = localRun;
+      }
+    }
+    if (!run || !isFullRunPayload(run)) {
+      const rebuiltRun = await rebuildRunFromEvents(runId, run || {});
+      if (rebuiltRun) {
+        run = rebuiltRun;
+        await saveRun(run);
+      }
+    }
     if (!run) throw new Error("Run not found");
   } else if (existsSync(runPath)) {
     run = await recoverRunFile(runPath, runId);
+    if (!run || !isFullRunPayload(run)) {
+      const rebuiltRun = await rebuildRunFromEvents(runId, run || {});
+      if (rebuiltRun) {
+        run = rebuiltRun;
+        await saveRun(run);
+      }
+    }
     if (!run) throw new Error("Run file is corrupt and could not be recovered");
   } else {
     run = await loadPersistentRun(runId);
+    if (!run || !isFullRunPayload(run)) {
+      const rebuiltRun = await rebuildRunFromEvents(runId, run || {});
+      if (rebuiltRun) {
+        run = rebuiltRun;
+        await saveRun(run);
+      }
+    }
     if (!run) throw new Error("Run not found");
   }
   if (await preserveRunAttachments(run)) {
@@ -183,7 +319,20 @@ async function readRun(runId) {
     await saveRun(run);
   }
   recomputeRunSummary(run);
-  return run;
+  return applyPresignedAttachmentUrls(run);
+}
+
+function isFullRunPayload(run) {
+  return Boolean(
+    run &&
+    typeof run === "object" &&
+    (
+      Object.prototype.hasOwnProperty.call(run, "tests") ||
+      Object.prototype.hasOwnProperty.call(run, "expectedTests") ||
+      Object.prototype.hasOwnProperty.call(run, "command") ||
+      Object.prototype.hasOwnProperty.call(run, "reportPath")
+    )
+  );
 }
 
 function trimRunForUi(run) {
@@ -197,16 +346,26 @@ function trimRunForUi(run) {
 }
 
 async function saveRun(run) {
+  if (!isFullRunPayload(run)) {
+    throw new Error(`Refusing to save summary-only run payload for ${run?.id || "unknown run"}.`);
+  }
+
   trimRunForUi(run);
-  const serializedRun = `${JSON.stringify(run, null, 2)}\n`;
-  const persistedRun = JSON.parse(serializedRun);
+  const persistedRun = JSON.parse(JSON.stringify(run));
+  removeTemporaryAttachmentUrls(persistedRun);
+  const serializedRun = `${JSON.stringify(persistedRun, null, 2)}\n`;
   const previous = saveQueues.get(run.id) || Promise.resolve();
   const task = previous.catch(() => {}).then(async () => {
     const runPath = path.join(getRunDir(run.id), "run.json");
     const temporaryPath = temporaryRunPath(runPath);
     await writeFile(temporaryPath, serializedRun);
     await rename(temporaryPath, runPath);
-    await savePersistentRun(persistedRun);
+    try {
+      await savePersistentRun(persistedRun);
+    } catch (error) {
+      run.persistenceError = error.message || "DB save failed";
+      console.warn(`DB save failed for run ${run.id}; local run file was saved: ${run.persistenceError}`);
+    }
   });
   saveQueues.set(run.id, task);
   try { await task; } finally { if (saveQueues.get(run.id) === task) saveQueues.delete(run.id); }
@@ -314,8 +473,12 @@ function applyUploadedArtifactUrls(run) {
         ? attachment.path.split("/").slice(3).join("/")
         : attachment.path;
       const artifact = artifactsByPath.get(relativePath);
-      if (artifact?.url && attachment.url !== artifact.url) {
-        attachment.url = artifact.url;
+      if (attachment.url) {
+        delete attachment.url;
+        changed = true;
+      }
+
+      if (artifact?.key && attachment.s3Key !== artifact.key) {
         attachment.s3Key = artifact.key;
         changed = true;
       }
@@ -323,6 +486,33 @@ function applyUploadedArtifactUrls(run) {
   }
 
   return changed;
+}
+
+function removeTemporaryAttachmentUrls(run) {
+  for (const test of Object.values(run.tests || {})) {
+    for (const attachment of test.attachments || []) {
+      if (attachment.s3Key && attachment.url) {
+        delete attachment.url;
+      }
+    }
+  }
+}
+
+function applyPresignedAttachmentUrls(run) {
+  for (const test of Object.values(run.tests || {})) {
+    for (const attachment of test.attachments || []) {
+      if (!attachment.s3Key) {
+        continue;
+      }
+
+      const presignedUrl = createPresignedGetUrl(attachment.s3Key);
+      if (presignedUrl) {
+        attachment.url = presignedUrl;
+      }
+    }
+  }
+
+  return run;
 }
 
 function runRelativeAttachmentPath(run, attachment) {
@@ -354,7 +544,7 @@ async function uploadStoredAttachments(run, attachments) {
 
   for (const attachment of attachments) {
     const relativePath = runRelativeAttachmentPath(run, attachment);
-    if (!relativePath || attachment.url) {
+    if (!relativePath || attachment.s3Key) {
       continue;
     }
 
@@ -377,8 +567,8 @@ async function uploadStoredAttachments(run, attachments) {
       artifactsByPath.set(relativePath, artifact);
     }
 
-    attachment.url = artifact.url;
     attachment.s3Key = artifact.key;
+    attachment.url = createPresignedGetUrl(artifact.key) || attachment.url;
     uploaded.push(artifact);
   }
 
@@ -481,6 +671,10 @@ function buildPlaywrightArgs(run) {
     args.push(`--retries=${run.options.retries}`);
   }
 
+  if (run.options.testTimeoutMs) {
+    args.push(`--timeout=${run.options.testTimeoutMs}`);
+  }
+
   if (run.options.headed) {
     args.push("--headed");
   }
@@ -511,6 +705,65 @@ function testMatchesTarget(event, target) {
   return eventFile === targetFile && Number(event.line || 0) === Number(target.line || 0);
 }
 
+function isTerminalTestStatus(status) {
+  return ["passed", "failed", "timedOut", "interrupted", "skipped"].includes(status);
+}
+
+function isFailedStatus(status) {
+  return ["failed", "timedOut", "interrupted"].includes(status);
+}
+
+function shouldShowProcessLog(line) {
+  const text = String(line || "").trim();
+  if (!text) {
+    return false;
+  }
+
+  if (
+    /^(\d+\)|\[\d+\/\d+\]|Running \d+ tests?|Retry #\d+)/i.test(text) ||
+    /^[✓✘×-]\s/.test(text) ||
+    /^(at |Error: expect|Call log:|waiting for|locator\.|page\.|browserContext\.|apiRequestContext\.)/i.test(text) ||
+    /^(npx |TimeoutError:|Test timeout of|Slow test file:|To open last HTML report run:)/i.test(text)
+  ) {
+    return false;
+  }
+
+  return /failed|error|warning|warn|skipped|interrupted/i.test(text);
+}
+
+function friendlyStepTitle(event) {
+  if (event?.type !== "step_begin" || event.category !== "test.step") {
+    return "";
+  }
+
+  return String(event.title || "").trim();
+}
+
+function friendlyStatus(status) {
+  if (status === "passed") return "Passed";
+  if (status === "failed") return "Failed";
+  if (status === "timedOut") return "Timed out";
+  if (status === "skipped") return "Skipped";
+  if (status === "interrupted") return "Interrupted";
+  return status ? String(status) : "Finished";
+}
+
+async function appendFriendlyLog(run, text, timestamp = new Date().toISOString()) {
+  if (!text) {
+    return;
+  }
+
+  const event = {
+    type: "log",
+    source: "test",
+    timestamp,
+    text
+  };
+  await appendFile(path.join(getRunDir(run.id), "events.ndjson"), `${JSON.stringify(event)}\n`);
+  run.events.push(event);
+  broadcast(run.id, event);
+}
+
 function recomputeRunSummary(run) {
   const tests = Object.values(run.tests || {});
   const summary = {};
@@ -521,7 +774,7 @@ function recomputeRunSummary(run) {
     }
 
     const isActiveCurrentTest = run.currentTestId && run.currentTestId === test.testId && ["running", "retrying"].includes(test.status);
-    const isTerminalTest = ["passed", "failed", "timedOut", "interrupted", "skipped"].includes(test.status);
+    const isTerminalTest = isTerminalTestStatus(test.status);
     if (isTerminalTest || isActiveCurrentTest) {
       summary[test.status] = (summary[test.status] || 0) + 1;
     }
@@ -529,8 +782,8 @@ function recomputeRunSummary(run) {
 
   run.summary = summary;
   const expectedTotal = run.expectedTotal || run.expectedTests?.length || tests.length;
-  const completed = tests.filter((test) => ["passed", "failed", "timedOut", "interrupted", "skipped"].includes(test.status)).length;
-  const failed = tests.some((test) => ["failed", "timedOut", "interrupted"].includes(test.status));
+  const completed = tests.filter((test) => isTerminalTestStatus(test.status)).length;
+  const failed = tests.some((test) => isFailedStatus(test.status));
   const active = tests.some((test) => ["running", "retrying"].includes(test.status) && run.currentTestId === test.testId);
 
   if (expectedTotal > 0 && completed >= expectedTotal && !failed && !active) {
@@ -577,6 +830,7 @@ async function appendRetryEvent(run, retry, event) {
     };
     run.currentTestId = retry.testId;
     run.status = "retrying";
+    await appendFriendlyLog(run, `Retry started: ${targetTest.displayTitle || targetTest.title || event.displayTitle || event.title || "Untitled test"}`, event.timestamp);
     broadcast(run.id, { type: "test_update", timestamp: event.timestamp, testId: retry.testId, test: targetTest, runStatus: run.status, summary: run.summary });
     return;
   }
@@ -584,6 +838,7 @@ async function appendRetryEvent(run, retry, event) {
   if (event.type === "step_begin" && targetTest.retry) {
     targetTest.retry.steps.push({ ...event, status: "running", startedAt: event.timestamp });
     targetTest.retry.steps = targetTest.retry.steps.slice(-maxStoredSteps);
+    await appendFriendlyLog(run, friendlyStepTitle(event), event.timestamp);
     broadcast(run.id, { type: "test_update", timestamp: event.timestamp, testId: retry.testId, test: targetTest, runStatus: run.status, summary: run.summary });
     return;
   }
@@ -612,6 +867,7 @@ async function appendRetryEvent(run, retry, event) {
     };
     run.currentTestId = null;
     recomputeRunSummary(run);
+    await appendFriendlyLog(run, `${friendlyStatus(event.status)} after retry: ${targetTest.displayTitle || targetTest.title || event.displayTitle || event.title || "Untitled test"}`, event.timestamp);
     broadcast(run.id, { type: "test_update", timestamp: event.timestamp, testId: retry.testId, test: targetTest, runStatus: run.status, summary: run.summary });
     return;
   }
@@ -624,7 +880,7 @@ async function appendRunEvent(run, event) {
   await appendFile(path.join(getRunDir(run.id), "events.ndjson"), line);
   run.events.push(event);
 
-  if (event.type === "run_begin") {
+  if (event.type === "run_begin" && !run.continuingAfterSkip) {
     run.expectedTotal = event.total || 0;
     run.expectedTests = Array.isArray(event.tests) ? event.tests : [];
   }
@@ -632,11 +888,13 @@ async function appendRunEvent(run, event) {
   if (event.type === "test_begin") {
     run.currentTestId = event.testId;
     run.tests[event.testId] = { ...event, status: "running", steps: [], startedAt: event.timestamp };
+    await appendFriendlyLog(run, `Started: ${event.displayTitle || event.title || "Untitled test"}`, event.timestamp);
   }
 
   if (event.type === "step_begin" && run.tests[event.testId]) {
     run.tests[event.testId].steps.push({ ...event, status: "running", startedAt: event.timestamp });
     run.tests[event.testId].steps = run.tests[event.testId].steps.slice(-maxStoredSteps);
+    await appendFriendlyLog(run, friendlyStepTitle(event), event.timestamp);
   }
 
   if (event.type === "step_end" && run.tests[event.testId]) {
@@ -647,6 +905,25 @@ async function appendRunEvent(run, event) {
   }
 
   if (event.type === "test_end") {
+    const activeRun = activeRuns.get(run.id);
+    if (activeRun?.skipRequested?.testId === event.testId) {
+      run.tests[event.testId] = {
+        ...(run.tests[event.testId] || {}),
+        ...event,
+        status: "skipped",
+        errors: [],
+        attachments: run.tests[event.testId]?.attachments || [],
+        skipReason: run.tests[event.testId]?.skipReason || "Skipped from dashboard",
+        endedAt: event.timestamp
+      };
+      if (run.currentTestId === event.testId) {
+        run.currentTestId = null;
+      }
+      recomputeRunSummary(run);
+      broadcast(run.id, { type: "test_update", timestamp: event.timestamp, testId: event.testId, test: run.tests[event.testId], runStatus: run.status, summary: run.summary });
+      return;
+    }
+
     event.attachments = await preserveAttachments(run, event);
     await uploadStoredAttachments(run, event.attachments);
     run.tests[event.testId] = {
@@ -658,6 +935,7 @@ async function appendRunEvent(run, event) {
       run.currentTestId = null;
     }
     recomputeRunSummary(run);
+    await appendFriendlyLog(run, `${friendlyStatus(event.status)}: ${event.displayTitle || event.title || "Untitled test"}`, event.timestamp);
   }
 
   broadcast(run.id, event);
@@ -690,6 +968,7 @@ async function startRun(body) {
     grep: body.grep || "",
     workers: Number(body.workers || 1),
     retries: body.retries === "" || body.retries === undefined ? "" : Number(body.retries),
+    testTimeoutMs: Number(body.testTimeoutMs || 120000),
     headed: Boolean(body.headed),
     debug: Boolean(body.debug)
   };
@@ -738,6 +1017,7 @@ async function startRun(body) {
     env: {
       ...process.env,
       TEST_ENV: options.env,
+      PLAYWRIGHT_TEST_TIMEOUT: String(options.testTimeoutMs || 120000),
       PLAYWRIGHT_HTML_REPORT: reportDir,
       QA_DASHBOARD_RUN_ID: id
     }
@@ -764,7 +1044,7 @@ async function startRun(body) {
         } catch (error) {
           await appendRunEvent(run, { type: "log", source: "dashboard", timestamp: new Date().toISOString(), text: `Ignored malformed reporter event: ${error.message}` });
         }
-      } else {
+      } else if (shouldShowProcessLog(line)) {
         await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: line });
       }
     }
@@ -781,8 +1061,18 @@ async function startRun(body) {
   child.on("exit", async (code) => {
     for (const source of ["stdout", "stderr"]) {
       if (outputBuffers[source]) {
-        await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: outputBuffers[source] });
+        for (const line of outputBuffers[source].split(/\r?\n/)) {
+          if (shouldShowProcessLog(line)) {
+            await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: line });
+          }
+        }
       }
+    }
+
+    const activeRun = activeRuns.get(id);
+    if (activeRun?.skipRequested) {
+      await continueRunAfterSkip(run, activeRun.skipRequested, activeRun.subscribers);
+      return;
     }
 
     run.status = run.status === "stopping" ? "interrupted" : code === 0 ? "passed" : "failed";
@@ -797,9 +1087,181 @@ async function startRun(body) {
   return run;
 }
 
+async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
+  const expectedTests = run.expectedTests || [];
+  const skippedIndex = expectedTests.findIndex((test) => test.testId === skippedTest.testId);
+  const remainingTests = expectedTests
+    .slice(skippedIndex >= 0 ? skippedIndex + 1 : 0)
+    .filter((test) => !isTerminalTestStatus(run.tests?.[test.testId]?.status));
+  const remainingTargets = remainingTests.map(getRelativeTestTarget).filter(Boolean);
+
+  if (!remainingTargets.length) {
+    run.currentTestId = null;
+    run.status = Object.values(run.tests || {}).some((test) => isFailedStatus(test.status)) ? "failed" : "passed";
+    run.endedAt = new Date().toISOString();
+    await appendRunEvent(run, { type: "run_end", timestamp: run.endedAt, status: run.status, reason: "No remaining tests after skip." });
+    await saveRun(run);
+    await archiveRun(run);
+    activeRuns.delete(run.id);
+    return run;
+  }
+
+  const continuationId = new Date().toISOString().replace(/[:.]/g, "-");
+  const continuationDir = path.join(getRunDir(run.id), "continuations", continuationId);
+  const reportDir = path.join(continuationDir, "html-report");
+  mkdirSync(continuationDir, { recursive: true });
+
+  run.status = "running";
+  run.currentTestId = null;
+  run.continuingAfterSkip = true;
+  await appendRunEvent(run, {
+    type: "log",
+    source: "dashboard",
+    timestamp: new Date().toISOString(),
+    text: `Skipped ${skippedTest.displayTitle || skippedTest.title || skippedTest.testId}. Continuing with ${remainingTargets.length} remaining test(s).`
+  });
+  await saveRun(run);
+
+  const continuationRun = {
+    ...run,
+    options: {
+      ...(run.options || {}),
+      mode: "continue-after-skip",
+      flows: [],
+      specFiles: remainingTargets,
+      grep: "",
+      workers: 1,
+      noDeps: true,
+      continuationOf: skippedTest.testId
+    }
+  };
+  const args = buildPlaywrightArgs(continuationRun);
+  const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, {
+    cwd: rootDir,
+    detached: process.platform !== "win32",
+    env: {
+      ...process.env,
+      TEST_ENV: continuationRun.options.env,
+      PLAYWRIGHT_TEST_TIMEOUT: String(continuationRun.options.testTimeoutMs || 120000),
+      PLAYWRIGHT_HTML_REPORT: reportDir,
+      QA_DASHBOARD_RUN_ID: run.id,
+      QA_DASHBOARD_CONTINUATION_ID: continuationId
+    }
+  });
+
+  activeRuns.set(run.id, { child, subscribers, run });
+  const outputBuffers = { stdout: "", stderr: "" };
+  const handleOutput = async (source, chunk) => {
+    const text = chunk.toString();
+    await appendFile(path.join(continuationDir, "output.log"), text);
+    outputBuffers[source] += text;
+    const lines = outputBuffers[source].split(/\r?\n/);
+    outputBuffers[source] = lines.pop() || "";
+
+    for (const line of lines) {
+      if (!line) {
+        continue;
+      }
+
+      if (line.startsWith(eventPrefix)) {
+        try {
+          await appendRunEvent(run, JSON.parse(line.slice(eventPrefix.length)));
+        } catch (error) {
+          await appendRunEvent(run, { type: "log", source: "dashboard", timestamp: new Date().toISOString(), text: `Ignored malformed reporter event: ${error.message}` });
+        }
+      } else if (shouldShowProcessLog(line)) {
+        await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: line });
+      }
+    }
+
+    await saveRun(run);
+  };
+
+  child.stdout.on("data", (chunk) => handleOutput("stdout", chunk).catch(console.error));
+  child.stderr.on("data", (chunk) => handleOutput("stderr", chunk).catch(console.error));
+  child.on("exit", async (code) => {
+    for (const source of ["stdout", "stderr"]) {
+      if (outputBuffers[source]) {
+        for (const line of outputBuffers[source].split(/\r?\n/)) {
+          if (shouldShowProcessLog(line)) {
+            await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: line });
+          }
+        }
+      }
+    }
+
+    delete run.continuingAfterSkip;
+    const activeRun = activeRuns.get(run.id);
+    if (activeRun?.skipRequested) {
+      await continueRunAfterSkip(run, activeRun.skipRequested, activeRun.subscribers);
+      return;
+    }
+
+    run.status = run.status === "stopping" ? "interrupted" : code === 0 ? "passed" : "failed";
+    run.exitCode = code;
+    run.endedAt = new Date().toISOString();
+    await appendRunEvent(run, { type: "run_end", timestamp: run.endedAt, status: run.status, exitCode: code });
+    await saveRun(run);
+    await archiveRun(run);
+    activeRuns.delete(run.id);
+  });
+
+  return run;
+}
+
+async function skipCurrentTestInRun(runId, testId) {
+  const activeRun = activeRuns.get(runId);
+  if (!activeRun) {
+    throw new Error("Run is not active.");
+  }
+
+  const run = activeRun.run;
+  const targetTest = run.tests?.[testId] || run.expectedTests?.find((test) => test.testId === testId);
+  if (!targetTest) {
+    throw new Error("Test was not found in this active run.");
+  }
+
+  if (run.currentTestId && run.currentTestId !== testId) {
+    throw new Error("Only the currently running test can be skipped.");
+  }
+
+  if (targetTest.status && !["running", "retrying"].includes(targetTest.status)) {
+    throw new Error("Only the currently running test can be skipped.");
+  }
+
+  activeRun.skipRequested = { ...targetTest, testId };
+  run.tests[testId] = {
+    ...(run.tests?.[testId] || {}),
+    ...targetTest
+  };
+  const activeTest = run.tests[testId];
+  activeTest.status = "skipped";
+  activeTest.errors = [];
+  activeTest.skipReason = "Skipped from dashboard";
+  activeTest.endedAt = new Date().toISOString();
+  run.currentTestId = null;
+  recomputeRunSummary(run);
+
+  await appendRunEvent(run, {
+    type: "log",
+    source: "dashboard",
+    timestamp: new Date().toISOString(),
+    text: `Skip requested for ${activeTest.displayTitle || activeTest.title || testId}. Restarting remaining tests...`
+  });
+  await saveRun(run);
+  broadcast(run.id, { type: "test_update", timestamp: activeTest.endedAt, testId, test: activeTest, runStatus: run.status, summary: run.summary });
+
+  const killed = killRunProcess(activeRun.child);
+  if (!killed) {
+    throw new Error("Unable to stop the active Playwright process for this test.");
+  }
+
+  return run;
+}
+
 async function retryTestInRun(runId, testId, body = {}) {
   const run = await readRun(runId);
-  const targetTest = run.tests?.[testId];
+  const targetTest = run.tests?.[testId] || run.expectedTests?.find((test) => test.testId === testId);
   if (!targetTest) {
     throw new Error("Test was not found in this run.");
   }
@@ -844,9 +1306,9 @@ async function retryTestInRun(runId, testId, body = {}) {
       grep: "",
       workers: 1,
       retries: body.retries ?? 0,
+      testTimeoutMs: run.options?.testTimeoutMs || body.testTimeoutMs || 120000,
       headed: Boolean(body.headed ?? run.options?.headed),
-      debug: Boolean(body.debug ?? run.options?.debug),
-      noDeps: true
+      debug: Boolean(body.debug ?? run.options?.debug)
     }
   };
   const args = buildPlaywrightArgs(retryRun);
@@ -856,6 +1318,7 @@ async function retryTestInRun(runId, testId, body = {}) {
     env: {
       ...process.env,
       TEST_ENV: retryRun.options.env,
+      PLAYWRIGHT_TEST_TIMEOUT: String(retryRun.options.testTimeoutMs || run.options?.testTimeoutMs || 120000),
       PLAYWRIGHT_HTML_REPORT: reportDir,
       QA_DASHBOARD_RUN_ID: run.id,
       QA_DASHBOARD_RETRY_ID: retryId
@@ -898,7 +1361,7 @@ async function retryTestInRun(runId, testId, body = {}) {
         } catch (error) {
           await appendRunEvent(run, { type: "log", source: "dashboard", timestamp: new Date().toISOString(), text: `Ignored malformed reporter event: ${error.message}` });
         }
-      } else {
+      } else if (shouldShowProcessLog(line)) {
         await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: line });
       }
     }
@@ -911,7 +1374,11 @@ async function retryTestInRun(runId, testId, body = {}) {
   child.on("exit", async (code) => {
     for (const source of ["stdout", "stderr"]) {
       if (outputBuffers[source]) {
-        await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: outputBuffers[source] });
+        for (const line of outputBuffers[source].split(/\r?\n/)) {
+          if (shouldShowProcessLog(line)) {
+            await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: line });
+          }
+        }
       }
     }
 
@@ -937,8 +1404,13 @@ async function retryTestInRun(runId, testId, body = {}) {
 }
 
 async function listRuns() {
-  const remoteRuns = databaseEnabled ? await listPersistentRunSummaries() : await listPersistentRuns();
-  if (remoteRuns !== null) return remoteRuns.map((run) => { recomputeRunSummary(run); return run; });
+  try {
+    const remoteRuns = databaseEnabled ? await listPersistentRunSummaries() : await listPersistentRuns();
+    if (remoteRuns !== null) return remoteRuns.map((run) => { recomputeRunSummary(run); return run; });
+  } catch (error) {
+    console.warn(`DB run list failed; falling back to local run files: ${error.message}`);
+  }
+
   if (!existsSync(runsRoot)) {
     return [];
   }
@@ -965,8 +1437,21 @@ async function listRuns() {
 }
 
 async function reconcileStaleRuns() {
-  const staleRuns = (await listRuns()).filter((run) => ["running", "stopping"].includes(run.status));
-  for (const run of staleRuns) {
+  const staleRunSummaries = (await listRuns()).filter((run) => ["running", "stopping"].includes(run.status));
+  for (const staleRunSummary of staleRunSummaries) {
+    let run;
+    try {
+      run = await readRun(staleRunSummary.id);
+    } catch (error) {
+      console.warn(`Skipped stale run reconciliation for ${staleRunSummary.id}: ${error.message}`);
+      continue;
+    }
+
+    if (!isFullRunPayload(run)) {
+      console.warn(`Skipped stale run reconciliation for ${staleRunSummary.id}: summary-only payload.`);
+      continue;
+    }
+
     run.status = "interrupted";
     run.endedAt = run.endedAt || new Date().toISOString();
     run.exitCode = run.exitCode ?? null;
@@ -1019,7 +1504,7 @@ function serveStatic(res, pathname) {
   const ext = path.extname(resolved);
   const contentType = contentTypeForPath(resolved);
 
-  res.writeHead(200, { "content-type": contentType });
+  res.writeHead(200, { "content-type": contentType, "cache-control": "no-store" });
   createReadStream(resolved).pipe(res);
 }
 
@@ -1028,13 +1513,26 @@ async function serveRunAttachment(res, runId, testId, attachmentIndex) {
   const attachment = run.tests?.[testId]?.attachments?.[Number(attachmentIndex)];
   const sourcePath = resolveAttachmentSource(attachment?.path);
 
-  if (!sourcePath) {
+  if (sourcePath) {
+    res.writeHead(200, { "content-type": attachment.contentType || contentTypeForPath(sourcePath), "cache-control": "private, max-age=300" });
+    createReadStream(sourcePath).pipe(res);
+    return;
+  }
+
+  const relativePath = runRelativeAttachmentPath(run, attachment);
+  const remote = attachment?.s3Key
+    ? await getRemoteArtifactByKey(attachment.s3Key, relativePath || attachment.name || "")
+    : relativePath
+      ? await getRemoteArtifact(runId, relativePath)
+      : null;
+
+  if (!remote) {
     sendError(res, 404, "Attachment not found");
     return;
   }
 
-  res.writeHead(200, { "content-type": attachment.contentType || contentTypeForPath(sourcePath) });
-  createReadStream(sourcePath).pipe(res);
+  res.writeHead(200, { "content-type": remote.contentType || attachment.contentType || "application/octet-stream", "cache-control": "private, max-age=300" });
+  remote.body.pipe(res);
 }
 
 async function serveRunAsset(res, pathname) {
@@ -1119,6 +1617,36 @@ const server = http.createServer(async (req, res) => {
     const retryMatch = pathname.match(/^\/api\/runs\/([^/]+)\/tests\/([^/]+)\/rerun$/);
     if (req.method === "POST" && retryMatch) {
       sendJson(res, 200, await retryTestInRun(retryMatch[1], retryMatch[2], await readBody(req)));
+      return;
+    }
+
+    const retryQueryMatch = pathname.match(/^\/api\/runs\/([^/]+)\/tests\/rerun$/);
+    if (req.method === "POST" && retryQueryMatch) {
+      const testId = url.searchParams.get("testId");
+      if (!testId) {
+        sendError(res, 400, "Missing testId");
+        return;
+      }
+
+      sendJson(res, 200, await retryTestInRun(retryQueryMatch[1], testId, await readBody(req)));
+      return;
+    }
+
+    const skipMatch = pathname.match(/^\/api\/runs\/([^/]+)\/tests\/([^/]+)\/skip-current$/);
+    if (req.method === "POST" && skipMatch) {
+      sendJson(res, 200, await skipCurrentTestInRun(skipMatch[1], skipMatch[2]));
+      return;
+    }
+
+    const skipQueryMatch = pathname.match(/^\/api\/runs\/([^/]+)\/tests\/skip-current$/);
+    if (req.method === "POST" && skipQueryMatch) {
+      const testId = url.searchParams.get("testId");
+      if (!testId) {
+        sendError(res, 400, "Missing testId");
+        return;
+      }
+
+      sendJson(res, 200, await skipCurrentTestInRun(skipQueryMatch[1], testId));
       return;
     }
 

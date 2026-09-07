@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, type Locator } from "@playwright/test";
+import { expect, test as base, type Locator } from "@playwright/test";
 
 type AppConfig = {
   envName: string;
@@ -172,46 +172,63 @@ export async function ensureActiveProject(page: Page, projectName: string) {
 }
 
 export async function loginToPlatform(page: Page, app: AppConfig) {
-  await page.goto(app.baseUrl, { waitUntil: "domcontentloaded" });
-  await clickWithFallback(
-    page.getByRole("link", { name: /log in/i }),
-    page,
-    async () => await page.locator("#mobile_number").isVisible().catch(() => false)
-  );
+  await base.step("Open login page", async () => {
+    await page.goto(app.baseUrl, { waitUntil: "domcontentloaded" });
+    await clickWithFallback(
+      page.getByRole("link", { name: /log in/i }),
+      page,
+      async () => await page.locator("#mobile_number").isVisible().catch(() => false)
+    );
 
-  await expect(page).toHaveURL(/\/admin\/login/);
-  await page.locator("#mobile_number").fill(app.mobileNumber);
+    await expect(page).toHaveURL(/\/admin\/login/);
+  });
+
+  await base.step("Enter mobile number", async () => {
+    await page.locator("#mobile_number").fill(app.mobileNumber);
+  });
+
   const otpInputs = page.locator('input[inputmode="numeric"]');
-  await clickWithFallback(
-    page.getByRole("button", { name: "Continue" }),
-    page,
-    async () => (await otpInputs.count().catch(() => 0)) === 4
-  );
+  await base.step("Request OTP", async () => {
+    await clickWithFallback(
+      page.getByRole("button", { name: "Continue" }),
+      page,
+      async () => (await otpInputs.count().catch(() => 0)) === 4
+    );
 
-  await expect(otpInputs).toHaveCount(4);
+    await expect(otpInputs).toHaveCount(4, { timeout: 30000 });
+  });
 
-  for (const [index, digit] of app.otp.split("").entries()) {
-    await otpInputs.nth(index).click();
-    await otpInputs.nth(index).pressSequentially(digit, { delay: 10 });
-  }
+  await base.step("Enter OTP", async () => {
+    for (const [index, digit] of app.otp.split("").entries()) {
+      await otpInputs.nth(index).click();
+      await otpInputs.nth(index).pressSequentially(digit, { delay: 10 });
+    }
+  });
 
-  const continueButton = page.getByRole("button", { name: "Continue" });
-  const loggedInUserResponse = page.waitForResponse((response) => {
-    return response.url().includes("/users/loggedInUser") && response.ok();
-  }, { timeout: 60000 });
+  await base.step("Submit login", async () => {
+    const continueButton = page.getByRole("button", { name: "Continue" });
+    const loggedInUserResponse = page.waitForResponse((response) => {
+      return response.url().includes("/users/loggedInUser") && response.ok();
+    }, { timeout: 60000 });
 
-  if (await continueButton.isVisible()) {
-    await continueButton.click();
-  }
+    if (await continueButton.isVisible()) {
+      await continueButton.click();
+    }
 
-  await loggedInUserResponse;
-  await page.waitForURL(/\/admin\/(?!login)/, { timeout: 60000 });
-  await expect(page).toHaveURL(/\/admin\/(?!login)/);
-  await ensureActiveProject(page, app.activeProjectName);
+    await loggedInUserResponse;
+    await page.waitForURL(/\/admin\/(?!login)/, { timeout: 60000 });
+    await expect(page).toHaveURL(/\/admin\/(?!login)/);
+  });
+
+  await base.step("Select active project", async () => {
+    await ensureActiveProject(page, app.activeProjectName);
+  });
 }
 
 export async function saveAuthenticatedState(page: Page, envName: string) {
-  const authStatePath = getAuthStatePath(envName);
-  fs.mkdirSync(path.dirname(authStatePath), { recursive: true });
-  await page.context().storageState({ path: authStatePath });
+  await base.step("Save authenticated session", async () => {
+    const authStatePath = getAuthStatePath(envName);
+    fs.mkdirSync(path.dirname(authStatePath), { recursive: true });
+    await page.context().storageState({ path: authStatePath });
+  });
 }

@@ -2,7 +2,7 @@ import { expect, test } from "../../support/test";
 import { createLeadReportDashboardAndChart } from "../../support/reports";
 
 test.describe("Lead report dashboard flow", () => {
-  test.setTimeout(180000);
+  test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 180000));
 
   test("Create lead report dashboard with source chart", async ({
     page,

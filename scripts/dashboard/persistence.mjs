@@ -1,4 +1,5 @@
 import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { createHash, createHmac } from "node:crypto";
 import path from "node:path";
 import { Pool } from "pg";
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
@@ -36,8 +37,8 @@ const bucket = process.env.QA_S3_BUCKET;
 const prefix = (process.env.QA_S3_PREFIX || "qa-playwright").replace(/^\/+|\/+$/g, "");
 const region = process.env.AWS_REGION || "us-east-1";
 const endpoint = process.env.QA_S3_ENDPOINT || "";
-const publicBaseUrl = (process.env.QA_S3_PUBLIC_BASE_URL || "").replace(/\/+$/g, "");
 const databaseConnectionTimeoutMillis = Number(process.env.QA_DATABASE_CONNECTION_TIMEOUT_MS || 10000);
+const presignedUrlExpiresSeconds = Number(process.env.QA_S3_PRESIGNED_URL_EXPIRES_SECONDS || 3600);
 
 function databaseConfig() {
   if (!databaseUrl) return null;
@@ -132,20 +133,81 @@ function encodeKey(key) {
   return key.split("/").map((segment) => encodeURIComponent(segment)).join("/");
 }
 
-function publicArtifactUrl(key) {
-  const encodedKey = encodeKey(key);
-  if (publicBaseUrl) {
-    return `${publicBaseUrl}/${encodedKey}`;
-  }
+function hmac(key, value, encoding) {
+  return createHmac("sha256", key).update(value).digest(encoding);
+}
 
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function signingKey(secretAccessKey, dateStamp) {
+  const dateKey = hmac(`AWS4${secretAccessKey}`, dateStamp);
+  const regionKey = hmac(dateKey, region);
+  const serviceKey = hmac(regionKey, "s3");
+  return hmac(serviceKey, "aws4_request");
+}
+
+function s3ObjectUrl(key) {
+  const encodedKey = encodeKey(key);
   if (endpoint) {
     const normalizedEndpoint = endpoint.replace(/\/+$/g, "");
     return process.env.QA_S3_FORCE_PATH_STYLE === "true"
-      ? `${normalizedEndpoint}/${encodeURIComponent(bucket)}/${encodedKey}`
-      : `${normalizedEndpoint}/${encodedKey}`;
+      ? new URL(`${normalizedEndpoint}/${encodeURIComponent(bucket)}/${encodedKey}`)
+      : new URL(`${normalizedEndpoint}/${encodedKey}`);
   }
 
-  return `https://${bucket}.s3.${region}.amazonaws.com/${encodedKey}`;
+  return new URL(`https://${bucket}.s3.${region}.amazonaws.com/${encodedKey}`);
+}
+
+export function createPresignedGetUrl(key, expiresSeconds = presignedUrlExpiresSeconds) {
+  if (!bucket || !key) return "";
+
+  const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+  const sessionToken = process.env.AWS_SESSION_TOKEN;
+  if (!accessKeyId || !secretAccessKey) {
+    return "";
+  }
+
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const dateStamp = amzDate.slice(0, 8);
+  const credentialScope = `${dateStamp}/${region}/s3/aws4_request`;
+  const url = s3ObjectUrl(key);
+  const query = new URLSearchParams({
+    "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+    "X-Amz-Credential": `${accessKeyId}/${credentialScope}`,
+    "X-Amz-Date": amzDate,
+    "X-Amz-Expires": String(Math.max(1, Math.min(Number(expiresSeconds) || 3600, 604800))),
+    "X-Amz-SignedHeaders": "host"
+  });
+
+  if (sessionToken) {
+    query.set("X-Amz-Security-Token", sessionToken);
+  }
+
+  const canonicalQueryString = [...query.entries()]
+    .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
+    .sort()
+    .join("&");
+  const canonicalRequest = [
+    "GET",
+    url.pathname,
+    canonicalQueryString,
+    `host:${url.host}\n`,
+    "host",
+    "UNSIGNED-PAYLOAD"
+  ].join("\n");
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    credentialScope,
+    sha256(canonicalRequest)
+  ].join("\n");
+  const signature = hmac(signingKey(secretAccessKey, dateStamp), stringToSign, "hex");
+  url.search = `${canonicalQueryString}&X-Amz-Signature=${signature}`;
+  return url.toString();
 }
 
 export async function uploadRunArtifacts(runId, runDir) {
@@ -169,15 +231,20 @@ export async function uploadRunArtifact(runId, runDir, relativePath) {
 
   const key = [prefix, "runs", runId, relativePath].filter(Boolean).join("/");
   await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: createReadStream(file), ContentLength: statSync(file).size, ContentType: mimeType(file) }));
-  return { path: relativePath, key, url: publicArtifactUrl(key), contentType: mimeType(file) };
+  return { path: relativePath, key, contentType: mimeType(file) };
 }
 
 export async function getRemoteArtifact(runId, relativePath) {
   if (!s3 || relativePath.includes("..")) return null;
   const key = [prefix, "runs", runId, relativePath].filter(Boolean).join("/");
+  return getRemoteArtifactByKey(key, relativePath);
+}
+
+export async function getRemoteArtifactByKey(key, fallbackPath = "") {
+  if (!s3 || !key || key.includes("..")) return null;
   try {
     const response = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-    return { body: response.Body, contentType: response.ContentType || mimeType(relativePath) };
+    return { body: response.Body, contentType: response.ContentType || mimeType(fallbackPath || key) };
   } catch (error) {
     if (["AccessDenied", "NoSuchKey", "NotFound"].includes(error?.name || error?.Code)) {
       return null;

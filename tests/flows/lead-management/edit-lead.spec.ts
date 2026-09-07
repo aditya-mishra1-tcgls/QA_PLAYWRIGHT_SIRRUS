@@ -2,7 +2,7 @@ import { test, expect } from "../../support/test";
 import { editOpenedLeadName, openAnyLeadFromListing } from "../../support/leads";
 
 test.describe("Lead edit flow", () => {
-  test.setTimeout(90000);
+  test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 90000));
 
   test("Update existing lead name and email", async ({ page, app }) => {
     await openAnyLeadFromListing(page, app);

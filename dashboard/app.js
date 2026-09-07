@@ -4,7 +4,9 @@ const state = {
   activeRun: null,
   eventSource: null,
   expandedTestIds: new Set(),
+  expandedScreenshotTestIds: new Set(),
   logLines: [],
+  logAutoScroll: true,
   renderScheduled: false
 };
 
@@ -20,6 +22,7 @@ const elements = {
   grepInput: document.querySelector("#grepInput"),
   workersInput: document.querySelector("#workersInput"),
   retriesInput: document.querySelector("#retriesInput"),
+  testTimeoutInput: document.querySelector("#testTimeoutInput"),
   headedInput: document.querySelector("#headedInput"),
   debugInput: document.querySelector("#debugInput"),
   clearSpecSelectionButton: document.querySelector("#clearSpecSelectionButton"),
@@ -37,6 +40,7 @@ const elements = {
   htmlReportLink: document.querySelector("#htmlReportLink"),
   currentTestCard: document.querySelector("#currentTestCard"),
   currentTestValue: document.querySelector("#currentTestValue"),
+  skipCurrentTestButton: document.querySelector("#skipCurrentTestButton"),
   testList: document.querySelector("#testList"),
   logsOutput: document.querySelector("#logsOutput"),
   runsList: document.querySelector("#runsList")
@@ -51,6 +55,24 @@ function formatDuration(ms) {
   return `${(value / 1000).toFixed(1)}s`;
 }
 
+function formatElapsedSeconds(timestamp, startedAt) {
+  const startTime = startedAt ? new Date(startedAt).getTime() : Date.now();
+  const eventTime = timestamp ? new Date(timestamp).getTime() : Date.now();
+  const elapsedMs = Math.max(0, eventTime - startTime);
+  return `${(elapsedMs / 1000).toFixed(1)}s`;
+}
+
+function formatLogLine(text, timestamp = new Date().toISOString(), startedAt = state.activeRun?.startedAt) {
+  return `[${formatElapsedSeconds(timestamp, startedAt)}] ${text}`;
+}
+
+function setText(element, value) {
+  const nextValue = String(value);
+  if (element.textContent !== nextValue) {
+    element.textContent = nextValue;
+  }
+}
+
 function statusBadge(status) {
   const normalized = status || "pending";
   return `<span class="badge ${normalized}">${normalized}</span>`;
@@ -61,12 +83,8 @@ function attachmentUrl(run, test, attachment, index) {
     return attachment.url;
   }
 
-  if (!attachment?.path) {
+  if (!attachment?.path && !attachment?.s3Key) {
     return "#";
-  }
-
-  if (attachment.path.startsWith("data/test-runs/")) {
-    return `/${encodeURI(attachment.path)}`;
   }
 
   return `/api/runs/${encodeURIComponent(run.id)}/tests/${encodeURIComponent(test.testId)}/attachments/${index}`;
@@ -106,6 +124,62 @@ function isFailedStatus(status) {
 
 function isRunningStatus(status) {
   return ["running", "retrying"].includes(status);
+}
+
+function humanStepsFor(test) {
+  return ((test.retry?.steps?.length ? test.retry.steps : test.steps) || [])
+    .filter((step) => step.category === "test.step")
+    .slice(-maxVisibleSteps);
+}
+
+function isLogScrolledToBottom(threshold = 12) {
+  const remaining = elements.logsOutput.scrollHeight - elements.logsOutput.scrollTop - elements.logsOutput.clientHeight;
+  return remaining <= threshold;
+}
+
+function renderLogLines() {
+  elements.logsOutput.textContent = state.logLines.length ? `${state.logLines.join("\n")}\n` : "";
+  if (state.logAutoScroll) {
+    elements.logsOutput.scrollTop = elements.logsOutput.scrollHeight;
+  }
+}
+
+function appendDashboardLog(text) {
+  state.logLines.push(formatLogLine(text));
+  state.logLines = state.logLines.slice(-maxVisibleLogs);
+  renderLogLines();
+}
+
+function shouldShowLogEvent(event) {
+  if (event.type !== "log") {
+    return false;
+  }
+
+  if (!["stdout", "stderr"].includes(event.source)) {
+    return true;
+  }
+
+  const text = String(event.text || "").trim();
+  if (!text) {
+    return false;
+  }
+
+  if (
+    /^(\d+\)|\[\d+\/\d+\]|Running \d+ tests?|Retry #\d+)/i.test(text) ||
+    /^[✓✘×-]\s/.test(text) ||
+    /^(at |Error: expect|Call log:|waiting for|locator\.|page\.|browserContext\.|apiRequestContext\.)/i.test(text) ||
+    /^(npx |TimeoutError:|Test timeout of|Slow test file:|To open last HTML report run:)/i.test(text)
+  ) {
+    return false;
+  }
+
+  return /failed|error|warning|warn|skipped|interrupted/i.test(text);
+}
+
+function resetLogs(lines = []) {
+  state.logAutoScroll = true;
+  state.logLines = lines.slice(-maxVisibleLogs);
+  renderLogLines();
 }
 
 async function api(path, options) {
@@ -177,6 +251,7 @@ function buildRunPayload() {
     grep: elements.grepInput.value.trim(),
     workers: Number(elements.workersInput.value || 1),
     retries: elements.retriesInput.value === "" ? "" : Number(elements.retriesInput.value),
+    testTimeoutMs: Number(elements.testTimeoutInput.value || 2) * 60 * 1000,
     headed: elements.headedInput.checked,
     debug: elements.debugInput.checked
   };
@@ -188,17 +263,20 @@ function updateSummary(run) {
   const failed = tests.filter((test) => isFailedStatus(test.status)).length;
   const expected = run?.expectedTotal || run?.expectedTests?.length || tests.length;
 
-  elements.statusValue.textContent = run?.status || "Idle";
-  elements.passedValue.textContent = String(passed);
-  elements.failedValue.textContent = String(failed);
-  elements.expectedValue.textContent = String(expected);
+  setText(elements.statusValue, run?.status || "Idle");
+  setText(elements.passedValue, passed);
+  setText(elements.failedValue, failed);
+  setText(elements.expectedValue, expected);
+  updateDuration(run);
+}
 
+function updateDuration(run) {
   if (run?.startedAt && !run.endedAt) {
-    elements.durationValue.textContent = formatDuration(Date.now() - new Date(run.startedAt).getTime());
+    setText(elements.durationValue, formatDuration(Date.now() - new Date(run.startedAt).getTime()));
   } else if (run?.startedAt && run?.endedAt) {
-    elements.durationValue.textContent = formatDuration(new Date(run.endedAt).getTime() - new Date(run.startedAt).getTime());
+    setText(elements.durationValue, formatDuration(new Date(run.endedAt).getTime() - new Date(run.startedAt).getTime()));
   } else {
-    elements.durationValue.textContent = "0s";
+    setText(elements.durationValue, "0s");
   }
 }
 
@@ -222,11 +300,13 @@ function updateCurrentTest(run) {
   if (!currentTest) {
     elements.currentTestCard.hidden = true;
     elements.currentTestValue.textContent = "";
+    elements.skipCurrentTestButton.dataset.skipCurrentTestId = "";
     return;
   }
 
   elements.currentTestCard.hidden = false;
   elements.currentTestValue.textContent = testDisplayTitle(currentTest);
+  elements.skipCurrentTestButton.dataset.skipCurrentTestId = currentTest.testId || "";
 }
 
 function renderTests(run) {
@@ -242,29 +322,30 @@ function renderTests(run) {
     const imageAttachments = (test.attachments || [])
       .map((attachment, index) => ({ attachment, index }))
       .filter(({ attachment }) => attachment.contentType === "image/png" || attachment.contentType === "image/jpeg");
+    const humanSteps = humanStepsFor(test);
 
     return `
     <article class="test-card ${test.status || "running"} ${test.status === "passed" && !state.expandedTestIds.has(test.testId) ? "collapsed" : ""}" data-test-id="${escapeHtml(test.testId || "")}">
       <div class="test-title">
         <strong>${escapeHtml(testDisplayTitle(test))}</strong>
         <div class="test-actions">
+          ${isRunningStatus(test.status) ? `<button class="skip-button" type="button" data-skip-current-test-id="${escapeHtml(test.testId || "")}">Skip</button>` : ""}
           ${isFailedStatus(test.status) ? `<button class="rerun-button" type="button" data-rerun-test-id="${escapeHtml(test.testId || "")}">Retry</button>` : ""}
           ${statusBadge(test.status || "running")}
         </div>
       </div>
       <div class="meta">${escapeHtml(testSubtitle(test))} ${test.duration ? `- ${formatDuration(test.duration)}` : ""}</div>
       ${test.retry ? `<div class="retry-meta">Retry ${escapeHtml(test.retry.status)}${test.retry.duration ? ` - ${formatDuration(test.retry.duration)}` : ""}</div>` : ""}
-      <div class="steps">
-        ${((test.retry?.steps?.length ? test.retry.steps : test.steps) || []).slice(-maxVisibleSteps).map((step) => `
+      ${humanSteps.length ? `<div class="steps">
+        ${humanSteps.map((step) => `
           <div class="step">
             <div class="step-row">
               <span>${escapeHtml(step.title)}</span>
               <strong>${step.duration === undefined ? "..." : formatDuration(step.duration)}</strong>
             </div>
-            <small>${escapeHtml(step.category || "step")}</small>
           </div>
         `).join("")}
-      </div>
+      </div>` : ""}
       ${(test.attempts || []).slice(-1).map((attempt) => `
         <details class="previous-attempt">
           <summary>Previous failure</summary>
@@ -273,7 +354,7 @@ function renderTests(run) {
       `).join("")}
       ${(test.errors || []).map((error) => `<pre class="error">${escapeHtml(error.message || error.stack || "Unknown error")}</pre>`).join("")}
       ${imageAttachments.length ? `
-        <details class="failure-screenshots">
+        <details class="failure-screenshots" data-screenshot-test-id="${escapeHtml(test.testId || "")}" ${state.expandedScreenshotTestIds.has(test.testId) ? "open" : ""}>
           <summary>Failure screenshots (${imageAttachments.length})</summary>
           <div class="screenshot-grid">
             ${imageAttachments.map(({ attachment, index }) => `
@@ -323,15 +404,14 @@ function scheduleRender(run) {
 }
 
 function appendLog(event) {
-  if (event.type !== "log") {
+  if (!shouldShowLogEvent(event)) {
     return;
   }
 
-  const line = `[${new Date(event.timestamp).toLocaleTimeString()}] ${event.text}`;
+  const line = formatLogLine(event.text, event.timestamp, state.activeRun?.startedAt);
   state.logLines.push(line);
   state.logLines = state.logLines.slice(-maxVisibleLogs);
-  elements.logsOutput.textContent = `${state.logLines.join("\n")}\n`;
-  elements.logsOutput.scrollTop = elements.logsOutput.scrollHeight;
+  renderLogLines();
 }
 
 function applyEvent(event) {
@@ -344,9 +424,12 @@ function applyEvent(event) {
   run.tests = run.tests || {};
   run.events.push(event);
   run.events = run.events.slice(-500);
+  let shouldRender = false;
 
   if (event.type === "test_begin") {
     run.tests[event.testId] = { ...event, status: "running", steps: [] };
+    run.currentTestId = event.testId;
+    shouldRender = true;
   }
 
   if (event.type === "run_begin") {
@@ -355,22 +438,29 @@ function applyEvent(event) {
       run.expectedTotal = event.total || 0;
       run.expectedTests = Array.isArray(event.tests) ? event.tests : [];
     }
+    shouldRender = true;
   }
 
-  if (event.type === "step_begin" && run.tests[event.testId]) {
+  if (event.type === "step_begin" && event.category === "test.step" && run.tests[event.testId]) {
     run.tests[event.testId].steps.push({ ...event, status: "running" });
     run.tests[event.testId].steps = run.tests[event.testId].steps.slice(-maxVisibleSteps);
+    shouldRender = true;
   }
 
   if (event.type === "step_end" && run.tests[event.testId]) {
     const step = run.tests[event.testId].steps.find((candidate) => candidate.stepId === event.stepId);
     if (step) {
       Object.assign(step, event, { status: event.error ? "failed" : "passed" });
+      shouldRender = true;
     }
   }
 
   if (event.type === "test_end") {
     run.tests[event.testId] = { ...(run.tests[event.testId] || {}), ...event };
+    if (run.currentTestId === event.testId) {
+      run.currentTestId = null;
+    }
+    shouldRender = true;
   }
 
   if (event.type === "run_end") {
@@ -379,6 +469,7 @@ function applyEvent(event) {
     run.endedAt = event.timestamp;
     elements.stopRunButton.disabled = true;
     loadRuns();
+    shouldRender = true;
   }
 
   if (event.type === "run_status") {
@@ -387,16 +478,23 @@ function applyEvent(event) {
       elements.stopRunButton.disabled = true;
       loadRuns();
     }
+    shouldRender = true;
   }
 
   if (event.type === "test_update") {
     run.tests[event.testId] = event.test;
+    if (run.currentTestId === event.testId && !isRunningStatus(event.test?.status)) {
+      run.currentTestId = null;
+    }
     run.status = event.runStatus || run.status;
     run.summary = event.summary || run.summary;
+    shouldRender = true;
   }
 
   appendLog(event);
-  scheduleRender(run);
+  if (shouldRender) {
+    scheduleRender(run);
+  }
 }
 
 function connectEvents(runId, options = {}) {
@@ -411,7 +509,7 @@ function connectEvents(runId, options = {}) {
 async function startRun(event) {
   event.preventDefault();
   elements.startRunButton.disabled = true;
-  elements.logsOutput.textContent = "";
+  resetLogs();
 
   try {
     const run = await api("/api/runs", {
@@ -422,30 +520,62 @@ async function startRun(event) {
     connectEvents(run.id);
     loadRuns();
   } catch (error) {
-    elements.logsOutput.textContent += `${error.message}\n`;
+    appendDashboardLog(error.message);
   } finally {
     elements.startRunButton.disabled = false;
   }
 }
 
 async function startRerun(testId) {
-  const failedTest = state.activeRun?.tests?.[testId];
-  if (!failedTest) {
+  if (!state.activeRun?.id) {
+    appendDashboardLog("Rerun failed: No report is open.");
     return;
   }
 
-  const run = await api(`/api/runs/${state.activeRun.id}/tests/${testId}/rerun`, {
+  let activeRun = state.activeRun;
+  if (!activeRun.tests?.[testId]) {
+    activeRun = await api(`/api/runs/${activeRun.id}`);
+    renderRun(activeRun);
+  }
+
+  const failedTest = activeRun.tests?.[testId];
+  if (!failedTest) {
+    appendDashboardLog("Rerun failed: Test was not found in this report.");
+    return;
+  }
+
+  appendDashboardLog(`Starting retry for ${testDisplayTitle(failedTest)}...`);
+
+  const run = await api(`/api/runs/${activeRun.id}/tests/rerun?testId=${encodeURIComponent(testId)}`, {
     method: "POST",
     body: JSON.stringify({
-      env: state.activeRun.options?.env || elements.envSelect.value,
-      project: failedTest.projectName || state.activeRun.options?.project || elements.projectSelect.value,
-      retries: state.activeRun.options?.retries ?? 0,
-      headed: Boolean(state.activeRun.options?.headed),
-      debug: Boolean(state.activeRun.options?.debug)
+      env: activeRun.options?.env || elements.envSelect.value,
+      project: failedTest.projectName || activeRun.options?.project || elements.projectSelect.value,
+      retries: activeRun.options?.retries ?? 0,
+      headed: Boolean(activeRun.options?.headed),
+      debug: Boolean(activeRun.options?.debug)
     })
   });
   renderRun(run);
-  connectEvents(state.activeRun.id, { liveOnly: true });
+  connectEvents(run.id, { liveOnly: true });
+  loadRuns();
+}
+
+async function skipCurrentTest(testId) {
+  if (!testId && state.activeRun?.tests) {
+    testId = Object.values(state.activeRun.tests).find((test) => isRunningStatus(test.status))?.testId || "";
+  }
+
+  if (!state.activeRun?.id || !testId) {
+    appendDashboardLog("Skip failed: No running test is selected.");
+    return;
+  }
+
+  appendDashboardLog("Skipping current test...");
+
+  const run = await api(`/api/runs/${state.activeRun.id}/tests/skip-current?testId=${encodeURIComponent(testId)}`, { method: "POST" });
+  renderRun(run);
+  connectEvents(run.id, { liveOnly: true });
   loadRuns();
 }
 
@@ -472,13 +602,10 @@ async function loadRuns() {
 async function openRun(runId) {
   const run = await api(`/api/runs/${runId}`);
   state.logLines = (run.events || [])
-    .filter((event) => event.type === "log")
-    .map((event) => `[${new Date(event.timestamp).toLocaleTimeString()}] ${event.text}`)
+    .filter(shouldShowLogEvent)
+    .map((event) => formatLogLine(event.text, event.timestamp, run.startedAt))
     .slice(-maxVisibleLogs);
-  elements.logsOutput.textContent = state.logLines.join("\n");
-  if (elements.logsOutput.textContent) {
-    elements.logsOutput.textContent += "\n";
-  }
+  resetLogs(state.logLines);
   renderRun(run);
 
   if (isRunningStatus(run.status)) {
@@ -496,17 +623,27 @@ async function stopRun() {
     await api(`/api/runs/${state.activeRun.id}/stop`, { method: "POST" });
   } catch (error) {
     elements.stopRunButton.disabled = false;
-    elements.logsOutput.textContent += `[${new Date().toLocaleTimeString()}] Stop failed: ${error.message}\n`;
-    elements.logsOutput.scrollTop = elements.logsOutput.scrollHeight;
+    appendDashboardLog(`Stop failed: ${error.message}`);
   }
 }
 
 elements.modeSelect.addEventListener("change", applyModeFlows);
 elements.runForm.addEventListener("submit", startRun);
 elements.stopRunButton.addEventListener("click", stopRun);
+elements.skipCurrentTestButton.addEventListener("click", () => {
+  elements.skipCurrentTestButton.disabled = true;
+  skipCurrentTest(elements.skipCurrentTestButton.dataset.skipCurrentTestId).catch((error) => {
+    appendDashboardLog(`Skip failed: ${error.message}`);
+  }).finally(() => {
+    elements.skipCurrentTestButton.disabled = false;
+  });
+});
 elements.refreshRunsButton.addEventListener("click", loadRuns);
 elements.clearLogsButton.addEventListener("click", () => {
-  elements.logsOutput.textContent = "";
+  resetLogs();
+});
+elements.logsOutput.addEventListener("scroll", () => {
+  state.logAutoScroll = isLogScrolledToBottom();
 });
 elements.clearSpecSelectionButton.addEventListener("click", () => {
   for (const option of elements.specSelect.options) {
@@ -521,15 +658,30 @@ elements.runsList.addEventListener("click", (event) => {
 });
 elements.testList.addEventListener("click", (event) => {
   const interactiveTarget = event.target.closest("a, button, summary, input, select, textarea, label");
-  if (interactiveTarget && !interactiveTarget.matches("[data-rerun-test-id]")) {
+  if (interactiveTarget && !interactiveTarget.matches("[data-rerun-test-id], [data-skip-current-test-id]")) {
     return;
   }
 
   const rerunButton = event.target.closest("[data-rerun-test-id]");
   if (rerunButton) {
     event.stopPropagation();
+    rerunButton.disabled = true;
     startRerun(rerunButton.dataset.rerunTestId).catch((error) => {
-      elements.logsOutput.textContent += `[${new Date().toLocaleTimeString()}] Rerun failed: ${error.message}\n`;
+      appendDashboardLog(`Rerun failed: ${error.message}`);
+    }).finally(() => {
+      rerunButton.disabled = false;
+    });
+    return;
+  }
+
+  const skipButton = event.target.closest("[data-skip-current-test-id]");
+  if (skipButton) {
+    event.stopPropagation();
+    skipButton.disabled = true;
+    skipCurrentTest(skipButton.dataset.skipCurrentTestId).catch((error) => {
+      appendDashboardLog(`Skip failed: ${error.message}`);
+    }).finally(() => {
+      skipButton.disabled = false;
     });
     return;
   }
@@ -547,10 +699,22 @@ elements.testList.addEventListener("click", (event) => {
 
   renderRun(state.activeRun);
 });
+elements.testList.addEventListener("toggle", (event) => {
+  const details = event.target.closest?.("[data-screenshot-test-id]");
+  if (!details?.dataset.screenshotTestId) {
+    return;
+  }
+
+  if (details.open) {
+    state.expandedScreenshotTestIds.add(details.dataset.screenshotTestId);
+  } else {
+    state.expandedScreenshotTestIds.delete(details.dataset.screenshotTestId);
+  }
+}, true);
 
 setInterval(() => {
   if (isRunningStatus(state.activeRun?.status)) {
-    updateSummary(state.activeRun);
+    updateDuration(state.activeRun);
   }
 }, 1000);
 
@@ -558,5 +722,5 @@ Promise.all([
   api("/api/config").then(populateConfig),
   loadRuns()
 ]).catch((error) => {
-  elements.logsOutput.textContent = error.message;
+  appendDashboardLog(error.message);
 });

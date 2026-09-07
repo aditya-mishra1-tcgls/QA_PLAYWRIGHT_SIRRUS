@@ -2,7 +2,7 @@ import { test, expect } from "../../support/test";
 import { addRemarkToOpenedLead, openAnyLeadFromListing } from "../../support/leads";
 
 test.describe("Lead remark flow", () => {
-  test.setTimeout(90000);
+  test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 90000));
 
   test("Add remark to existing lead activity", async ({ page, app }) => {
     await openAnyLeadFromListing(page, app);

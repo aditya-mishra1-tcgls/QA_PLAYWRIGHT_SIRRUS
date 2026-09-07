@@ -215,6 +215,12 @@ button:disabled {
   color: var(--danger);
 }
 
+.warning {
+  background: #fff8e6;
+  border-color: #f4d58d;
+  color: var(--warn);
+}
+
 .workspace {
   align-content: start;
   display: grid;
@@ -429,13 +435,19 @@ button:disabled {
   gap: 8px;
 }
 
-.rerun-button {
+.rerun-button,
+.skip-button {
   background: #fff;
   border-color: #b8dbe4;
   color: var(--accent-strong);
   font-size: 12px;
   min-height: 28px;
   padding: 4px 9px;
+}
+
+.skip-button {
+  border-color: #f4d58d;
+  color: var(--warn);
 }
 
 .badge.running {

@@ -25,7 +25,7 @@ type AppConfig = {
 };
 
 test.describe("Site visit lifecycle flow", () => {
-  test.setTimeout(220000);
+  test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 220000));
 
   async function createScheduledSiteVisitLead(page: Page, app: AppConfig) {
     await goToManageLeads(page, app);
