@@ -531,7 +531,7 @@ function renderRun(run) {
   elements.htmlReportLink.hidden = !run?.reportPath;
   if (run?.reportPath) {
     elements.htmlReportLink.href = run.reportUrl || dashboardUrl(`/api/runs/${encodeURIComponent(run.id)}/report`);
-    elements.htmlReportLink.title = run.reportUrl ? "Open uploaded S3 HTML report" : "Open HTML report";
+    elements.htmlReportLink.title = run.reportUrl ? "Open presigned S3 HTML report" : "Open HTML report";
   }
 
   elements.stopRunButton.disabled = !isRunningStatus(run?.status);

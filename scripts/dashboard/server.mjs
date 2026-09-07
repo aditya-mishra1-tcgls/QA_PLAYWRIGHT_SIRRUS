@@ -987,7 +987,7 @@ function applyUploadedReportUrl(run) {
     return false;
   }
 
-  const reportUrl = createArtifactPublicUrl(reportArtifact.key) || createPresignedGetUrl(reportArtifact.key);
+  const reportUrl = createPresignedGetUrl(reportArtifact.key) || createArtifactPublicUrl(reportArtifact.key);
   if (!reportUrl) {
     delete run.reportUrl;
     return false;
