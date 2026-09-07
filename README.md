@@ -68,6 +68,19 @@ The dashboard lets you choose environment, execution mode, flows, specific spec 
 
 For a server deployment, set `QA_DASHBOARD_HOST=0.0.0.0` and expose `QA_DASHBOARD_PORT` through your firewall, reverse proxy, or load balancer. The browser page will show realtime execution from anywhere that can reach the server. If headed mode is enabled, the Playwright browser window opens on the server itself; use VNC/noVNC or a desktop session if you want to watch that headed browser visually.
 
+Protect the dashboard with browser login before exposing it:
+
+```bash
+QA_DASHBOARD_AUTH_USERNAME=admin
+QA_DASHBOARD_AUTH_PASSWORD=<strong-password>
+```
+
+These values bootstrap the first dashboard admin. After login, the admin-only **Dashboard Users** section can create more dashboard users. Created users are stored locally in `config/dashboard-users.local.json`, which is ignored by git. Normal users can open the dashboard and run/view tests, but only admins can create dashboard users.
+
+Each dashboard user can save their own app-test login from the **Configuration** page. Runs started by that user use their saved app login for the selected environment. If no user-specific app login is saved, tests fall back to the current shared `config/accounts.local.json` credentials.
+
+When the dashboard is bound to anything other than localhost, the server refuses to start unless both auth variables are configured.
+
 If the dashboard is hosted under a path prefix, set `QA_DASHBOARD_BASE_PATH`. For example, `https://dev-wag.sirrus.ai/qa-playwrite/` should use `QA_DASHBOARD_BASE_PATH=/qa-playwrite` unless the reverse proxy strips the prefix before forwarding to Node.
 
 Run data is stored locally under `data/test-runs/<run-id>`:

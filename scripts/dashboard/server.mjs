@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { appendFile, copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import http from "node:http";
@@ -10,12 +11,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "../..");
 const dashboardDir = path.join(rootDir, "dashboard");
 const runsRoot = path.join(rootDir, "data", "test-runs");
+const dashboardUsersPath = path.join(rootDir, "config", "dashboard-users.local.json");
 const dashboardBasePath = normalizeBasePath(process.env.QA_DASHBOARD_BASE_PATH || "");
+const legacyDashboardAuth = getDashboardAuthConfig();
 const eventPrefix = "@@QA_DASHBOARD_EVENT@@";
 const maxStoredEvents = 500;
 const maxStoredSteps = 120;
 const activeRuns = new Map();
 const saveQueues = new Map();
+const dashboardSessions = new Map();
 
 mkdirSync(runsRoot, { recursive: true });
 
@@ -42,6 +46,350 @@ function stripDashboardBasePath(pathname) {
   }
 
   return pathname;
+}
+
+function getDashboardAuthConfig() {
+  const username = process.env.QA_DASHBOARD_AUTH_USERNAME || process.env.QA_DASHBOARD_USERNAME || "";
+  const password = process.env.QA_DASHBOARD_AUTH_PASSWORD || process.env.QA_DASHBOARD_PASSWORD || "";
+
+  if (!username && !password) {
+    return null;
+  }
+
+  if (!username || !password) {
+    throw new Error("Configure both QA_DASHBOARD_AUTH_USERNAME and QA_DASHBOARD_AUTH_PASSWORD, or remove both to disable local dashboard auth.");
+  }
+
+  return { username, password };
+}
+
+function loadDashboardUsers() {
+  const bootstrapAdmin = legacyDashboardAuth ? {
+    username: legacyDashboardAuth.username,
+    password: legacyDashboardAuth.password,
+    role: "admin",
+    appCredentials: {},
+    createdAt: new Date().toISOString(),
+    isBootstrapAdmin: true,
+  } : null;
+
+  if (existsSync(dashboardUsersPath)) {
+    const configuredUsers = JSON.parse(readFileSync(dashboardUsersPath, "utf8"));
+    const users = Array.isArray(configuredUsers.users) ? configuredUsers.users : [];
+    if (bootstrapAdmin && !users.some((user) => user.username === bootstrapAdmin.username)) {
+      return [bootstrapAdmin, ...users];
+    }
+
+    return users;
+  }
+
+  if (!bootstrapAdmin) {
+    return [];
+  }
+
+  return [bootstrapAdmin];
+}
+
+async function saveDashboardUsers(users) {
+  const payload = {
+    users: users.map((user) => ({
+      username: user.username,
+      password: user.password,
+      role: user.role,
+      appCredentials: user.appCredentials || {},
+      createdAt: user.createdAt,
+      isBootstrapAdmin: user.isBootstrapAdmin || undefined,
+    })),
+  };
+  await writeFile(dashboardUsersPath, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function safeEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left));
+  const rightBuffer = Buffer.from(String(right));
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function parseCookies(req) {
+  return Object.fromEntries(
+    String(req.headers.cookie || "")
+      .split(";")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const separatorIndex = part.indexOf("=");
+        return separatorIndex === -1
+          ? [part, ""]
+          : [part.slice(0, separatorIndex), decodeURIComponent(part.slice(separatorIndex + 1))];
+      })
+  );
+}
+
+function currentDashboardUser(req) {
+  const token = parseCookies(req).qa_dashboard_session;
+  const session = token ? dashboardSessions.get(token) : null;
+  if (!session) {
+    return null;
+  }
+
+  return {
+    username: session.username,
+    role: session.role,
+  };
+}
+
+function authIsEnabled() {
+  return loadDashboardUsers().length > 0;
+}
+
+function isPublicPath(req, pathname) {
+  if (req.method === "POST" && pathname === "/api/login") {
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/session") {
+    return true;
+  }
+
+  return req.method === "GET" && ["/login.html", "/login.js", "/styles.css"].includes(pathname);
+}
+
+function redirectToLogin(res) {
+  res.writeHead(302, {
+    location: `${dashboardBasePath}/login.html`,
+    "cache-control": "no-store",
+  });
+  res.end();
+}
+
+function redirectToDashboardBase(res, url) {
+  const query = url.search || "";
+  res.writeHead(302, {
+    location: `${dashboardBasePath}/${query}`,
+    "cache-control": "no-store",
+  });
+  res.end();
+}
+
+function requireDashboardAuth(req, res, pathname) {
+  if (!authIsEnabled() || isPublicPath(req, pathname)) {
+    return true;
+  }
+
+  if (currentDashboardUser(req)) {
+    return true;
+  }
+
+  if (pathname.startsWith("/api/") || pathname.startsWith("/data/")) {
+    sendError(res, 401, "Login required");
+    return false;
+  }
+
+  redirectToLogin(res);
+  return false;
+}
+
+function requireAdmin(req, res) {
+  const user = currentDashboardUser(req);
+  if (user?.role === "admin") {
+    return true;
+  }
+
+  sendError(res, 403, "Admin access required");
+  return false;
+}
+
+async function loginDashboardUser(body, res) {
+  const username = String(body.username || "").trim();
+  const password = String(body.password || "");
+  const user = loadDashboardUsers().find((candidate) => candidate.username === username);
+
+  if (!user || !safeEqual(password, user.password)) {
+    sendError(res, 401, "Invalid username or password");
+    return;
+  }
+
+  const token = randomBytes(32).toString("base64url");
+  dashboardSessions.set(token, {
+    username: user.username,
+    role: user.role || "user",
+    createdAt: Date.now(),
+  });
+
+  res.writeHead(200, {
+    "content-type": "application/json",
+    "set-cookie": `qa_dashboard_session=${encodeURIComponent(token)}; Path=${dashboardBasePath || "/"}; HttpOnly; SameSite=Lax`,
+    "cache-control": "no-store",
+  });
+  res.end(JSON.stringify({ user: { username: user.username, role: user.role || "user" } }));
+}
+
+function logoutDashboardUser(req, res) {
+  const token = parseCookies(req).qa_dashboard_session;
+  if (token) {
+    dashboardSessions.delete(token);
+  }
+
+  res.writeHead(200, {
+    "content-type": "application/json",
+    "set-cookie": `qa_dashboard_session=; Path=${dashboardBasePath || "/"}; HttpOnly; SameSite=Lax; Max-Age=0`,
+    "cache-control": "no-store",
+  });
+  res.end(JSON.stringify({ ok: true }));
+}
+
+async function createDashboardUser(body) {
+  const username = String(body.username || "").trim();
+  const password = String(body.password || "");
+  const role = String(body.role || "user").trim() === "admin" ? "admin" : "user";
+
+  if (!/^[a-zA-Z0-9._@-]{3,80}$/.test(username)) {
+    throw new Error("Username must be 3-80 characters and use letters, numbers, dot, underscore, hyphen, or @.");
+  }
+
+  if (password.length < 8) {
+    throw new Error("Password must be at least 8 characters.");
+  }
+
+  const users = loadDashboardUsers();
+  if (users.some((user) => user.username === username)) {
+    throw new Error("Dashboard user already exists.");
+  }
+
+  const nextUser = {
+    username,
+    password,
+    role,
+    appCredentials: {},
+    createdAt: new Date().toISOString(),
+  };
+  users.push(nextUser);
+  await saveDashboardUsers(users);
+  return { username: nextUser.username, role: nextUser.role, createdAt: nextUser.createdAt };
+}
+
+function listDashboardUsers() {
+  return loadDashboardUsers().map((user) => ({
+    username: user.username,
+    role: user.role || "user",
+    createdAt: user.createdAt || null,
+    isBootstrapAdmin: Boolean(user.isBootstrapAdmin),
+  }));
+}
+
+async function resetDashboardUserPassword(username, body) {
+  username = String(username || "").trim();
+  const nextPassword = String(body.password || "");
+  if (!username) {
+    throw new Error("Username is required.");
+  }
+
+  if (nextPassword.length < 8) {
+    throw new Error("Password must be at least 8 characters.");
+  }
+
+  const users = loadDashboardUsers();
+  const user = users.find((candidate) => candidate.username === username);
+  if (!user) {
+    throw new Error("Dashboard user not found.");
+  }
+
+  user.password = nextPassword;
+  user.passwordUpdatedAt = new Date().toISOString();
+  await saveDashboardUsers(users);
+  return { username: user.username, role: user.role || "user" };
+}
+
+async function deleteDashboardUser(username, currentUser) {
+  username = String(username || "").trim();
+  if (!username) {
+    throw new Error("Username is required.");
+  }
+
+  if (username === currentUser.username) {
+    throw new Error("You cannot delete your own active admin account.");
+  }
+
+  const users = loadDashboardUsers();
+  const user = users.find((candidate) => candidate.username === username);
+  if (!user) {
+    throw new Error("Dashboard user not found.");
+  }
+
+  const adminCount = users.filter((candidate) => (candidate.role || "user") === "admin").length;
+  if ((user.role || "user") === "admin" && adminCount <= 1) {
+    throw new Error("Cannot delete the last admin user.");
+  }
+
+  await saveDashboardUsers(users.filter((candidate) => candidate.username !== username));
+  for (const [token, session] of dashboardSessions.entries()) {
+    if (session.username === username) {
+      dashboardSessions.delete(token);
+    }
+  }
+
+  return { username };
+}
+
+function userAppCredentials(username) {
+  const user = loadDashboardUsers().find((candidate) => candidate.username === username);
+  return user?.appCredentials && typeof user.appCredentials === "object" ? user.appCredentials : {};
+}
+
+function appCredentialForUser(username, envName) {
+  const credentials = userAppCredentials(username);
+  return credentials[envName] || null;
+}
+
+async function saveAppCredentialForUser(username, envName, credential) {
+  const users = loadDashboardUsers();
+  const user = users.find((candidate) => candidate.username === username);
+  if (!user) {
+    throw new Error("Dashboard user not found.");
+  }
+
+  const mobileNumber = String(credential.mobileNumber || "").trim();
+  const otp = String(credential.otp || "").trim();
+  const loginId = String(credential.loginId || mobileNumber).trim();
+  const password = String(credential.password || otp).trim();
+
+  if (!loginId && !mobileNumber) {
+    throw new Error("Add login id or mobile number.");
+  }
+
+  if (!password && !otp) {
+    throw new Error("Add password or OTP.");
+  }
+
+  user.appCredentials = user.appCredentials || {};
+  user.appCredentials[envName] = {
+    loginId,
+    password,
+    mobileNumber: mobileNumber || loginId,
+    otp: otp || password,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await saveDashboardUsers(users);
+  return sanitizedAppCredential(user.appCredentials[envName]);
+}
+
+function sanitizedAppCredential(credential) {
+  if (!credential) {
+    return null;
+  }
+
+  return {
+    loginId: credential.loginId || credential.mobileNumber || "",
+    mobileNumber: credential.mobileNumber || credential.loginId || "",
+    hasPassword: Boolean(credential.password),
+    hasOtp: Boolean(credential.otp),
+    updatedAt: credential.updatedAt || null,
+  };
 }
 
 function readJson(relativePath, fallback) {
@@ -780,6 +1128,25 @@ function buildPlaywrightArgs(run) {
   return args;
 }
 
+function playwrightRunEnv(options, reportDir, runId, extra = {}) {
+  const runOwner = options.runOwner || "";
+  const appCredential = runOwner ? appCredentialForUser(runOwner, options.env) : null;
+
+  return {
+    ...process.env,
+    TEST_ENV: options.env,
+    QA_DASHBOARD_RUN_USER: runOwner,
+    APP_TEST_LOGIN_ID: appCredential?.loginId || "",
+    APP_TEST_PASSWORD: appCredential?.password || "",
+    APP_TEST_MOBILE_NUMBER: appCredential?.mobileNumber || "",
+    APP_TEST_OTP: appCredential?.otp || "",
+    PLAYWRIGHT_TEST_TIMEOUT: String(options.testTimeoutMs || 120000),
+    PLAYWRIGHT_HTML_REPORT: reportDir,
+    QA_DASHBOARD_RUN_ID: runId,
+    ...extra,
+  };
+}
+
 function getRelativeTestTarget(test) {
   if (!test?.file) {
     return "";
@@ -1042,7 +1409,7 @@ function broadcast(runId, event) {
   }
 }
 
-async function startRun(body) {
+async function startRun(body, dashboardUser = null) {
   const config = getConfig();
   const id = createRunId();
   const runDir = getRunDir(id);
@@ -1063,6 +1430,7 @@ async function startRun(body) {
     headed: Boolean(body.headed),
     debug: Boolean(body.debug)
   };
+  const runOwner = dashboardUser?.username || "";
 
   if (body.rerunTest) {
     const target = getRelativeTestTarget(body.rerunTest);
@@ -1089,7 +1457,11 @@ async function startRun(body) {
     exitCode: null,
     command: "",
     reportPath: path.relative(rootDir, reportDir),
-    options,
+    options: {
+      ...options,
+      runOwner,
+      usesUserAppCredential: Boolean(runOwner && appCredentialForUser(runOwner, options.env)),
+    },
     summary: {},
     expectedTotal: 0,
     expectedTests: [],
@@ -1105,13 +1477,7 @@ async function startRun(body) {
   const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, {
     cwd: rootDir,
     detached: process.platform !== "win32",
-    env: {
-      ...process.env,
-      TEST_ENV: options.env,
-      PLAYWRIGHT_TEST_TIMEOUT: String(options.testTimeoutMs || 120000),
-      PLAYWRIGHT_HTML_REPORT: reportDir,
-      QA_DASHBOARD_RUN_ID: id
-    }
+    env: playwrightRunEnv(run.options, reportDir, id)
   });
 
   activeRuns.set(id, { child, subscribers: new Set(), run });
@@ -1230,14 +1596,9 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
   const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, {
     cwd: rootDir,
     detached: process.platform !== "win32",
-    env: {
-      ...process.env,
-      TEST_ENV: continuationRun.options.env,
-      PLAYWRIGHT_TEST_TIMEOUT: String(continuationRun.options.testTimeoutMs || 120000),
-      PLAYWRIGHT_HTML_REPORT: reportDir,
-      QA_DASHBOARD_RUN_ID: run.id,
+    env: playwrightRunEnv(continuationRun.options, reportDir, run.id, {
       QA_DASHBOARD_CONTINUATION_ID: continuationId
-    }
+    })
   });
 
   activeRuns.set(run.id, { child, subscribers, run });
@@ -1418,21 +1779,17 @@ async function retryTestInRun(runId, testId, body = {}) {
       retries: body.retries ?? 0,
       testTimeoutMs: run.options?.testTimeoutMs || body.testTimeoutMs || 120000,
       headed: Boolean(body.headed ?? run.options?.headed),
-      debug: Boolean(body.debug ?? run.options?.debug)
+      debug: Boolean(body.debug ?? run.options?.debug),
+      runOwner: run.options?.runOwner || ""
     }
   };
   const args = buildPlaywrightArgs(retryRun);
   const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, {
     cwd: rootDir,
     detached: process.platform !== "win32",
-    env: {
-      ...process.env,
-      TEST_ENV: retryRun.options.env,
-      PLAYWRIGHT_TEST_TIMEOUT: String(retryRun.options.testTimeoutMs || run.options?.testTimeoutMs || 120000),
-      PLAYWRIGHT_HTML_REPORT: reportDir,
-      QA_DASHBOARD_RUN_ID: run.id,
+    env: playwrightRunEnv(retryRun.options, reportDir, run.id, {
       QA_DASHBOARD_RETRY_ID: retryId
-    }
+    })
   });
 
   activeRuns.set(run.id, { child, subscribers: new Set(), run });
@@ -1682,7 +2039,120 @@ async function serveRunAsset(res, pathname) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
-    const pathname = stripDashboardBasePath(decodeURIComponent(url.pathname));
+    const rawPathname = decodeURIComponent(url.pathname);
+    if (dashboardBasePath && rawPathname === dashboardBasePath) {
+      redirectToDashboardBase(res, url);
+      return;
+    }
+
+    const pathname = stripDashboardBasePath(rawPathname);
+
+    if (!requireDashboardAuth(req, res, pathname)) {
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/login") {
+      await loginDashboardUser(await readBody(req), res);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/logout") {
+      logoutDashboardUser(req, res);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/session") {
+      sendJson(res, 200, { user: currentDashboardUser(req) });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/dashboard-users") {
+      if (!requireAdmin(req, res)) {
+        return;
+      }
+      sendJson(res, 200, { users: listDashboardUsers() });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/dashboard-users") {
+      if (!requireAdmin(req, res)) {
+        return;
+      }
+      sendJson(res, 201, { user: await createDashboardUser(await readBody(req)) });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/dashboard-users/password") {
+      if (!requireAdmin(req, res)) {
+        return;
+      }
+      const body = await readBody(req);
+      sendJson(res, 200, {
+        user: await resetDashboardUserPassword(String(body.username || ""), body),
+      });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/dashboard-users/delete") {
+      const currentUser = currentDashboardUser(req);
+      if (!requireAdmin(req, res)) {
+        return;
+      }
+      const body = await readBody(req);
+      sendJson(res, 200, {
+        deleted: await deleteDashboardUser(String(body.username || ""), currentUser),
+      });
+      return;
+    }
+
+    const dashboardUserPasswordMatch = pathname.match(/^\/api\/dashboard-users\/([^/]+)\/password$/);
+    if (req.method === "POST" && dashboardUserPasswordMatch) {
+      if (!requireAdmin(req, res)) {
+        return;
+      }
+      sendJson(res, 200, {
+        user: await resetDashboardUserPassword(decodeURIComponent(dashboardUserPasswordMatch[1]), await readBody(req)),
+      });
+      return;
+    }
+
+    const dashboardUserMatch = pathname.match(/^\/api\/dashboard-users\/([^/]+)$/);
+    if (req.method === "DELETE" && dashboardUserMatch) {
+      const currentUser = currentDashboardUser(req);
+      if (!requireAdmin(req, res)) {
+        return;
+      }
+      sendJson(res, 200, {
+        deleted: await deleteDashboardUser(decodeURIComponent(dashboardUserMatch[1]), currentUser),
+      });
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/app-credentials") {
+      const user = currentDashboardUser(req);
+      const envName = url.searchParams.get("env") || "";
+      const credential = appCredentialForUser(user.username, envName);
+      sendJson(res, 200, {
+        credential: sanitizedAppCredential(credential),
+        usesDefault: !credential,
+      });
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/app-credentials") {
+      const user = currentDashboardUser(req);
+      const body = await readBody(req);
+      const envName = String(body.env || "").trim();
+      if (!envName) {
+        sendError(res, 400, "Environment is required.");
+        return;
+      }
+
+      sendJson(res, 200, {
+        credential: await saveAppCredentialForUser(user.username, envName, body),
+      });
+      return;
+    }
 
     if (req.method === "GET" && pathname === "/api/config") {
       sendJson(res, 200, getConfig());
@@ -1695,7 +2165,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && pathname === "/api/runs") {
-      sendJson(res, 201, await startRun(await readBody(req)));
+      sendJson(res, 201, await startRun(await readBody(req), currentDashboardUser(req)));
       return;
     }
 
@@ -1792,11 +2262,14 @@ const server = http.createServer(async (req, res) => {
 
 const port = Number(process.env.QA_DASHBOARD_PORT || process.env.PORT || 9324);
 const host = process.env.QA_DASHBOARD_HOST || "127.0.0.1";
+if (!authIsEnabled() && !["127.0.0.1", "localhost", "::1"].includes(host)) {
+  throw new Error("Refusing to start public dashboard without auth. Set QA_DASHBOARD_AUTH_USERNAME and QA_DASHBOARD_AUTH_PASSWORD in .env.");
+}
 await initializePersistence();
 await recoverCorruptedRunFiles();
 await syncLocalRunsToDatabase();
 await reconcileStaleRuns();
 server.listen(port, host, () => {
   const displayHost = host === "0.0.0.0" ? "localhost" : host;
-  console.log(`QA dashboard running at http://${displayHost}:${port}${dashboardBasePath || ""} (bind: ${host}, PostgreSQL: ${databaseEnabled ? "enabled" : "local only"}, object storage: ${objectStorageEnabled ? "enabled" : "local only"})`);
+  console.log(`QA dashboard running at http://${displayHost}:${port}${dashboardBasePath || ""} (bind: ${host}, auth: ${authIsEnabled() ? "enabled" : "disabled"}, PostgreSQL: ${databaseEnabled ? "enabled" : "local only"}, object storage: ${objectStorageEnabled ? "enabled" : "local only"})`);
 });

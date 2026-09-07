@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>QA Dashboard Configuration</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <svg aria-hidden="true" class="icon-sprite">
+      <symbol id="icon-check" viewBox="0 0 24 24">
+        <path d="m20 6-11 11-5-5"></path>
+      </symbol>
+      <symbol id="icon-lock" viewBox="0 0 24 24">
+        <path d="M6 10V8a6 6 0 0 1 12 0v2"></path>
+        <path d="M5 10h14v11H5z"></path>
+      </symbol>
+      <symbol id="icon-user-plus" viewBox="0 0 24 24">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+        <path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"></path>
+        <path d="M19 8v6"></path>
+        <path d="M22 11h-6"></path>
+      </symbol>
+    </svg>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>Configuration</h1>
+          <p>Dashboard users and app-test login setup</p>
+        </div>
+        <div class="topbar-actions">
+          <span id="currentUserBadge" class="user-badge" hidden></span>
+          <a id="dashboardLink" href="index.html">
+            <svg class="icon"><use href="#icon-check"></use></svg>
+            Dashboard
+          </a>
+          <button id="logoutButton" type="button">
+            <svg class="icon"><use href="#icon-lock"></use></svg>
+            Logout
+          </button>
+        </div>
+      </header>
+
+      <section class="config-layout">
+        <aside class="panel config-nav">
+          <button class="config-nav-button active" type="button" data-config-section="configSetup">
+            <svg class="icon"><use href="#icon-lock"></use></svg>
+            Config Setup
+          </button>
+          <button class="config-nav-button admin-only" type="button" data-config-section="createUser" hidden>
+            <svg class="icon"><use href="#icon-user-plus"></use></svg>
+            Create User
+          </button>
+          <button class="config-nav-button admin-only" type="button" data-config-section="userList" hidden>
+            <svg class="icon"><use href="#icon-check"></use></svg>
+            User List
+          </button>
+        </aside>
+
+        <section class="config-content">
+          <section id="configSetupSection" class="panel config-panel app-credentials" data-config-panel="configSetup">
+            <h2><svg class="icon"><use href="#icon-lock"></use></svg> App Login Configuration</h2>
+            <form id="appCredentialForm">
+              <label>
+                Environment
+                <select id="appCredentialEnvSelect" name="env"></select>
+              </label>
+              <label>
+                Login ID / Mobile
+                <input id="appLoginIdInput" name="loginId" autocomplete="off" placeholder="default shared login is used if empty">
+              </label>
+              <label>
+                Password / OTP
+                <input id="appPasswordInput" name="password" type="password" autocomplete="new-password" placeholder="default shared OTP is used if empty">
+              </label>
+              <button type="submit">
+                <svg class="icon"><use href="#icon-check"></use></svg>
+                Save App Login
+              </button>
+              <p id="appCredentialMessage" class="form-message" hidden></p>
+            </form>
+          </section>
+
+          <section id="createUserSection" class="panel config-panel admin-users" data-config-panel="createUser" hidden>
+            <h2><svg class="icon"><use href="#icon-user-plus"></use></svg> Create User</h2>
+            <form id="dashboardUserForm">
+              <label>
+                Username / Email
+                <input id="dashboardUsernameInput" name="username" autocomplete="off" required>
+              </label>
+              <label>
+                Password
+                <input id="dashboardPasswordInput" name="password" type="password" autocomplete="new-password" required>
+              </label>
+              <label>
+                Role
+                <select id="dashboardRoleSelect" name="role">
+                  <option value="user">User</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+              <button type="submit">
+                <svg class="icon"><use href="#icon-user-plus"></use></svg>
+                Create User
+              </button>
+              <p id="dashboardUserMessage" class="form-message" hidden></p>
+            </form>
+          </section>
+
+          <section id="userListSection" class="panel config-panel admin-users" data-config-panel="userList" hidden>
+            <h2><svg class="icon"><use href="#icon-check"></use></svg> User List</h2>
+            <p id="dashboardUserListMessage" class="form-message" hidden></p>
+            <div id="dashboardUsersList" class="user-list"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+    <script src="config.js"></script>
+  </body>
+</html>

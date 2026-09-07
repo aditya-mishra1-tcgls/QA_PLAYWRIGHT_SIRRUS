@@ -8,6 +8,11 @@ type Fixtures = {
     activeProjectName: string;
     mobileNumber: string;
     otp: string;
+    adminUser?: {
+      email?: string;
+      password?: string;
+    };
+    parallelUsers?: Array<Record<string, string>>;
     users: Record<string, unknown>;
     leads: Record<string, unknown>;
   };

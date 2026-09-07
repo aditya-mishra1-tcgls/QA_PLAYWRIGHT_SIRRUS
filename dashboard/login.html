@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>QA Dashboard Login</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="login-shell">
+      <section class="login-panel">
+        <div>
+          <h1>QA Test Dashboard</h1>
+          <p>Sign in to continue</p>
+        </div>
+        <form id="loginForm" class="login-form">
+          <label>
+            Username
+            <input id="usernameInput" name="username" autocomplete="username" required>
+          </label>
+          <label>
+            Password
+            <input id="passwordInput" name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <button class="primary" type="submit">Login</button>
+          <p id="loginError" class="form-error" hidden></p>
+        </form>
+      </section>
+    </main>
+    <script src="login.js"></script>
+  </body>
+</html>

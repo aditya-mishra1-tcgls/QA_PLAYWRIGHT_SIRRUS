@@ -1,5 +1,6 @@
 const state = {
   config: null,
+  session: null,
   runs: [],
   activeRun: null,
   eventSource: null,
@@ -37,6 +38,9 @@ const elements = {
   stopRunButton: document.querySelector("#stopRunButton"),
   refreshRunsButton: document.querySelector("#refreshRunsButton"),
   clearLogsButton: document.querySelector("#clearLogsButton"),
+  logoutButton: document.querySelector("#logoutButton"),
+  configLink: document.querySelector("#configLink"),
+  currentUserBadge: document.querySelector("#currentUserBadge"),
   statusValue: document.querySelector("#statusValue"),
   passedValue: document.querySelector("#passedValue"),
   failedValue: document.querySelector("#failedValue"),
@@ -238,6 +242,30 @@ async function api(path, options) {
   }
 
   return response.json();
+}
+
+async function requireSession() {
+  try {
+    const session = await api("/api/session");
+    if (!session.user) {
+      window.location.assign(dashboardUrl("/login.html"));
+      return null;
+    }
+
+    state.session = session;
+    elements.currentUserBadge.textContent = `${session.user.username} (${session.user.role})`;
+    elements.currentUserBadge.hidden = false;
+    elements.configLink.href = dashboardUrl("/config.html");
+    return session;
+  } catch {
+    window.location.assign(dashboardUrl("/login.html"));
+    return null;
+  }
+}
+
+async function logout() {
+  await api("/api/logout", { method: "POST" }).catch(() => {});
+  window.location.assign(dashboardUrl("/login.html"));
 }
 
 function selectedFlows() {
@@ -721,6 +749,7 @@ elements.modeSelect.addEventListener("change", applyModeFlows);
 elements.moduleSelect.addEventListener("change", refreshModuleScopedOptions);
 elements.runForm.addEventListener("submit", startRun);
 elements.stopRunButton.addEventListener("click", stopRun);
+elements.logoutButton.addEventListener("click", logout);
 elements.skipCurrentTestButton.addEventListener("click", () => {
   elements.skipCurrentTestButton.disabled = true;
   skipCurrentTest(elements.skipCurrentTestButton.dataset.skipCurrentTestId).catch((error) => {
@@ -809,9 +838,17 @@ setInterval(() => {
   }
 }, 1000);
 
-Promise.all([
-  api("/api/config").then(populateConfig),
-  loadRuns()
-]).catch((error) => {
-  appendDashboardLog(error.message);
-});
+requireSession()
+  .then((session) => {
+    if (!session) {
+      return null;
+    }
+
+    return Promise.all([
+      api("/api/config").then(populateConfig),
+      loadRuns(),
+    ]);
+  })
+  .catch((error) => {
+    appendDashboardLog(error.message);
+  });

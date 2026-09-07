@@ -21,6 +21,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background:
@@ -39,6 +43,36 @@ select {
 .shell {
   min-height: 100vh;
   padding: 20px;
+}
+
+.login-shell {
+  align-items: center;
+  display: grid;
+  min-height: 100vh;
+  padding: 20px;
+}
+
+.login-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 24px;
+  margin: 0 auto;
+  max-width: 420px;
+  padding: 24px;
+  width: 100%;
+}
+
+.login-panel p {
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.login-form {
+  display: grid;
+  gap: 14px;
 }
 
 .topbar {
@@ -78,10 +112,22 @@ h2 {
 }
 
 .topbar-actions {
+  align-items: center;
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.user-badge {
+  background: rgba(63, 183, 215, 0.12);
+  border: 1px solid rgba(63, 183, 215, 0.34);
+  border-radius: 999px;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 8px 10px;
 }
 
 .layout {
@@ -92,6 +138,43 @@ h2 {
   margin: 0 auto;
   max-width: 1600px;
   min-width: 0;
+}
+
+.config-layout {
+  align-items: start;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  margin: 0 auto;
+  max-width: 1000px;
+  min-width: 0;
+}
+
+.config-nav {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.config-nav-button {
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.config-nav-button.active {
+  background: rgba(63, 183, 215, 0.16);
+  border-color: rgba(63, 183, 215, 0.5);
+  color: var(--accent-strong);
+}
+
+.config-content {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.config-panel {
+  padding: 16px;
 }
 
 .panel {
@@ -130,6 +213,84 @@ h2 {
   margin-top: 16px;
 }
 
+.admin-users,
+.app-credentials {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+}
+
+.admin-users form,
+.app-credentials form {
+  display: grid;
+  gap: 12px;
+  margin-top: 0;
+}
+
+.user-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.user-row {
+  align-items: center;
+  background: rgba(15, 23, 38, 0.62);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 10px;
+}
+
+.user-row > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.user-row strong {
+  font-size: 13px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.user-row small {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.user-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.user-actions button {
+  font-size: 12px;
+  min-height: 30px;
+  padding: 5px 8px;
+}
+
+.user-actions span {
+  background: rgba(147, 163, 186, 0.14);
+  border-radius: 999px;
+  color: var(--muted);
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 8px;
+  text-transform: uppercase;
+}
+
 label,
 legend {
   color: var(--muted);
@@ -145,6 +306,34 @@ legend {
   font-size: 12px;
   font-weight: 600;
   text-transform: none;
+}
+
+.form-error,
+.form-message {
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  margin: 0;
+  padding: 10px;
+}
+
+.form-error,
+.form-message[data-tone="error"] {
+  background: rgba(255, 119, 109, 0.1);
+  border: 1px solid rgba(255, 119, 109, 0.36);
+  color: var(--danger);
+}
+
+.form-message[data-tone="success"] {
+  background: rgba(110, 231, 168, 0.1);
+  border: 1px solid rgba(110, 231, 168, 0.36);
+  color: var(--pass);
+}
+
+.form-message[data-tone="info"] {
+  background: rgba(63, 183, 215, 0.1);
+  border: 1px solid rgba(63, 183, 215, 0.34);
+  color: var(--accent-strong);
 }
 
 input,
@@ -699,6 +888,19 @@ button:disabled {
   .layout {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .config-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .user-row {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .user-actions {
+    justify-content: flex-start;
   }
 
   .summary-strip,

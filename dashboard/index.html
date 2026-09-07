@@ -18,6 +18,10 @@
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
         <path d="M14 2v6h6"></path>
       </symbol>
+      <symbol id="icon-lock" viewBox="0 0 24 24">
+        <path d="M6 10V8a6 6 0 0 1 12 0v2"></path>
+        <path d="M5 10h14v11H5z"></path>
+      </symbol>
       <symbol id="icon-play" viewBox="0 0 24 24">
         <path d="M5 3l14 9-14 9z"></path>
       </symbol>
@@ -35,6 +39,12 @@
         <path d="M12 14l3-3"></path>
         <path d="M12 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16z"></path>
       </symbol>
+      <symbol id="icon-user-plus" viewBox="0 0 24 24">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+        <path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"></path>
+        <path d="M19 8v6"></path>
+        <path d="M22 11h-6"></path>
+      </symbol>
       <symbol id="icon-x" viewBox="0 0 24 24">
         <path d="M18 6 6 18"></path>
         <path d="m6 6 12 12"></path>
@@ -47,6 +57,11 @@
           <p id="subtitle">Local Playwright execution console</p>
         </div>
         <div class="topbar-actions">
+          <span id="currentUserBadge" class="user-badge" hidden></span>
+          <a id="configLink" href="config.html" title="Open configuration">
+            <svg class="icon"><use href="#icon-lock"></use></svg>
+            Configuration
+          </a>
           <button id="refreshRunsButton" class="icon-button" title="Refresh runs" type="button">
             <svg class="icon"><use href="#icon-refresh"></use></svg>
             Refresh
@@ -54,6 +69,10 @@
           <button id="stopRunButton" class="danger" type="button" disabled>
             <svg class="icon"><use href="#icon-square"></use></svg>
             Stop Run
+          </button>
+          <button id="logoutButton" type="button">
+            <svg class="icon"><use href="#icon-lock"></use></svg>
+            Logout
           </button>
         </div>
       </header>

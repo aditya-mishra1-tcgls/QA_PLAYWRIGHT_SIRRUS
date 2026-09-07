@@ -7,7 +7,7 @@ Admin users should be able to create automation-ready users for the platform. Ea
 ## Test Scope
 
 - Admin login prerequisite.
-- Open user management from the admin area.
+- Open user management from the admin area. The automation currently tries these routes first: `/admin/developer/users`, `/admin/developer/user-management`, `/admin/developer/settings/users`, and `/admin/developer/cpms/users`.
 - Create a user with email address, password, role, status, and project access.
 - Verify the user appears in the user list.
 - Verify the newly created user can log in.
@@ -16,6 +16,15 @@ Admin users should be able to create automation-ready users for the platform. Ea
 ## Credential Model
 
 Real credentials must stay in `config/accounts.local.json`, which is intentionally local-only. Use `config/accounts.template.json` as the format reference.
+
+Current admin login uses the existing platform OTP flow:
+
+- Login page: `/admin/login`
+- QA URL: `https://qa.sirrus.ai/admin/login`
+- UAT URL: `https://uat.sirrus.ai/admin/login`
+- Credential source: `mobileNumber` and `otp` in `config/accounts.local.json`
+
+The email/password values are for the user created by admin, unless the platform later enables email/password login for admin itself.
 
 Recommended environment shape:
 
@@ -73,4 +82,5 @@ For three team members:
 
 - Module registered in config.
 - Execution profile added as `user-management`.
-- Playwright selectors for the actual user-management screen are pending.
+- Initial Playwright user-creation spec added at `tests/flows/user-management/create-user.spec.ts`.
+- Generic user-management navigation and form selectors added at `tests/support/users.ts`; confirm the final route/selectors against the live Admin > Users screen.

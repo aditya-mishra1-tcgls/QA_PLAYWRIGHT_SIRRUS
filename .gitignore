@@ -6,3 +6,4 @@ data/test-runs
 .env
 playwright/.auth
 config/accounts.local.json
+config/dashboard-users.local.json
