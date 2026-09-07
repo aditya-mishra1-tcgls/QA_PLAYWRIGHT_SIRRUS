@@ -601,6 +601,9 @@ async function rebuildRunFromEvents(runId, seedRun = {}) {
 
     if (event.type === "test_begin") {
       run.currentTestId = event.testId;
+      run.status = "running";
+      run.endedAt = null;
+      run.exitCode = null;
       run.tests[event.testId] = {
         ...(run.tests[event.testId] || {}),
         ...event,
@@ -1341,6 +1344,14 @@ function isFailedStatus(status) {
   return ["failed", "timedOut", "interrupted"].includes(status);
 }
 
+function isExecutionStatus(status) {
+  return ["running", "retrying", "stopping"].includes(status);
+}
+
+function clampWorkerCount(value) {
+  return Math.min(10, Math.max(1, Number(value || 1)));
+}
+
 function shouldShowProcessLog(line) {
   const text = String(line || "").trim();
   if (!text) {
@@ -1414,9 +1425,9 @@ function recomputeRunSummary(run) {
   const failed = tests.some((test) => isFailedStatus(test.status));
   const active = tests.some((test) => ["running", "retrying"].includes(test.status) && run.currentTestId === test.testId);
 
-  if (expectedTotal > 0 && completed >= expectedTotal && !failed && !active) {
-    run.status = "passed";
-  } else if (failed && !active) {
+  if (expectedTotal > 0 && completed >= expectedTotal && !active) {
+    run.status = failed ? "failed" : "passed";
+  } else if (!isExecutionStatus(run.status) && failed && !active) {
     run.status = "failed";
   }
 }
@@ -1458,6 +1469,8 @@ async function appendRetryEvent(run, retry, event) {
     };
     run.currentTestId = retry.testId;
     run.status = "retrying";
+    run.endedAt = null;
+    run.exitCode = null;
     await appendFriendlyLog(run, `Retry started: ${targetTest.displayTitle || targetTest.title || event.displayTitle || event.title || "Untitled test"}`, event.timestamp);
     broadcast(run.id, { type: "test_update", timestamp: event.timestamp, testId: retry.testId, test: targetTest, runStatus: run.status, summary: run.summary });
     return;
@@ -1515,6 +1528,9 @@ async function appendRunEvent(run, event) {
 
   if (event.type === "test_begin") {
     run.currentTestId = event.testId;
+    run.status = "running";
+    run.endedAt = null;
+    run.exitCode = null;
     run.tests[event.testId] = { ...event, status: "running", steps: [], startedAt: event.timestamp };
     await appendFriendlyLog(run, `Started: ${event.displayTitle || event.title || "Untitled test"}`, event.timestamp);
   }
@@ -1595,7 +1611,7 @@ async function startRun(body, dashboardUser = null) {
     specFiles: Array.isArray(body.specFiles) ? body.specFiles : [],
     project: body.project || "chromium",
     grep: body.grep || "",
-    workers: Number(body.workers || 1),
+    workers: clampWorkerCount(body.workers),
     retries: body.retries === "" || body.retries === undefined ? "" : Number(body.retries),
     testTimeoutMs: Number(body.testTimeoutMs || 120000),
     headed: Boolean(body.headed),
@@ -1931,6 +1947,8 @@ async function retryTestInRun(runId, testId, body = {}) {
 
   run.status = "retrying";
   run.currentTestId = testId;
+  run.endedAt = null;
+  run.exitCode = null;
   rememberPreviousAttempt(targetTest);
   targetTest.status = "retrying";
   targetTest.errors = [];
@@ -2038,7 +2056,8 @@ async function retryTestInRun(runId, testId, body = {}) {
 
     run.currentTestId = null;
     recomputeRunSummary(run);
-    run.endedAt = run.status === "passed" ? new Date().toISOString() : run.endedAt;
+    run.exitCode = code;
+    run.endedAt = new Date().toISOString();
     await appendRunEvent(run, { type: "run_status", timestamp: new Date().toISOString(), status: run.status });
     await cleanupRunAuthState(run);
     await saveRun(run);
@@ -2057,10 +2076,24 @@ function recomputeRunSummaryIfTestsAreLoaded(run) {
   return run;
 }
 
+function mergeActiveRunSnapshots(runs) {
+  const runMap = new Map((runs || []).map((run) => [run.id, run]));
+  for (const [runId, activeRun] of activeRuns.entries()) {
+    if (!activeRunIsAlive(activeRun)) {
+      continue;
+    }
+    runMap.set(runId, runForResponse(activeRun.run));
+  }
+
+  return Array.from(runMap.values())
+    .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))
+    .slice(0, 20);
+}
+
 async function listRuns() {
   try {
     const remoteRuns = databaseEnabled ? await listPersistentRunSummaries() : await listPersistentRuns();
-    if (remoteRuns !== null) return remoteRuns.map(recomputeRunSummaryIfTestsAreLoaded);
+    if (remoteRuns !== null) return mergeActiveRunSnapshots(remoteRuns.map(recomputeRunSummaryIfTestsAreLoaded));
   } catch (error) {
     console.warn(`DB run list failed; falling back to local run files: ${error.message}`);
   }
@@ -2087,7 +2120,7 @@ async function listRuns() {
     runs.push(run);
   }
 
-  return runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, 20);
+  return mergeActiveRunSnapshots(runs);
 }
 
 async function reconcileStaleRuns() {

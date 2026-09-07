@@ -8,7 +8,8 @@ const state = {
   expandedScreenshotTestIds: new Set(),
   logLines: [],
   logAutoScroll: true,
-  renderScheduled: false
+  renderScheduled: false,
+  counterTimers: new Map()
 };
 
 const maxVisibleSteps = 80;
@@ -54,7 +55,11 @@ const elements = {
   skipCurrentTestButton: document.querySelector("#skipCurrentTestButton"),
   testList: document.querySelector("#testList"),
   logsOutput: document.querySelector("#logsOutput"),
-  runsList: document.querySelector("#runsList")
+  runsList: document.querySelector("#runsList"),
+  videoModal: document.querySelector("#videoModal"),
+  videoModalTitle: document.querySelector("#videoModalTitle"),
+  videoModalCloseButton: document.querySelector("#videoModalCloseButton"),
+  videoPreviewPlayer: document.querySelector("#videoPreviewPlayer")
 };
 
 function formatDuration(ms) {
@@ -84,6 +89,50 @@ function setText(element, value) {
   const nextValue = String(value);
   if (element.textContent !== nextValue) {
     element.textContent = nextValue;
+    element.classList.remove("value-pulse");
+    void element.offsetWidth;
+    element.classList.add("value-pulse");
+  }
+}
+
+function setAnimatedNumber(element, value) {
+  const target = Number(value || 0);
+  const currentTarget = Number(element.dataset.counterTarget || 0);
+
+  if (currentTarget === target && state.counterTimers.has(element.id)) {
+    return;
+  }
+
+  clearTimeout(state.counterTimers.get(element.id));
+  state.counterTimers.delete(element.id);
+  element.dataset.counterTarget = String(target);
+
+  const current = Number.parseInt(element.textContent || "0", 10) || 0;
+  if (target <= current) {
+    setText(element, target);
+    return;
+  }
+
+  const tickDelay = target - current > 20 ? 28 : 72;
+  const tick = (nextValue) => {
+    setText(element, nextValue);
+    if (nextValue >= target) {
+      state.counterTimers.delete(element.id);
+      return;
+    }
+
+    const timer = setTimeout(() => tick(nextValue + 1), tickDelay);
+    state.counterTimers.set(element.id, timer);
+  };
+
+  tick(current + 1);
+}
+
+function setSummaryStatus(status) {
+  setText(elements.statusValue, status);
+  const normalizedStatus = String(status || "Idle").toLowerCase();
+  for (const className of ["idle", "running", "passed", "failed", "interrupted", "stopping"]) {
+    elements.statusValue.parentElement.classList.toggle(`is-${className}`, normalizedStatus === className);
   }
 }
 
@@ -156,6 +205,28 @@ function attachmentUrl(run, test, attachment, index) {
   }
 
   return dashboardUrl(`/api/runs/${encodeURIComponent(run.id)}/tests/${encodeURIComponent(test.testId)}/attachments/${index}`);
+}
+
+function isVideoAttachment(attachment) {
+  return String(attachment?.contentType || "").startsWith("video/");
+}
+
+function openVideoPreview(title, src) {
+  if (!src) {
+    return;
+  }
+
+  elements.videoModalTitle.textContent = title || "Test video";
+  elements.videoPreviewPlayer.src = src;
+  elements.videoModal.hidden = false;
+  elements.videoPreviewPlayer.play().catch(() => {});
+}
+
+function closeVideoPreview() {
+  elements.videoPreviewPlayer.pause();
+  elements.videoPreviewPlayer.removeAttribute("src");
+  elements.videoPreviewPlayer.load();
+  elements.videoModal.hidden = true;
 }
 
 function dashboardUrl(path) {
@@ -301,6 +372,10 @@ function selectedSpecs() {
   return [...elements.specSelect.selectedOptions].map((option) => option.value);
 }
 
+function clampWorkerInput() {
+  elements.workersInput.value = String(Math.min(10, Math.max(1, Number(elements.workersInput.value || 1))));
+}
+
 function selectedModuleConfig() {
   const moduleName = elements.moduleSelect.value || state.config?.modules?.defaultModule || "engagement";
   return state.config?.modules?.modules?.[moduleName] || null;
@@ -383,6 +458,9 @@ function applyModeFlows() {
 }
 
 function buildRunPayload() {
+  clampWorkerInput();
+  const workers = Number(elements.workersInput.value || 1);
+
   return {
     env: elements.envSelect.value,
     module: elements.moduleSelect.value,
@@ -391,7 +469,7 @@ function buildRunPayload() {
     specFiles: selectedSpecs(),
     project: elements.projectSelect.value,
     grep: elements.grepInput.value.trim(),
-    workers: Number(elements.workersInput.value || 1),
+    workers,
     retries: elements.retriesInput.value === "" ? "" : Number(elements.retriesInput.value),
     testTimeoutMs: Number(elements.testTimeoutInput.value || 2) * 60 * 1000,
     headed: elements.headedInput.checked,
@@ -405,15 +483,15 @@ function updateSummary(run) {
   const failed = tests.filter((test) => isFailedStatus(test.status)).length;
   const expected = run?.expectedTotal || run?.expectedTests?.length || tests.length;
 
-  setText(elements.statusValue, run?.status || "Idle");
-  setText(elements.passedValue, passed);
-  setText(elements.failedValue, failed);
-  setText(elements.expectedValue, expected);
+  setSummaryStatus(run?.status || "Idle");
+  setAnimatedNumber(elements.passedValue, passed);
+  setAnimatedNumber(elements.failedValue, failed);
+  setAnimatedNumber(elements.expectedValue, expected);
   updateDuration(run);
 }
 
 function updateDuration(run) {
-  if (run?.startedAt && !run.endedAt) {
+  if (run?.startedAt && isRunningStatus(run.status)) {
     setText(elements.durationValue, formatDuration(Date.now() - new Date(run.startedAt).getTime()));
   } else if (run?.startedAt && run?.endedAt) {
     setText(elements.durationValue, formatDuration(new Date(run.endedAt).getTime() - new Date(run.startedAt).getTime()));
@@ -461,13 +539,19 @@ function renderTests(run) {
 
   elements.testList.className = "test-list";
   elements.testList.innerHTML = tests.map((test) => {
+    const isExpanded = state.expandedTestIds.has(test.testId);
+    const shouldCollapse = !isRunningStatus(test.status) && !isExpanded;
+    const isOpen = !shouldCollapse;
     const imageAttachments = (test.attachments || [])
       .map((attachment, index) => ({ attachment, index }))
       .filter(({ attachment }) => attachment.contentType === "image/png" || attachment.contentType === "image/jpeg");
+    const videoAttachments = (test.attachments || [])
+      .map((attachment, index) => ({ attachment, index }))
+      .filter(({ attachment }) => isVideoAttachment(attachment));
     const humanSteps = humanStepsFor(test);
 
     return `
-    <article class="test-card ${test.status || "running"} ${test.status === "passed" && !state.expandedTestIds.has(test.testId) ? "collapsed" : ""}" data-test-id="${escapeHtml(test.testId || "")}">
+    <article class="test-card ${test.status || "running"} ${shouldCollapse ? "collapsed" : ""}" data-test-id="${escapeHtml(test.testId || "")}" aria-expanded="${isOpen ? "true" : "false"}">
       <div class="test-title">
         <div class="test-title-main">
           ${testStatusIcon(test.status)}
@@ -498,6 +582,22 @@ function renderTests(run) {
         </details>
       `).join("")}
       ${(test.errors || []).map((error) => `<pre class="error">${escapeHtml(error.message || error.stack || "Unknown error")}</pre>`).join("")}
+      ${videoAttachments.length ? `
+        <details class="test-videos" open>
+          <summary>Test videos (${videoAttachments.length})</summary>
+          <div class="video-list">
+            ${videoAttachments.map(({ attachment, index }) => {
+              const src = attachmentUrl(run, test, attachment, index);
+              return `
+                <button class="video-preview-button" type="button" data-video-src="${escapeHtml(src)}" data-video-title="${escapeHtml(attachment.name || testDisplayTitle(test) || "Test video")}">
+                  <svg class="icon"><use href="#icon-play"></use></svg>
+                  <span>${escapeHtml(attachment.name || "Preview video")}</span>
+                </button>
+                ${attachment.uploadError ? `<small>${escapeHtml(attachment.uploadError)}</small>` : ""}
+              `;
+            }).join("")}
+          </div>
+        </details>` : ""}
       ${imageAttachments.length ? `
         <details class="failure-screenshots" data-screenshot-test-id="${escapeHtml(test.testId || "")}" ${state.expandedScreenshotTestIds.has(test.testId) ? "open" : ""}>
           <summary>Failure screenshots (${imageAttachments.length})</summary>
@@ -579,6 +679,9 @@ function applyEvent(event) {
   if (event.type === "test_begin") {
     run.tests[event.testId] = { ...event, status: "running", steps: [] };
     run.currentTestId = event.testId;
+    run.status = "running";
+    run.endedAt = null;
+    run.exitCode = null;
     shouldRender = true;
   }
 
@@ -791,6 +894,8 @@ elements.modeSelect.addEventListener("change", applyModeFlows);
 elements.moduleSelect.addEventListener("change", refreshModuleScopedOptions);
 elements.runForm.addEventListener("submit", startRun);
 elements.stopRunButton.addEventListener("click", stopRun);
+elements.workersInput.addEventListener("change", clampWorkerInput);
+elements.workersInput.addEventListener("blur", clampWorkerInput);
 elements.logoutButton.addEventListener("click", logout);
 elements.skipCurrentTestButton.addEventListener("click", () => {
   elements.skipCurrentTestButton.disabled = true;
@@ -819,6 +924,13 @@ elements.runsList.addEventListener("click", (event) => {
   }
 });
 elements.testList.addEventListener("click", (event) => {
+  const videoButton = event.target.closest("[data-video-src]");
+  if (videoButton) {
+    event.stopPropagation();
+    openVideoPreview(videoButton.dataset.videoTitle, videoButton.dataset.videoSrc);
+    return;
+  }
+
   const interactiveTarget = event.target.closest("a, button, summary, input, select, textarea, label");
   if (interactiveTarget && !interactiveTarget.matches("[data-rerun-test-id], [data-skip-current-test-id]")) {
     return;
@@ -848,6 +960,10 @@ elements.testList.addEventListener("click", (event) => {
     return;
   }
 
+  if (event.target.closest("details, summary")) {
+    return;
+  }
+
   const card = event.target.closest("[data-test-id]");
   if (!card?.dataset.testId || !state.activeRun) {
     return;
@@ -873,6 +989,17 @@ elements.testList.addEventListener("toggle", (event) => {
     state.expandedScreenshotTestIds.delete(details.dataset.screenshotTestId);
   }
 }, true);
+
+elements.videoModal.addEventListener("click", (event) => {
+  if (event.target.closest("[data-close-video-modal]")) {
+    closeVideoPreview();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !elements.videoModal.hidden) {
+    closeVideoPreview();
+  }
+});
 
 setInterval(() => {
   if (isRunningStatus(state.activeRun?.status)) {

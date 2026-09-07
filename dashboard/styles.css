@@ -85,6 +85,21 @@ select {
   min-width: 0;
 }
 
+.brand-lockup {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  min-width: 0;
+}
+
+.brand-logo {
+  display: block;
+  flex: 0 0 auto;
+  height: 34px;
+  object-fit: contain;
+  width: 126px;
+}
+
 h1,
 h2,
 p {
@@ -362,21 +377,51 @@ legend {
 
 input,
 select {
-  background: #101012;
-  border: 1px solid var(--line);
+  background: linear-gradient(180deg, #17181d, #0f1014);
+  border: 1px solid rgba(120, 163, 255, 0.18);
   border-radius: 8px;
   color: var(--text);
   min-height: 38px;
   padding: 8px 10px;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
   width: 100%;
 }
 
+select {
+  appearance: none;
+  background:
+    linear-gradient(45deg, transparent 50%, rgba(242, 242, 243, 0.78) 50%) calc(100% - 17px) 17px / 6px 6px no-repeat,
+    linear-gradient(135deg, rgba(242, 242, 243, 0.78) 50%, transparent 50%) calc(100% - 12px) 17px / 6px 6px no-repeat,
+    linear-gradient(180deg, #17181d, #0f1014);
+  cursor: pointer;
+  padding-right: 34px;
+}
+
 select[multiple] {
-  min-height: 112px;
+  background: linear-gradient(180deg, #17181d, #0f1014);
+  cursor: default;
+  min-height: 128px;
+  padding: 6px;
+}
+
+select[multiple] option {
+  border-radius: 6px;
+  margin: 2px 0;
+  padding: 7px 8px;
+}
+
+select[multiple] option:checked {
+  background: linear-gradient(90deg, rgba(86, 140, 255, 0.52), rgba(0, 214, 255, 0.28));
+  color: #ffffff;
 }
 
 input::placeholder {
   color: #6f7078;
+}
+
+input:hover,
+select:hover {
+  border-color: rgba(120, 163, 255, 0.42);
 }
 
 input:focus,
@@ -389,7 +434,7 @@ a:focus-visible {
 }
 
 option {
-  background: #101012;
+  background: #15161b;
   color: var(--text);
 }
 
@@ -494,42 +539,116 @@ button:disabled {
 
 .summary-strip {
   display: grid;
-  gap: 14px;
+  gap: 12px;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   min-width: 0;
 }
 
-.summary-strip article {
+.summary-card {
   align-items: center;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: var(--shadow);
+  background:
+    linear-gradient(135deg, rgba(17, 17, 19, 0.94), rgba(10, 10, 12, 0.98)),
+    var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   display: flex;
   gap: 8px;
   justify-content: space-between;
   min-width: 0;
   min-height: 64px;
+  overflow: hidden;
   padding: 12px 14px;
+  position: relative;
+}
+
+.summary-card::before {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.16), transparent);
+  content: "";
+  height: 1px;
+  left: -35%;
+  opacity: 0.8;
+  position: absolute;
+  right: -35%;
+  top: 0;
+}
+
+.summary-card::after {
+  background: radial-gradient(circle at 86% 18%, rgba(255, 255, 255, 0.16), transparent 34%);
+  content: "";
+  inset: 0;
+  opacity: 0.45;
+  pointer-events: none;
+  position: absolute;
+}
+
+.status-card {
+  background: linear-gradient(135deg, rgba(86, 140, 255, 0.24), rgba(11, 13, 20, 0.98) 58%);
+}
+
+.status-card.is-running,
+.status-card.is-stopping {
+  border-color: rgba(86, 140, 255, 0.48);
+}
+
+.status-card.is-passed {
+  border-color: rgba(52, 232, 154, 0.46);
+}
+
+.status-card.is-failed,
+.status-card.is-interrupted {
+  border-color: rgba(255, 52, 72, 0.5);
+}
+
+.passed-card {
+  background: linear-gradient(135deg, rgba(52, 232, 154, 0.26), rgba(8, 22, 18, 0.98) 56%);
+}
+
+.failed-card {
+  background: linear-gradient(135deg, rgba(255, 52, 72, 0.28), rgba(25, 9, 13, 0.98) 56%);
+}
+
+.expected-card {
+  background: linear-gradient(135deg, rgba(0, 214, 255, 0.24), rgba(8, 19, 25, 0.98) 56%);
+}
+
+.duration-card {
+  background: linear-gradient(135deg, rgba(255, 196, 0, 0.25), rgba(24, 18, 7, 0.98) 58%);
 }
 
 .summary-strip span {
   align-items: center;
-  color: var(--muted);
+  color: rgba(242, 242, 243, 0.72);
   display: flex;
   font-size: 10px;
   font-weight: 700;
   gap: 6px;
   line-height: 1.2;
+  position: relative;
   text-transform: uppercase;
+  z-index: 1;
 }
 
 .summary-strip strong {
-  font-size: 20px;
-  font-weight: 800;
+  color: #ffffff;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
   line-height: 1.1;
   overflow-wrap: anywhere;
+  position: relative;
   text-align: right;
+  text-shadow: 0 0 18px rgba(255, 255, 255, 0.18);
+  z-index: 1;
+}
+
+.summary-strip .icon {
+  height: 13px;
+  width: 13px;
+}
+
+.value-pulse {
+  animation: valuePulse 260ms ease-out;
 }
 
 .current-run,
@@ -612,6 +731,10 @@ button:disabled {
   padding: 12px;
 }
 
+.test-card {
+  cursor: pointer;
+}
+
 .test-card::before {
   background: transparent;
   border-radius: 10px 0 0 10px;
@@ -628,7 +751,10 @@ button:disabled {
 }
 
 .test-card.collapsed .steps,
-.test-card.collapsed .error {
+.test-card.collapsed .previous-attempt,
+.test-card.collapsed .error,
+.test-card.collapsed .test-videos,
+.test-card.collapsed .failure-screenshots {
   display: none;
 }
 
@@ -673,14 +799,61 @@ button:disabled {
 }
 
 .failure-screenshots {
+  max-height: 260px;
   margin-top: 12px;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
+.test-videos {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding-top: 10px;
+  scrollbar-width: thin;
+}
+
+.test-videos summary,
 .failure-screenshots summary {
   color: var(--accent-strong);
   cursor: pointer;
   font-size: 12px;
   font-weight: 800;
+}
+
+.video-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.video-preview-button {
+  align-items: center;
+  background: linear-gradient(135deg, rgba(86, 140, 255, 0.16), rgba(0, 214, 255, 0.08));
+  border-color: rgba(120, 163, 255, 0.34);
+  color: var(--text);
+  display: flex;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 8px;
+  justify-content: flex-start;
+  min-height: 36px;
+  overflow: hidden;
+  text-align: left;
+  width: 100%;
+}
+
+.video-preview-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-list small {
+  color: var(--danger);
+  font-size: 10px;
+  overflow-wrap: anywhere;
 }
 
 .screenshot-grid {
@@ -962,6 +1135,7 @@ button:disabled {
   border-left: 3px solid var(--danger);
   color: var(--danger);
   margin-top: 10px;
+  max-height: 220px;
   max-width: 100%;
   overflow-x: hidden;
   overflow-y: auto;
@@ -1005,6 +1179,70 @@ button:disabled {
   background: #162034;
 }
 
+.video-modal {
+  align-items: center;
+  display: grid;
+  inset: 0;
+  padding: 24px;
+  position: fixed;
+  z-index: 20;
+}
+
+.video-modal-backdrop {
+  background: rgba(0, 0, 0, 0.72);
+  inset: 0;
+  position: fixed;
+}
+
+.video-dialog {
+  background: #0d0d10;
+  border: 1px solid rgba(120, 163, 255, 0.28);
+  border-radius: 10px;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.64);
+  display: grid;
+  gap: 12px;
+  margin: auto;
+  max-height: calc(100vh - 48px);
+  max-width: 980px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 12px;
+  position: relative;
+  width: min(92vw, 980px);
+}
+
+.video-dialog-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.video-dialog-header span {
+  color: var(--accent-strong);
+  display: block;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.video-dialog-header strong {
+  display: block;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.video-dialog video {
+  aspect-ratio: 16 / 9;
+  background: #050505;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: block;
+  max-height: calc(100vh - 132px);
+  width: 100%;
+}
+
 @keyframes spinStatus {
   to {
     transform: rotate(360deg);
@@ -1022,7 +1260,23 @@ button:disabled {
   }
 }
 
+@keyframes valuePulse {
+  0% {
+    transform: translateY(2px) scale(0.96);
+  }
+
+  60% {
+    text-shadow: 0 0 22px rgba(255, 255, 255, 0.32);
+    transform: translateY(-1px) scale(1.04);
+  }
+
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .value-pulse,
   .status-mark.running,
   .test-card.running::before,
   .test-card.retrying::before {
@@ -1053,6 +1307,15 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+  .brand-lockup {
+    align-items: flex-start;
+  }
+
+  .brand-logo {
+    height: 28px;
+    width: 104px;
+  }
+
   .history {
     max-height: 320px;
   }
@@ -1077,6 +1340,10 @@ button:disabled {
 
   .summary-strip article {
     min-height: 40px;
+  }
+
+  .summary-strip strong {
+    font-size: 16px;
   }
 
   .screenshot-grid {

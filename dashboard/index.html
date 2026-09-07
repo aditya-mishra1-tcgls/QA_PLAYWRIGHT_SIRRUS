@@ -61,9 +61,12 @@
     </svg>
     <main class="shell">
       <header class="topbar">
-        <div>
-          <h1>QA Test Dashboard</h1>
-          <p id="subtitle">Local Playwright execution console</p>
+        <div class="brand-lockup">
+          <img class="brand-logo" src="assets/sirrus-ai-logo.png" alt="sirrus.ai">
+          <div>
+            <h1>QA Test Dashboard</h1>
+            <p id="subtitle">Local Playwright execution console</p>
+          </div>
         </div>
         <div class="topbar-actions">
           <span id="currentUserBadge" class="user-badge" hidden></span>
@@ -133,7 +136,7 @@
             <div class="number-grid">
               <label>
                 Workers
-                <input id="workersInput" name="workers" type="number" min="1" value="1">
+                <input id="workersInput" name="workers" type="number" min="1" max="10" value="1">
               </label>
               <label>
                 Retries
@@ -159,23 +162,23 @@
 
         <section class="workspace">
           <div class="summary-strip">
-            <article>
+            <article class="summary-card status-card">
               <span><svg class="icon"><use href="#icon-activity"></use></svg> Status</span>
               <strong id="statusValue">Idle</strong>
             </article>
-            <article>
+            <article class="summary-card passed-card">
               <span><svg class="icon"><use href="#icon-check"></use></svg> Passed</span>
               <strong id="passedValue">0</strong>
             </article>
-            <article>
+            <article class="summary-card failed-card">
               <span><svg class="icon"><use href="#icon-x"></use></svg> Failed</span>
               <strong id="failedValue">0</strong>
             </article>
-            <article>
+            <article class="summary-card expected-card">
               <span><svg class="icon"><use href="#icon-file"></use></svg> Expected</span>
               <strong id="expectedValue">0</strong>
             </article>
-            <article>
+            <article class="summary-card duration-card">
               <span><svg class="icon"><use href="#icon-timer"></use></svg> Duration</span>
               <strong id="durationValue">0s</strong>
             </article>
@@ -222,6 +225,22 @@
         </aside>
       </section>
     </main>
+
+    <div id="videoModal" class="video-modal" hidden>
+      <div class="video-modal-backdrop" data-close-video-modal></div>
+      <section class="video-dialog" role="dialog" aria-modal="true" aria-labelledby="videoModalTitle">
+        <div class="video-dialog-header">
+          <div>
+            <span>Test Recording</span>
+            <strong id="videoModalTitle">Test video</strong>
+          </div>
+          <button id="videoModalCloseButton" class="icon-button" type="button" title="Close video preview" data-close-video-modal>
+            <svg class="icon"><use href="#icon-x"></use></svg>
+          </button>
+        </div>
+        <video id="videoPreviewPlayer" controls playsinline preload="metadata"></video>
+      </section>
+    </div>
 
     <script src="app.js"></script>
   </body>

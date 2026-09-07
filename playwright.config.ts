@@ -30,7 +30,7 @@ export default defineConfig({
     trace: "on-first-retry",
     // The shared fixture captures three labeled failure screenshots for the dashboard.
     screenshot: "off",
-    video: "retain-on-failure"
+    video: "on"
   },
   projects: [
     {
