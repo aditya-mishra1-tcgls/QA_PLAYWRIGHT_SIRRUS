@@ -74,8 +74,8 @@ For three team members:
 ## Implementation Notes
 
 - Keep `workers` equal to the number of available isolated users. For example, three workers need at least three parallel users.
-- Auth storage state should be saved per environment and user, for example `playwright/.auth/uat-worker-1.json`.
-- Avoid one shared `playwright/.auth/uat.json` for parallel runs because session refresh, project switching, and user-specific local storage can collide.
+- Dashboard-triggered auth storage state is saved per execution, for example `playwright/.auth/uat-<run-id>.json`.
+- Avoid one shared `playwright/.auth/uat.json` for parallel dashboard runs because session refresh, project switching, and user-specific local storage can collide.
 - Tests that create users, leads, site visits, or reports should generate unique names/emails/mobile numbers using the run id, worker index, or timestamp.
 
 ## Automation Status

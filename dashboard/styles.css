@@ -526,6 +526,26 @@ button:disabled {
   min-width: 0;
 }
 
+.run-owner,
+.run-card-meta span {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+}
+
+.run-owner {
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 800;
+  margin-top: 6px;
+}
+
+.run-owner .icon,
+.run-card-meta .icon {
+  height: 14px;
+  width: 14px;
+}
+
 .test-list,
 .runs-list {
   display: grid;
@@ -663,6 +683,11 @@ button:disabled {
   font-size: 12px;
   margin-top: 5px;
   overflow-wrap: anywhere;
+}
+
+.run-card-meta {
+  display: grid;
+  gap: 4px;
 }
 
 .badge {

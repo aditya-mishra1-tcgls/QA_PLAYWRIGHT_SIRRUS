@@ -47,7 +47,7 @@ Important:
 ## Current Working Patterns
 
 - Login is reused through `tests/setup/auth.setup.ts`
-- Auth state is saved to `playwright/.auth/<env>.json`
+- Local CLI auth state is saved to `playwright/.auth/<env>.json`; dashboard runs use `playwright/.auth/<env>-<run-id>.json` and clean that execution-specific file after the run completes
 - Project must be switched to `Test1303` after login
 - For dependent dropdowns like project, source, and sub source:
   - wait for options

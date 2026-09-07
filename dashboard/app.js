@@ -47,6 +47,7 @@ const elements = {
   expectedValue: document.querySelector("#expectedValue"),
   durationValue: document.querySelector("#durationValue"),
   commandValue: document.querySelector("#commandValue"),
+  runOwnerValue: document.querySelector("#runOwnerValue"),
   htmlReportLink: document.querySelector("#htmlReportLink"),
   currentTestCard: document.querySelector("#currentTestCard"),
   currentTestValue: document.querySelector("#currentTestValue"),
@@ -119,6 +120,10 @@ function runCountBadges(run) {
       <span class="run-count failed" title="Failed">✕ ${counts.failed}</span>
       <span class="run-count skipped" title="Skipped">↷ ${counts.skipped}</span>
     </span>`;
+}
+
+function runOwnerLabel(run) {
+  return run?.options?.runOwner || "Unknown user";
 }
 
 function attachmentUrl(run, test, attachment, index) {
@@ -496,6 +501,10 @@ function renderTests(run) {
 function renderRun(run) {
   state.activeRun = run;
   elements.commandValue.textContent = run?.command || "No run selected";
+  elements.runOwnerValue.hidden = !run;
+  elements.runOwnerValue.innerHTML = run
+    ? `<svg class="icon"><use href="#icon-user"></use></svg> Ran by ${escapeHtml(runOwnerLabel(run))}`
+    : "";
   elements.htmlReportLink.hidden = !run?.reportPath;
   if (run?.reportPath) {
     elements.htmlReportLink.href = dashboardUrl(`/${run.reportPath}/index.html`);
@@ -712,7 +721,11 @@ async function loadRuns() {
         <strong>${escapeHtml(run.options?.module || "engagement")} / ${escapeHtml(run.options?.mode || "custom")} / ${escapeHtml(run.options?.env || "")}</strong>
         ${runCountBadges(run)}
       </div>
-      <div class="meta">${new Date(run.startedAt).toLocaleString()} - ${escapeHtml((run.options?.flows || []).join(", "))}</div>
+      <div class="meta run-card-meta">
+        <span><svg class="icon"><use href="#icon-user"></use></svg> Ran by ${escapeHtml(runOwnerLabel(run))}</span>
+        <span>${new Date(run.startedAt).toLocaleString()}</span>
+        <span>${escapeHtml((run.options?.flows || []).join(", ") || "custom selection")}</span>
+      </div>
     </article>
   `).join("");
 }

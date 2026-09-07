@@ -11,8 +11,17 @@ type AppConfig = {
   otp: string;
 };
 
+function safeAuthStateSegment(value: string) {
+  return value.trim().replace(/[^a-zA-Z0-9._-]/g, "-").replace(/-+/g, "-");
+}
+
 export function getAuthStatePath(envName: string) {
-  return path.resolve("playwright", ".auth", `${envName}.json`);
+  const authStateKey = process.env.PLAYWRIGHT_AUTH_STATE_KEY
+    || process.env.QA_DASHBOARD_RUN_ID
+    || process.env.QA_DASHBOARD_RUN_USER
+    || "";
+  const suffix = authStateKey ? `-${safeAuthStateSegment(authStateKey)}` : "";
+  return path.resolve("playwright", ".auth", `${safeAuthStateSegment(envName)}${suffix}.json`);
 }
 
 const FALLBACK_RENDER_WAIT_MS = 5000;

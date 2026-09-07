@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { appendFile, copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1142,9 +1142,58 @@ function playwrightRunEnv(options, reportDir, runId, extra = {}) {
     APP_TEST_OTP: appCredential?.otp || "",
     PLAYWRIGHT_TEST_TIMEOUT: String(options.testTimeoutMs || 120000),
     PLAYWRIGHT_HTML_REPORT: reportDir,
+    PLAYWRIGHT_AUTH_STATE_KEY: runId,
     QA_DASHBOARD_RUN_ID: runId,
     ...extra,
   };
+}
+
+function safeAuthStateSegment(value) {
+  return String(value || "").trim().replace(/[^a-zA-Z0-9._-]/g, "-").replace(/-+/g, "-");
+}
+
+function authStatePathForRun(run) {
+  const envName = safeAuthStateSegment(run?.options?.env || "");
+  const runId = safeAuthStateSegment(run?.id || "");
+  if (!envName || !runId) {
+    return null;
+  }
+
+  return path.resolve(rootDir, "playwright", ".auth", `${envName}-${runId}.json`);
+}
+
+async function cleanupRunAuthState(run) {
+  const authStatePath = authStatePathForRun(run);
+  if (!authStatePath) {
+    return;
+  }
+
+  const authRoot = path.resolve(rootDir, "playwright", ".auth");
+  const resolvedAuthStatePath = path.resolve(authStatePath);
+  if (!resolvedAuthStatePath.startsWith(`${authRoot}${path.sep}`)) {
+    return;
+  }
+
+  if (!existsSync(resolvedAuthStatePath)) {
+    return;
+  }
+
+  try {
+    await rm(resolvedAuthStatePath, { force: true });
+    await appendRunEvent(run, {
+      type: "log",
+      source: "dashboard",
+      timestamp: new Date().toISOString(),
+      text: `Cleaned execution auth state ${path.relative(rootDir, resolvedAuthStatePath)}.`
+    });
+  } catch (error) {
+    await appendRunEvent(run, {
+      type: "log",
+      source: "dashboard",
+      timestamp: new Date().toISOString(),
+      text: `Could not clean execution auth state: ${error.message}`
+    });
+  }
 }
 
 function getRelativeTestTarget(test) {
@@ -1460,6 +1509,7 @@ async function startRun(body, dashboardUser = null) {
     options: {
       ...options,
       runOwner,
+      authStateKey: id,
       usesUserAppCredential: Boolean(runOwner && appCredentialForUser(runOwner, options.env)),
     },
     summary: {},
@@ -1536,6 +1586,7 @@ async function startRun(body, dashboardUser = null) {
     run.exitCode = code;
     run.endedAt = new Date().toISOString();
     await appendRunEvent(run, { type: "run_end", timestamp: run.endedAt, status: run.status, exitCode: code });
+    await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
     activeRuns.delete(id);
@@ -1557,6 +1608,7 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
     run.status = Object.values(run.tests || {}).some((test) => isFailedStatus(test.status)) ? "failed" : "passed";
     run.endedAt = new Date().toISOString();
     await appendRunEvent(run, { type: "run_end", timestamp: run.endedAt, status: run.status, reason: "No remaining tests after skip." });
+    await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
     activeRuns.delete(run.id);
@@ -1653,6 +1705,7 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
     run.exitCode = code;
     run.endedAt = new Date().toISOString();
     await appendRunEvent(run, { type: "run_end", timestamp: run.endedAt, status: run.status, exitCode: code });
+    await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
     activeRuns.delete(run.id);
@@ -1862,6 +1915,7 @@ async function retryTestInRun(runId, testId, body = {}) {
     recomputeRunSummary(run);
     run.endedAt = run.status === "passed" ? new Date().toISOString() : run.endedAt;
     await appendRunEvent(run, { type: "run_status", timestamp: new Date().toISOString(), status: run.status });
+    await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
     activeRuns.delete(run.id);

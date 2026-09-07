@@ -171,7 +171,8 @@ app.leads[app.envName]
 ## Login baseline
 
 - The suite logs in once through `tests/setup/auth.setup.ts`.
-- The authenticated browser state is saved under `playwright/.auth/<env>.json`.
+- Local CLI runs save authenticated browser state under `playwright/.auth/<env>.json`.
+- Dashboard runs save authenticated browser state under `playwright/.auth/<env>-<run-id>.json`, so parallel executions do not overwrite each other. The dashboard removes that execution-specific auth file automatically when the run, retry, or continuation finishes.
 - All normal test flows reuse that state automatically, which keeps execution fast.
 
 ## User Management And Parallel Runs
@@ -180,7 +181,7 @@ app.leads[app.envName]
 - Keep real admin and automation-user credentials in `config/accounts.local.json`; use `config/accounts.template.json` as the shape.
 - For parallel execution, configure at least one automation user per Playwright worker.
 - Avoid sharing the same login account across concurrent data-mutating tests. When three team members run scenarios at the same time, use three separate accounts or three separate account pools.
-- For a future email/password login path, save auth state per user, for example `playwright/.auth/uat-worker-1.json`, instead of sharing only `playwright/.auth/uat.json`.
+- Dashboard-triggered runs use execution-specific auth state, for example `playwright/.auth/uat-2026-09-07T12-30-00-000Z.json`, instead of sharing only `playwright/.auth/uat.json`.
 - Test data that creates users, leads, reports, or visits should include a unique run id, worker index, or timestamp in names/emails/mobile numbers.
 
 ## Adding a new flow
