@@ -40,6 +40,7 @@ const elements = {
   refreshRunsButton: document.querySelector("#refreshRunsButton"),
   clearLogsButton: document.querySelector("#clearLogsButton"),
   logoutButton: document.querySelector("#logoutButton"),
+  brandHomeLink: document.querySelector("#brandHomeLink"),
   configLink: document.querySelector("#configLink"),
   currentUserBadge: document.querySelector("#currentUserBadge"),
   statusValue: document.querySelector("#statusValue"),
@@ -89,43 +90,124 @@ function setText(element, value) {
   const nextValue = String(value);
   if (element.textContent !== nextValue) {
     element.textContent = nextValue;
-    element.classList.remove("value-pulse");
-    void element.offsetWidth;
-    element.classList.add("value-pulse");
   }
 }
 
-function setAnimatedNumber(element, value) {
-  const target = Number(value || 0);
-  const currentTarget = Number(element.dataset.counterTarget || 0);
-
-  if (currentTarget === target && state.counterTimers.has(element.id)) {
-    return;
+function buildOdometerDigitSequence(currentDigit, nextDigit, shouldIncrease) {
+  if (!/\d/.test(currentDigit) || !/\d/.test(nextDigit)) {
+    return [nextDigit];
   }
 
+  const start = Number(currentDigit);
+  const end = Number(nextDigit);
+  if (start === end) {
+    return [nextDigit];
+  }
+
+  const sequence = [currentDigit];
+  let cursor = start;
+  for (let step = 0; step < 10 && cursor !== end; step += 1) {
+    cursor = shouldIncrease ? (cursor + 1) % 10 : (cursor + 9) % 10;
+    sequence.push(String(cursor));
+  }
+
+  return sequence;
+}
+
+function renderSettledOdometerValue(value) {
+  return value.split("").map((digit) => `
+    ${/\d/.test(digit)
+      ? `<span class="odometer-digit"><span class="odometer-digit-stack settled"><span>${escapeHtml(digit)}</span></span></span>`
+      : `<span class="odometer-static">${escapeHtml(digit)}</span>`}
+  `).join("");
+}
+
+function getComparableNumber(value) {
+  const digits = String(value).match(/\d/g);
+  return digits ? Number(digits.join("")) : null;
+}
+
+function setOdometerValue(element, value) {
+  const nextValue = String(value);
   clearTimeout(state.counterTimers.get(element.id));
   state.counterTimers.delete(element.id);
-  element.dataset.counterTarget = String(target);
 
-  const current = Number.parseInt(element.textContent || "0", 10) || 0;
-  if (target <= current) {
-    setText(element, target);
+  if (!element.classList.contains("odometer-value")) {
+    element.classList.add("odometer-value");
+  }
+
+  const currentValue = element.dataset.counterValue || element.textContent.trim() || "0";
+  if (currentValue === nextValue) {
     return;
   }
 
-  const tickDelay = target - current > 20 ? 28 : 72;
-  const tick = (nextValue) => {
-    setText(element, nextValue);
-    if (nextValue >= target) {
-      state.counterTimers.delete(element.id);
-      return;
+  const isNumeric = /^\d+$/.test(nextValue) && /^\d+$/.test(currentValue);
+  const hasSameShape = isNumeric || currentValue.length === nextValue.length;
+  if (!hasSameShape) {
+    element.dataset.counterValue = nextValue;
+    element.innerHTML = renderSettledOdometerValue(nextValue);
+    return;
+  }
+
+  const digitCount = isNumeric ? Math.max(currentValue.length, nextValue.length) : nextValue.length;
+  const paddedCurrentValue = isNumeric ? currentValue.padStart(digitCount, "0") : currentValue.padEnd(digitCount, " ");
+  const paddedNextValue = isNumeric ? nextValue.padStart(digitCount, "0") : nextValue;
+  const currentComparable = getComparableNumber(currentValue);
+  const nextComparable = getComparableNumber(nextValue);
+  const shouldIncrease = currentComparable !== null && nextComparable !== null
+    ? nextComparable >= currentComparable
+    : true;
+  let maxRollDuration = 0;
+
+  element.innerHTML = paddedNextValue.split("").map((nextDigit, index) => {
+    const currentDigit = paddedCurrentValue[index] || "0";
+    if (!/\d/.test(nextDigit)) {
+      return `<span class="odometer-static">${escapeHtml(nextDigit)}</span>`;
     }
 
-    const timer = setTimeout(() => tick(nextValue + 1), tickDelay);
-    state.counterTimers.set(element.id, timer);
-  };
+    const sequence = buildOdometerDigitSequence(currentDigit, nextDigit, shouldIncrease);
+    if (sequence.length === 1) {
+      return `
+        <span class="odometer-digit">
+          <span class="odometer-digit-stack settled">
+            <span>${escapeHtml(nextDigit)}</span>
+          </span>
+        </span>
+      `;
+    }
 
-  tick(current + 1);
+    const rollDistance = (sequence.length - 1) * 22;
+    const rollDuration = Math.min(980, Math.max(360, (sequence.length - 1) * 150));
+    maxRollDuration = Math.max(maxRollDuration, rollDuration);
+
+    return `
+      <span class="odometer-digit">
+        <span
+          class="odometer-digit-stack will-roll"
+          style="--odometer-shift: -${rollDistance}px; --odometer-duration: ${rollDuration}ms;"
+        >
+          ${sequence.map((digit) => `<span>${escapeHtml(digit)}</span>`).join("")}
+        </span>
+      </span>
+    `;
+  }).join("");
+
+  requestAnimationFrame(() => {
+    element.querySelectorAll(".odometer-digit-stack.will-roll").forEach((stack) => {
+      stack.classList.add("rolling");
+    });
+  });
+
+  const timer = setTimeout(() => {
+    element.dataset.counterValue = nextValue;
+    element.innerHTML = renderSettledOdometerValue(nextValue);
+    state.counterTimers.delete(element.id);
+  }, maxRollDuration + 90);
+  state.counterTimers.set(element.id, timer);
+}
+
+function setOdometerNumber(element, value) {
+  setOdometerValue(element, Number(value || 0));
 }
 
 function setSummaryStatus(status) {
@@ -351,6 +433,7 @@ async function requireSession() {
     state.session = session;
     elements.currentUserBadge.textContent = `${session.user.username} (${session.user.role})`;
     elements.currentUserBadge.hidden = false;
+    elements.brandHomeLink.href = dashboardUrl("/");
     elements.configLink.href = dashboardUrl("/config.html");
     return session;
   } catch {
@@ -484,19 +567,19 @@ function updateSummary(run) {
   const expected = run?.expectedTotal || run?.expectedTests?.length || tests.length;
 
   setSummaryStatus(run?.status || "Idle");
-  setAnimatedNumber(elements.passedValue, passed);
-  setAnimatedNumber(elements.failedValue, failed);
-  setAnimatedNumber(elements.expectedValue, expected);
+  setOdometerNumber(elements.passedValue, passed);
+  setOdometerNumber(elements.failedValue, failed);
+  setOdometerNumber(elements.expectedValue, expected);
   updateDuration(run);
 }
 
 function updateDuration(run) {
   if (run?.startedAt && isRunningStatus(run.status)) {
-    setText(elements.durationValue, formatDuration(Date.now() - new Date(run.startedAt).getTime()));
+    setOdometerValue(elements.durationValue, formatDuration(Date.now() - new Date(run.startedAt).getTime()));
   } else if (run?.startedAt && run?.endedAt) {
-    setText(elements.durationValue, formatDuration(new Date(run.endedAt).getTime() - new Date(run.startedAt).getTime()));
+    setOdometerValue(elements.durationValue, formatDuration(new Date(run.endedAt).getTime() - new Date(run.startedAt).getTime()));
   } else {
-    setText(elements.durationValue, "0s");
+    setOdometerValue(elements.durationValue, "0s");
   }
 }
 

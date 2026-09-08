@@ -12,6 +12,7 @@ const dashboardBasePath = (() => {
 const elements = {
   currentUserBadge: document.querySelector("#currentUserBadge"),
   logoutButton: document.querySelector("#logoutButton"),
+  brandHomeLink: document.querySelector("#brandHomeLink"),
   dashboardLink: document.querySelector("#dashboardLink"),
   navButtons: document.querySelectorAll("[data-config-section]"),
   adminOnlyNavButtons: document.querySelectorAll(".admin-only"),
@@ -103,6 +104,7 @@ async function requireSession() {
   state.session = session;
   elements.currentUserBadge.textContent = `${session.user.username} (${session.user.role})`;
   elements.currentUserBadge.hidden = false;
+  elements.brandHomeLink.href = dashboardUrl("/");
   elements.dashboardLink.href = dashboardUrl("/");
   applyRoleVisibility(session.user.role);
   return session;
@@ -179,6 +181,11 @@ function renderDashboardUsers(users) {
     <article class="user-row">
       <div>
         <strong>${escapeHtml(user.username)}</strong>
+        <div class="user-password-row">
+          <span>Password</span>
+          <code class="user-password" data-password-value="${escapeHtml(user.password || "")}">${user.password ? "********" : "Not available"}</code>
+          ${user.password ? `<button class="password-toggle" type="button" data-toggle-password>Show Password</button>` : ""}
+        </div>
         <small>${escapeHtml(user.isBootstrapAdmin ? "Default admin from .env" : user.createdAt ? `Created ${new Date(user.createdAt).toLocaleString()}` : "Created date unavailable")}</small>
       </div>
       <div class="user-actions">
@@ -237,6 +244,7 @@ async function resetDashboardUserPassword(username) {
       body: JSON.stringify({ username, password }),
     });
     showFormMessage(elements.dashboardUserListMessage, `Password reset for ${username}.`, "success");
+    await loadDashboardUsers();
   } catch (error) {
     showFormMessage(elements.dashboardUserListMessage, error.message, "error");
   }
@@ -267,6 +275,16 @@ elements.appCredentialEnvSelect.addEventListener("change", loadAppCredential);
 elements.appCredentialForm.addEventListener("submit", saveAppCredential);
 elements.dashboardUserForm.addEventListener("submit", createDashboardUser);
 elements.dashboardUsersList.addEventListener("click", (event) => {
+  const passwordButton = event.target.closest("[data-toggle-password]");
+  if (passwordButton) {
+    const passwordValue = passwordButton.parentElement.querySelector("[data-password-value]");
+    const isVisible = passwordButton.dataset.visible === "true";
+    passwordButton.dataset.visible = isVisible ? "false" : "true";
+    passwordButton.textContent = isVisible ? "Show Password" : "Hide Password";
+    passwordValue.textContent = isVisible ? "********" : passwordValue.dataset.passwordValue;
+    return;
+  }
+
   const resetButton = event.target.closest("[data-reset-user]");
   if (resetButton) {
     resetDashboardUserPassword(resetButton.dataset.resetUser);

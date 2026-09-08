@@ -5,7 +5,7 @@ import { appendFile, copyFile, mkdir, readFile, rename, rm, writeFile } from "no
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createArtifactPublicUrl, createPresignedGetUrl, databaseEnabled, getRemoteArtifact, getRemoteArtifactByKey, initializePersistence, listPersistentRunSummaries, listPersistentRuns, loadPersistentRun, objectStorageEnabled, savePersistentRun, uploadRunArtifact, uploadRunArtifacts } from "./persistence.mjs";
+import { createArtifactPublicUrl, createPresignedGetUrl, databaseEnabled, deletePersistentDashboardUser, getRemoteArtifact, getRemoteArtifactByKey, initializePersistence, insertPersistentDashboardUser, insertPersistentDashboardUserIfMissing, listPersistentDashboardUsers, listPersistentRunSummaries, listPersistentRuns, loadPersistentRun, objectStorageEnabled, savePersistentRun, updatePersistentDashboardUserAppCredentials, updatePersistentDashboardUserPassword, uploadRunArtifact, uploadRunArtifacts, upsertPersistentDashboardUser } from "./persistence.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "../..");
@@ -96,8 +96,8 @@ function getDashboardAuthConfig() {
   return { username, password };
 }
 
-function loadDashboardUsers() {
-  const bootstrapAdmin = legacyDashboardAuth ? {
+function bootstrapDashboardAdmin() {
+  return legacyDashboardAuth ? {
     username: legacyDashboardAuth.username,
     password: legacyDashboardAuth.password,
     role: "admin",
@@ -105,7 +105,10 @@ function loadDashboardUsers() {
     createdAt: new Date().toISOString(),
     isBootstrapAdmin: true,
   } : null;
+}
 
+function loadLocalDashboardUsers() {
+  const bootstrapAdmin = bootstrapDashboardAdmin();
   if (existsSync(dashboardUsersPath)) {
     const configuredUsers = JSON.parse(readFileSync(dashboardUsersPath, "utf8"));
     const users = Array.isArray(configuredUsers.users) ? configuredUsers.users : [];
@@ -123,7 +126,22 @@ function loadDashboardUsers() {
   return [bootstrapAdmin];
 }
 
+async function loadDashboardUsers() {
+  if (databaseEnabled) {
+    return await listPersistentDashboardUsers();
+  }
+
+  return loadLocalDashboardUsers();
+}
+
 async function saveDashboardUsers(users) {
+  if (databaseEnabled) {
+    for (const user of users) {
+      await upsertPersistentDashboardUser(user);
+    }
+    return;
+  }
+
   const payload = {
     users: users.map((user) => ({
       username: user.username,
@@ -135,6 +153,21 @@ async function saveDashboardUsers(users) {
     })),
   };
   await writeFile(dashboardUsersPath, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+async function syncDashboardUsersToDatabase() {
+  if (!databaseEnabled) {
+    return;
+  }
+
+  const localUsers = loadLocalDashboardUsers();
+  for (const user of localUsers) {
+    if (user.isBootstrapAdmin) {
+      await upsertPersistentDashboardUser(user);
+    } else {
+      await insertPersistentDashboardUserIfMissing(user);
+    }
+  }
 }
 
 function safeEqual(left, right) {
@@ -175,8 +208,8 @@ function currentDashboardUser(req) {
   };
 }
 
-function authIsEnabled() {
-  return loadDashboardUsers().length > 0;
+async function authIsEnabled() {
+  return (await loadDashboardUsers()).length > 0;
 }
 
 function isPublicPath(req, pathname) {
@@ -208,8 +241,8 @@ function redirectToDashboardBase(res, url) {
   res.end();
 }
 
-function requireDashboardAuth(req, res, pathname) {
-  if (!authIsEnabled() || isPublicPath(req, pathname)) {
+async function requireDashboardAuth(req, res, pathname) {
+  if (!(await authIsEnabled()) || isPublicPath(req, pathname)) {
     return true;
   }
 
@@ -239,7 +272,7 @@ function requireAdmin(req, res) {
 async function loginDashboardUser(body, res) {
   const username = String(body.username || "").trim();
   const password = String(body.password || "");
-  const user = loadDashboardUsers().find((candidate) => candidate.username === username);
+  const user = (await loadDashboardUsers()).find((candidate) => candidate.username === username);
 
   if (!user || !safeEqual(password, user.password)) {
     sendError(res, 401, "Invalid username or password");
@@ -288,7 +321,7 @@ async function createDashboardUser(body) {
     throw new Error("Password must be at least 8 characters.");
   }
 
-  const users = loadDashboardUsers();
+  const users = await loadDashboardUsers();
   if (users.some((user) => user.username === username)) {
     throw new Error("Dashboard user already exists.");
   }
@@ -300,14 +333,24 @@ async function createDashboardUser(body) {
     appCredentials: {},
     createdAt: new Date().toISOString(),
   };
-  users.push(nextUser);
-  await saveDashboardUsers(users);
-  return { username: nextUser.username, role: nextUser.role, createdAt: nextUser.createdAt };
+  const savedUser = databaseEnabled ? await insertPersistentDashboardUser(nextUser) : null;
+  if (!databaseEnabled) {
+    users.push(nextUser);
+    await saveDashboardUsers(users);
+  }
+
+  return {
+    username: (savedUser || nextUser).username,
+    password: (savedUser || nextUser).password,
+    role: (savedUser || nextUser).role,
+    createdAt: (savedUser || nextUser).createdAt,
+  };
 }
 
-function listDashboardUsers() {
-  return loadDashboardUsers().map((user) => ({
+async function listDashboardUsers() {
+  return (await loadDashboardUsers()).map((user) => ({
     username: user.username,
+    password: user.password || "",
     role: user.role || "user",
     createdAt: user.createdAt || null,
     isBootstrapAdmin: Boolean(user.isBootstrapAdmin),
@@ -325,7 +368,7 @@ async function resetDashboardUserPassword(username, body) {
     throw new Error("Password must be at least 8 characters.");
   }
 
-  const users = loadDashboardUsers();
+  const users = await loadDashboardUsers();
   const user = users.find((candidate) => candidate.username === username);
   if (!user) {
     throw new Error("Dashboard user not found.");
@@ -333,8 +376,16 @@ async function resetDashboardUserPassword(username, body) {
 
   user.password = nextPassword;
   user.passwordUpdatedAt = new Date().toISOString();
+  if (databaseEnabled) {
+    const updatedUser = await updatePersistentDashboardUserPassword(username, nextPassword);
+    if (!updatedUser) {
+      throw new Error("Dashboard user not found.");
+    }
+    return { username: updatedUser.username, password: updatedUser.password, role: updatedUser.role || "user" };
+  }
+
   await saveDashboardUsers(users);
-  return { username: user.username, role: user.role || "user" };
+  return { username: user.username, password: user.password, role: user.role || "user" };
 }
 
 async function deleteDashboardUser(username, currentUser) {
@@ -347,7 +398,7 @@ async function deleteDashboardUser(username, currentUser) {
     throw new Error("You cannot delete your own active admin account.");
   }
 
-  const users = loadDashboardUsers();
+  const users = await loadDashboardUsers();
   const user = users.find((candidate) => candidate.username === username);
   if (!user) {
     throw new Error("Dashboard user not found.");
@@ -358,7 +409,11 @@ async function deleteDashboardUser(username, currentUser) {
     throw new Error("Cannot delete the last admin user.");
   }
 
-  await saveDashboardUsers(users.filter((candidate) => candidate.username !== username));
+  if (databaseEnabled) {
+    await deletePersistentDashboardUser(username);
+  } else {
+    await saveDashboardUsers(users.filter((candidate) => candidate.username !== username));
+  }
   for (const [token, session] of dashboardSessions.entries()) {
     if (session.username === username) {
       dashboardSessions.delete(token);
@@ -368,18 +423,18 @@ async function deleteDashboardUser(username, currentUser) {
   return { username };
 }
 
-function userAppCredentials(username) {
-  const user = loadDashboardUsers().find((candidate) => candidate.username === username);
+async function userAppCredentials(username) {
+  const user = (await loadDashboardUsers()).find((candidate) => candidate.username === username);
   return user?.appCredentials && typeof user.appCredentials === "object" ? user.appCredentials : {};
 }
 
-function appCredentialForUser(username, envName) {
-  const credentials = userAppCredentials(username);
+async function appCredentialForUser(username, envName) {
+  const credentials = await userAppCredentials(username);
   return credentials[envName] || null;
 }
 
 async function saveAppCredentialForUser(username, envName, credential) {
-  const users = loadDashboardUsers();
+  const users = await loadDashboardUsers();
   const user = users.find((candidate) => candidate.username === username);
   if (!user) {
     throw new Error("Dashboard user not found.");
@@ -407,7 +462,11 @@ async function saveAppCredentialForUser(username, envName, credential) {
     updatedAt: new Date().toISOString(),
   };
 
-  await saveDashboardUsers(users);
+  if (databaseEnabled) {
+    await updatePersistentDashboardUserAppCredentials(username, user.appCredentials);
+  } else {
+    await saveDashboardUsers(users);
+  }
   return sanitizedAppCredential(user.appCredentials[envName]);
 }
 
@@ -1253,9 +1312,9 @@ function buildPlaywrightArgs(run) {
   return args;
 }
 
-function playwrightRunEnv(options, reportDir, runId, extra = {}) {
+async function playwrightRunEnv(options, reportDir, runId, extra = {}) {
   const runOwner = options.runOwner || "";
-  const appCredential = runOwner ? appCredentialForUser(runOwner, options.env) : null;
+  const appCredential = runOwner ? await appCredentialForUser(runOwner, options.env) : null;
 
   return {
     ...process.env,
@@ -1636,6 +1695,7 @@ async function startRun(body, dashboardUser = null) {
     };
   }
 
+  const userAppCredential = runOwner ? await appCredentialForUser(runOwner, options.env) : null;
   const run = {
     id,
     status: "running",
@@ -1648,7 +1708,7 @@ async function startRun(body, dashboardUser = null) {
       ...options,
       runOwner,
       authStateKey: id,
-      usesUserAppCredential: Boolean(runOwner && appCredentialForUser(runOwner, options.env)),
+      usesUserAppCredential: Boolean(userAppCredential),
     },
     summary: {},
     expectedTotal: 0,
@@ -1665,7 +1725,7 @@ async function startRun(body, dashboardUser = null) {
   const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, {
     cwd: rootDir,
     detached: process.platform !== "win32",
-    env: playwrightRunEnv(run.options, reportDir, id)
+    env: await playwrightRunEnv(run.options, reportDir, id)
   });
 
   activeRuns.set(id, { child, subscribers: new Set(), run });
@@ -1788,7 +1848,7 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
   const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, {
     cwd: rootDir,
     detached: process.platform !== "win32",
-    env: playwrightRunEnv(continuationRun.options, reportDir, run.id, {
+    env: await playwrightRunEnv(continuationRun.options, reportDir, run.id, {
       QA_DASHBOARD_CONTINUATION_ID: continuationId
     })
   });
@@ -1983,7 +2043,7 @@ async function retryTestInRun(runId, testId, body = {}) {
   const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, {
     cwd: rootDir,
     detached: process.platform !== "win32",
-    env: playwrightRunEnv(retryRun.options, reportDir, run.id, {
+    env: await playwrightRunEnv(retryRun.options, reportDir, run.id, {
       QA_DASHBOARD_RETRY_ID: retryId
     })
   });
@@ -2301,7 +2361,7 @@ const server = http.createServer(async (req, res) => {
 
     const pathname = stripDashboardBasePath(rawPathname);
 
-    if (!requireDashboardAuth(req, res, pathname)) {
+    if (!(await requireDashboardAuth(req, res, pathname))) {
       return;
     }
 
@@ -2324,7 +2384,7 @@ const server = http.createServer(async (req, res) => {
       if (!requireAdmin(req, res)) {
         return;
       }
-      sendJson(res, 200, { users: listDashboardUsers() });
+      sendJson(res, 200, { users: await listDashboardUsers() });
       return;
     }
 
@@ -2385,7 +2445,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && pathname === "/api/app-credentials") {
       const user = currentDashboardUser(req);
       const envName = url.searchParams.get("env") || "";
-      const credential = appCredentialForUser(user.username, envName);
+      const credential = await appCredentialForUser(user.username, envName);
       sendJson(res, 200, {
         credential: sanitizedAppCredential(credential),
         usesDefault: !credential,
@@ -2522,14 +2582,16 @@ const server = http.createServer(async (req, res) => {
 
 const port = Number(process.env.QA_DASHBOARD_PORT || process.env.PORT || 9324);
 const host = process.env.QA_DASHBOARD_HOST || "127.0.0.1";
-if (!authIsEnabled() && !["127.0.0.1", "localhost", "::1"].includes(host)) {
-  throw new Error("Refusing to start public dashboard without auth. Set QA_DASHBOARD_AUTH_USERNAME and QA_DASHBOARD_AUTH_PASSWORD in .env.");
-}
 await initializePersistence();
+await syncDashboardUsersToDatabase();
+const dashboardAuthEnabled = await authIsEnabled();
+if (!dashboardAuthEnabled && !["127.0.0.1", "localhost", "::1"].includes(host)) {
+  throw new Error("Refusing to start public dashboard without auth. Set QA_DASHBOARD_AUTH_USERNAME and QA_DASHBOARD_AUTH_PASSWORD in .env, or create a dashboard user in qa_dashboard_users.");
+}
 await recoverCorruptedRunFiles();
 await syncLocalRunsToDatabase();
 await reconcileStaleRuns();
 server.listen(port, host, () => {
   const displayHost = host === "0.0.0.0" ? "localhost" : host;
-  console.log(`QA dashboard running at http://${displayHost}:${port}${dashboardBasePath || ""} (bind: ${host}, auth: ${authIsEnabled() ? "enabled" : "disabled"}, PostgreSQL: ${databaseEnabled ? "enabled" : "local only"}, object storage: ${objectStorageEnabled ? "enabled" : "local only"})`);
+  console.log(`QA dashboard running at http://${displayHost}:${port}${dashboardBasePath || ""} (bind: ${host}, auth: ${dashboardAuthEnabled ? "enabled" : "disabled"}, PostgreSQL: ${databaseEnabled ? "enabled" : "local only"}, object storage: ${objectStorageEnabled ? "enabled" : "local only"})`);
 });
