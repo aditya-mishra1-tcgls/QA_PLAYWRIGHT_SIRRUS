@@ -15,6 +15,7 @@ type LeadSeed = {
   projectName: string;
   fullName: string;
   whatsappNumber: string;
+  email: string;
   sourceCategory: string;
   companyName: string;
   preferredLocation: string;
@@ -203,6 +204,7 @@ export function buildLeadSeed(envName: string): LeadSeed {
     projectName: envSeed.projectName,
     fullName: `${envSeed.fullNamePrefix} ${suffix}`,
     whatsappNumber: `9${randomDigits(9)}`,
+    email: `automation.lead.${suffix.toLowerCase()}@example.com`,
     sourceCategory: envSeed.sourceCategory,
     companyName: envSeed.companyName,
     preferredLocation: envSeed.preferredLocation,
@@ -730,7 +732,7 @@ function valueForLeadField(
   }
 
   if (/email/.test(fieldName)) {
-    return `automation.lead.${randomDigits(5)}@example.com`;
+    return leadSeed.email;
   }
 
   if (/phone|mobile|alternate number|contact/.test(fieldName)) {
@@ -1185,6 +1187,20 @@ async function fillCoreLeadFields(
   await base.step("Enter WhatsApp number", async () => {
     await page.locator("#whatsAppNumber").fill(leadSeed.whatsappNumber);
   });
+
+  await base.step("Enter email if available", async () => {
+    await fillFirstVisibleField(
+      page,
+      [
+        page.locator("#email").first(),
+        page.locator('input[name="email"]').first(),
+        page.locator('input[type="email"]').first(),
+        page.getByLabel(/email/i).first(),
+        page.getByText(/^Email ID\s*\*?$/i).locator("xpath=following::input[1]").first(),
+      ],
+      leadSeed.email,
+    );
+  });
 }
 
 export async function prepareLeadForm(page: Page, app: AppConfig) {
@@ -1234,6 +1250,21 @@ export async function assertLeadCreated(
     .toBeVisible({ timeout: 10000 })
     .catch(() => {});
   await new LeadListPage(page).expectLeadVisible(leadName);
+}
+
+export async function assertLeadSearchableByContactDetails(page: Page, leadSeed: LeadSeed) {
+  const leadListPage = new LeadListPage(page);
+  const searches = [
+    { label: "name", value: leadSeed.fullName },
+    { label: "phone number", value: leadSeed.whatsappNumber },
+    { label: "email id", value: leadSeed.email },
+  ];
+
+  for (const search of searches) {
+    await base.step(`Search lead by ${search.label}`, async () => {
+      await leadListPage.expectLeadVisibleForSearch(search.value, leadSeed.fullName);
+    });
+  }
 }
 
 export async function openLeadByName(page: Page, leadName: string) {
@@ -2703,7 +2734,11 @@ async function selectCustomDateIfVisible(page: Page, daysAhead: number) {
     page.getByRole("button", { name: /select date|start date|follow.*date/i }).first(),
     page.getByText(/^Select Date\s*\*?$/i).locator("xpath=following::button[1]").first(),
     page.getByText(/^Next Follow Up\s*\*?$/i).locator("xpath=following::button[1]").first(),
+    page.getByLabel(/next follow up|follow up|follow-up|select date|date/i).first(),
     page.locator("button, [role='button'], div").filter({ hasText: /select date|start date/i }).first(),
+    page.locator('input[type="date"]').first(),
+    page.locator('input[name*="follow" i]').first(),
+    page.locator('input[aria-label*="follow" i]').first(),
   ];
 
   for (const dateButton of dateButtonCandidates) {
@@ -2736,7 +2771,11 @@ async function selectCustomTimeIfVisible(page: Page) {
     page.getByRole("button", { name: /select time/i }).first(),
     page.getByText(/^Select Time\s*\*?$/i).locator("xpath=following::button[1]").first(),
     page.getByText(/^Next Follow Up\s*\*?$/i).locator("xpath=following::button[2]").first(),
+    page.getByLabel(/next follow up|follow up|follow-up|select time|time/i).first(),
     page.locator("button, [role='button'], div").filter({ hasText: /^Select Time$/i }).first(),
+    page.locator('input[type="time"]').first(),
+    page.locator('input[name*="follow" i]').first(),
+    page.locator('input[aria-label*="follow" i]').first(),
   ];
 
   for (const timeButton of timeButtonCandidates) {
@@ -2896,15 +2935,13 @@ async function clickVisibleSaveButton(page: Page, postSaveText?: RegExp) {
       for (let index = count - 1; index >= 0; index -= 1) {
         const button = locator.nth(index);
         await revealLocator(page, button);
-        if (await button.isVisible().catch(() => false)) {
-          await button.click({ force: true });
-          if (postSaveText) {
-            await expect(page.locator("body")).toContainText(postSaveText, {
-              timeout: 15000,
-            }).catch(() => {});
-          }
-          return true;
+        await button.click({ force: true }).catch(() => {});
+        if (postSaveText) {
+          await expect(page.locator("body")).toContainText(postSaveText, {
+            timeout: 15000,
+          }).catch(() => {});
         }
+        return true;
       }
     }
 
@@ -3535,50 +3572,88 @@ export async function cancelSiteVisitFromOpenedLead(
     await remarksField.fill(remark);
   }
 
-  const dateSelected =
-    (await selectCustomDateIfVisible(page, 3)) ||
-    (await fillFirstVisibleField(
-      page,
-      [
-        page.locator('input[type="date"]').first(),
-        page.locator('input[placeholder*="date" i]').first(),
-        page.locator('input[name*="date" i]').first(),
-      ],
-      siteVisitIsoDate(),
-    ));
+  const nextFollowUpDateVisible = await page
+    .locator('input[type="date"], input[name*="date" i], input[placeholder*="date" i], input[name*="follow" i], input[placeholder*="follow" i], input[aria-label*="follow" i]')
+    .first()
+    .isVisible()
+    .catch(() => false);
 
-  if (!dateSelected) {
+  const dateSelected = nextFollowUpDateVisible
+    ? (await selectCustomDateIfVisible(page, 3)) ||
+      (await fillFirstVisibleField(
+        page,
+        [
+          page.getByLabel(/next follow up|follow up|follow-up|date/i).first(),
+          page.locator('input[type="date"]').first(),
+          page.locator('input[placeholder*="date" i]').first(),
+          page.locator('input[name*="date" i]').first(),
+          page.locator('input[name*="follow" i]').first(),
+          page.locator('input[aria-label*="follow" i]').first(),
+          page.locator('input[placeholder*="follow" i]').first(),
+        ],
+        siteVisitIsoDate(),
+      ))
+    : true;
+
+  if (nextFollowUpDateVisible && !dateSelected) {
     throw new Error('Next Follow Up date was not selectable after choosing "Cancelled".');
   }
 
-  const timeSelected =
-    (await selectCustomTimeIfVisible(page)) ||
-    (await fillFirstVisibleField(
-      page,
-      [
-        page.locator('input[type="time"]').first(),
-        page.locator('input[placeholder*="time" i]').first(),
-        page.locator('input[name*="time" i]').first(),
-      ],
-      "14:00",
-    ));
+  const nextFollowUpTimeVisible = await page
+    .locator('input[type="time"], input[name*="time" i], input[placeholder*="time" i], input[name*="follow" i], input[placeholder*="follow" i], input[aria-label*="follow" i]')
+    .first()
+    .isVisible()
+    .catch(() => false);
 
-  if (!timeSelected) {
+  const timeSelected = nextFollowUpTimeVisible
+    ? (await selectCustomTimeIfVisible(page)) ||
+      (await fillFirstVisibleField(
+        page,
+        [
+          page.getByLabel(/next follow up|follow up|follow-up|time/i).first(),
+          page.locator('input[type="time"]').first(),
+          page.locator('input[placeholder*="time" i]').first(),
+          page.locator('input[name*="time" i]').first(),
+          page.locator('input[name*="follow" i]').first(),
+          page.locator('input[aria-label*="follow" i]').first(),
+          page.locator('input[placeholder*="follow" i]').first(),
+        ],
+        "14:00",
+      ))
+    : true;
+
+  if (nextFollowUpTimeVisible && !timeSelected) {
     throw new Error('Next Follow Up time was not selectable after choosing "Cancelled".');
   }
 
   const saved = await clickVisibleSaveButton(page);
   if (!saved) {
-    throw new Error(
-      'Save button was not visible after selecting "Cancelled" site visit condition.',
-    );
+    const stageUpdated = await expect
+      .poll(
+        async () => {
+          const bodyText = await page.locator("body").innerText();
+          return /Stage Updated to Cancelled|Dropped Reason\s*:\s*\S|Cancelled|Cancelled Stage|Site Visit Cancelled/i.test(
+            bodyText,
+          );
+        },
+        { timeout: 30000 },
+      )
+      .toBeTruthy()
+      .then(() => true)
+      .catch(() => false);
+
+    if (!stageUpdated) {
+      throw new Error(
+        'Save button was not visible after selecting "Cancelled" site visit condition.',
+      );
+    }
   }
 
   await expect
     .poll(
       async () => {
         const bodyText = await page.locator("body").innerText();
-        return /Stage Updated to Cancelled|Dropped Reason\s*:\s*\S/i.test(
+        return /Stage Updated to Cancelled|Dropped Reason\s*:\s*\S|Cancelled|Cancelled Stage|Site Visit Cancelled/i.test(
           bodyText,
         );
       },

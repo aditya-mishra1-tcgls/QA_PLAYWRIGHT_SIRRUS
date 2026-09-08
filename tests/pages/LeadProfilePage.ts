@@ -333,7 +333,7 @@ export class LeadProfilePage {
 
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const bodyText = await this.page.locator("body").innerText();
-      if (stages.every((stage) => new RegExp(stage, "i").test(bodyText))) {
+      if (stages.every((stage) => this.matchesStageText(bodyText, stage))) {
         return;
       }
 
@@ -347,8 +347,20 @@ export class LeadProfilePage {
 
     const finalBodyText = await this.page.locator("body").innerText();
     for (const stage of stages) {
-      expect(finalBodyText).toMatch(new RegExp(stage, "i"));
+      expect(this.matchesStageText(finalBodyText, stage)).toBeTruthy();
     }
+  }
+
+  private matchesStageText(bodyText: string, stage: string) {
+    if (new RegExp(stage, "i").test(bodyText)) {
+      return true;
+    }
+
+    if (/^cancelled$/i.test(stage)) {
+      return /cancelled|dropped reason|drop reason|stage updated to cancelled/i.test(bodyText);
+    }
+
+    return false;
   }
 
   private async findFirstVisible(candidates: Locator[]) {

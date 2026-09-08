@@ -61,14 +61,27 @@ export async function createAutomationUser(page: Page, app: AppConfig, seed = bu
   });
 
   await base.step("Fill user details", async () => {
-    await fillFirstVisible(
-      [
-        page.getByLabel(/full name|name/i).first(),
-        visibleCandidate(page, ['input[name="name"]', 'input[name="fullName"]', 'input[placeholder*="name" i]']),
-      ],
-      seed.fullName,
-      "name"
+    const genericTextFields = page.locator(
+      'input:not([type="hidden"]):not([type="email"]):not([type="password"]):not([type="date"]):not([type="time"]):not([type="search"]), textarea'
     );
+    const nameFieldCandidates = [
+      page.getByLabel(/full name|name/i).first(),
+      visibleCandidate(page, ['input[name="name"]', 'input[name="fullName"]', 'input[placeholder*="name" i]', 'input[aria-label*="name" i]']),
+      genericTextFields.filter({ hasNot: page.locator('[disabled],[aria-disabled="true"],[readonly]') }).first(),
+      page.locator('input:not([type]), input[type="text"]').filter({ hasNot: page.locator('[disabled],[aria-disabled="true"],[readonly]') }).first(),
+    ];
+
+    let visibleNameField = null as ReturnType<typeof page.locator> | null;
+    for (const candidate of nameFieldCandidates) {
+      if (await candidate.isVisible().catch(() => false)) {
+        visibleNameField = candidate;
+        break;
+      }
+    }
+    if (!visibleNameField) {
+      throw new Error("Unable to find visible name field.");
+    }
+    await visibleNameField.fill(seed.fullName);
 
     await fillFirstVisible(
       [

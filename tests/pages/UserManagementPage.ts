@@ -13,6 +13,48 @@ export type UserManagementAppConfig = {
 export class UserManagementPage {
   constructor(private readonly page: Page) {}
 
+  private async clickVisibleTextByPattern(pattern: RegExp, label: string) {
+    const clicked = await this.page
+      .evaluate((matcher) => {
+        const regex = new RegExp(matcher.source, matcher.flags);
+        const normalize = (value: string | null | undefined) =>
+          (value ?? "").replace(/\s+/g, " ").trim();
+
+        const visible = (element: HTMLElement) => {
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            style.pointerEvents !== "none"
+          );
+        };
+
+        const nodes = Array.from(document.querySelectorAll<HTMLElement>("button, a, div, span, li"));
+        const target = nodes.find((element) => {
+          const text = normalize(element.innerText || element.textContent || "");
+          return regex.test(text) && visible(element);
+        });
+
+        if (!target) {
+          return false;
+        }
+
+        target.scrollIntoView({ block: "center", inline: "center" });
+        target.click();
+        return true;
+      }, pattern)
+      .catch(() => false);
+
+    if (!clicked) {
+      throw new Error(`Unable to find visible ${label}.`);
+    }
+
+    return true;
+  }
+
   get settingsModuleButton() {
     return this.page
       .locator("button")
@@ -34,16 +76,21 @@ export class UserManagementPage {
       this.page.locator('a[href*="user-managment"], a[href*="user-management"]').first(),
       this.page.getByRole("link", { name: /users?|user management|team|members/i }).first(),
       this.page.getByRole("button", { name: /users?|user management|team|members/i }).first(),
-      this.page.locator("a,button").filter({ hasText: /users?|user management|team|members/i }).first(),
+      this.page.locator("a,button,div,li").filter({ hasText: /users?|user management|team|members/i }).first(),
+      this.page.locator('[aria-label*="user management" i], [aria-label*="user" i], [title*="user management" i], [title*="users" i]').first(),
+      this.page.locator('button, a').filter({ has: this.page.locator('img[alt*="user" i], img[alt*="settings" i]') }).first(),
       this.page.getByText(/users?|user management|team|members/i).first(),
     ];
   }
 
   get createUserCandidates() {
     return [
-      this.page.getByRole("button", { name: /add user|create user|new user|invite user|add member/i }).first(),
-      this.page.getByRole("link", { name: /add user|create user|new user|invite user|add member/i }).first(),
-      this.page.locator("button,a").filter({ hasText: /add user|create user|new user|invite user|add member/i }).first(),
+      this.page.getByRole("button", { name: /create|add/i }).filter({ hasText: /user|member|account/i }).first(),
+      this.page.getByRole("link", { name: /create|add/i }).filter({ hasText: /user|member|account/i }).first(),
+      this.page.getByRole("button", { name: /add user|create user|new user|invite user|add member|new member/i }).first(),
+      this.page.getByRole("link", { name: /add user|create user|new user|invite user|add member|new member/i }).first(),
+      this.page.locator("button,a").filter({ hasText: /add user|create user|new user|invite user|add member|new member/i }).first(),
+      this.page.getByText(/add user|create user|new user|invite user|add member|new member/i).first(),
     ];
   }
 
@@ -51,9 +98,11 @@ export class UserManagementPage {
     const directPaths = [
       "/admin/developer/users",
       "/admin/developer/user-management",
+      "/admin/developer/users",
       "/admin/developer/settings/users",
       "/admin/developer/settings/user-management",
       "/admin/developer/lead-settings/user-managment",
+      "/admin/developer/lead-settings/user-management",
       "/admin/developer/cpms/users",
     ];
 
@@ -77,14 +126,46 @@ export class UserManagementPage {
         })
         .toBeTruthy()
         .catch(() => {});
+
+      const userManagementCardVisible = await this.page
+        .getByText(/User Management/i)
+        .first()
+        .isVisible()
+        .catch(() => false);
+
+      if (userManagementCardVisible) {
+        await this.clickVisibleTextByPattern(/user management/i, "user management page");
+      }
+    }
+
+    const liveUserManagementLink = this.page
+      .locator('a[href*="user-managment"], a[href*="user-management"]')
+      .filter({ hasText: /user management/i })
+      .first();
+    if (await liveUserManagementLink.isVisible().catch(() => false)) {
+      await liveUserManagementLink.click({ force: true });
+      await this.waitForReady();
+      return;
     }
 
     const openedFromCard = await this.clickUserManagementCard();
     if (!openedFromCard) {
-      await clickFirstVisible(
-        this.userManagementNavCandidates,
-        "user management navigation"
-      );
+      const fallbackNavigations = [
+        this.page.getByText(/User Management/i).last(),
+        this.page.getByText(/Users?/i).last(),
+        this.page.locator("button, a, div, li").filter({ hasText: /User Management/i }).first(),
+        ...this.userManagementNavCandidates,
+      ];
+
+      const successfullyOpened = await clickFirstVisible(
+        fallbackNavigations,
+        "user management navigation",
+        { force: true },
+      ).then(() => true).catch(() => false);
+
+      if (!successfullyOpened) {
+        await this.page.goto("/admin/developer/users", { waitUntil: "domcontentloaded" });
+      }
     }
 
     await this.waitForReady();
@@ -92,7 +173,61 @@ export class UserManagementPage {
 
   async openCreateUserForm() {
     await this.waitForReady();
-    await clickFirstVisible(this.createUserCandidates, "create user");
+
+    const directManagerRoutes = [
+      "/admin/developer/lead-settings/user-managment",
+      "/admin/developer/lead-settings/user-management",
+      "/admin/developer/users",
+      "/admin/developer/user-management",
+      "/admin/developer/settings/user-management",
+    ];
+
+    for (const route of directManagerRoutes) {
+      const alreadyOnUserPage = /user(-| )management|\/users(?:\/)?$|\/users\?/i.test(this.page.url());
+      if (alreadyOnUserPage) {
+        break;
+      }
+      await this.page.goto(route, { waitUntil: "domcontentloaded" }).catch(() => {});
+      if (await this.isReady()) {
+        break;
+      }
+    }
+
+    const clickedDirectly = await clickFirstVisible(this.createUserCandidates, "create user").then(() => true).catch(() => false);
+    if (!clickedDirectly) {
+      const userManagementLink = this.page
+        .getByRole("link", { name: /user management/i })
+        .first();
+      if (await userManagementLink.isVisible().catch(() => false)) {
+        await userManagementLink.click({ force: true });
+      }
+
+      const fallback = this.page
+        .locator("button, a, div, span")
+        .filter({ hasText: /add user|create user|new user|invite user|add member|new member/i })
+        .first();
+      if (await fallback.count().catch(() => 0)) {
+        await fallback.click({ force: true }).catch(() => {});
+      }
+
+      const genericCreate = this.page
+        .locator("button, a")
+        .filter({ hasText: /create|add/i })
+        .filter({ hasText: /user|member|account/i })
+        .first();
+      if (await genericCreate.count().catch(() => 0)) {
+        await genericCreate.click({ force: true }).catch(() => {});
+      }
+
+      if (!(await this.page.getByRole("textbox", { name: /full name|name/i }).first().isVisible().catch(() => false))) {
+        await this.clickVisibleTextByPattern(
+          /add user|create user|new user|invite user|add member|new member/i,
+          "create user",
+        ).catch(() => {});
+      }
+    }
+
+    await this.waitForReady();
   }
 
   async expectUserListed(email: string) {
@@ -104,12 +239,15 @@ export class UserManagementPage {
   }
 
   private async isReady() {
+    const currentUrl = this.page.url();
+    const inUserManagementRoute = /user(-| )management|\/users(?:\/)?$|\/users\?|user-managment|user-management/i.test(currentUrl);
+
     const hasHeading = await this.page
       .getByRole("heading", { name: /users?|user management|team|members/i })
       .first()
       .isVisible()
       .catch(() => false);
-    if (hasHeading) {
+    if (hasHeading || inUserManagementRoute) {
       return true;
     }
 

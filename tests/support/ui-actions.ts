@@ -94,8 +94,13 @@ export async function tryClickFirstVisible(
     const target = candidate.first();
     if (await target.isVisible().catch(() => false)) {
       await target.scrollIntoViewIfNeeded().catch(() => {});
-      await target.click(options);
-      return true;
+      const clicked = await target
+        .click(options)
+        .then(() => true)
+        .catch(() => false);
+      if (clicked) {
+        return true;
+      }
     }
   }
 

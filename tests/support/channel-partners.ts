@@ -1,5 +1,4 @@
-import type { Page } from "@playwright/test";
-import { test as base } from "@playwright/test";
+import { expect, test as base, type Locator, type Page } from "@playwright/test";
 import { ChannelPartnerPage } from "../pages";
 
 type AppConfig = {
