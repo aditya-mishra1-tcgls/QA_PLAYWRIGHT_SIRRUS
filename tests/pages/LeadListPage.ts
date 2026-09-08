@@ -33,6 +33,8 @@ export type LeadFilterCriteria = {
   projectName?: string;
 };
 
+export type LeadTemperatureFilter = "Hot" | "Warm" | "Cold";
+
 type FilterDropdown = "stage" | "source";
 
 export class LeadListPage {
@@ -132,7 +134,7 @@ export class LeadListPage {
   async clearFilters() {
     await this.openFilterPanel();
 
-    const clearButton = this.page.getByRole("button", { name: /clear filters/i }).first();
+    const clearButton = this.page.getByRole("button", { name: /^(reset|clear all|clear filters)$/i }).first();
     if (await clearButton.isVisible().catch(() => false)) {
       await clearButton.click({ force: true });
     } else {
@@ -143,6 +145,15 @@ export class LeadListPage {
     await this.waitForListingReady();
   }
 
+  async leadListResultCount() {
+    await this.waitForListingReady();
+
+    return await expect
+      .poll(async () => await this.listingResultCount(), { timeout: 30000 })
+      .not.toBe(-1)
+      .then(async () => await this.listingResultCount());
+  }
+
   async applyFilters(criteria: LeadFilterCriteria) {
     await this.openFilterPanel();
     await this.removeSelectedFilterChips();
@@ -150,18 +161,29 @@ export class LeadListPage {
     if (criteria.stage) {
       await this.selectFilterOption("stage", criteria.stage);
       await this.clickApplyFilters();
-      await this.waitForListingReady();
+      await this.waitForFilterApplied();
     }
 
     if (criteria.source) {
       await this.openFilterPanel();
       await this.selectFilterOption("source", criteria.source);
       await this.clickApplyFilters();
-      await this.waitForListingReady();
+      await this.waitForFilterApplied();
     } else if (!criteria.stage) {
       await this.clickApplyFilters();
       await this.waitForListingReady();
     }
+  }
+
+  async applyStageFilter(stage: LeadStageFilter) {
+    await this.waitForListingReady();
+    const expectedStageCount = await this.stageSummaryCount(stage);
+
+    await this.openFilterPanel();
+    await this.removeSelectedFilterChips();
+    await this.selectFilterOption("stage", stage);
+    await this.clickApplyFilters();
+    await this.waitForStageFilterApplied(stage, expectedStageCount);
   }
 
   async expectFilteredResults(criteria: LeadFilterCriteria) {
@@ -172,7 +194,9 @@ export class LeadListPage {
       }, { timeout: 60000 })
       .toBeTruthy();
 
-    const hasNoResults = await hasVisibleText(this.page, /No results|No leads|No data|No records/i);
+    const resultCount = await this.listingResultCount();
+    const hasNoResults =
+      resultCount === 0 && await hasVisibleText(this.page, /No results|No leads|No data|No records/i);
 
     if (criteria.projectName) {
       await expect(
@@ -193,6 +217,101 @@ export class LeadListPage {
         timeout: 60000,
       });
     }
+  }
+
+  async applyTemperatureFilter(temperature: LeadTemperatureFilter) {
+    await this.waitForListingReady();
+    const expectedCount = await this.temperatureBadgeCount(temperature);
+
+    const badgeClicked =
+      (await tryClickFirstVisible(this.temperatureBadgeCandidates(temperature), { force: true })) ||
+      (await this.clickTemperatureBadgeWithDom(temperature));
+    if (!badgeClicked) {
+      throw new Error(`Lead temperature filter "${temperature}" was not visible.`);
+    }
+
+    await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+    await this.expectTemperatureFilteredResults(temperature, expectedCount);
+  }
+
+  async expectDefaultLeadListRestored(expectedDefaultCount: number) {
+    await expect
+      .poll(async () => await this.listingResultCount(), { timeout: 30000 })
+      .toBe(expectedDefaultCount);
+
+    await expect
+      .poll(async () => await this.activeFilterBadgeCount(), { timeout: 30000 })
+      .toBe(0);
+  }
+
+  async expectAllStageDataLoaded() {
+    await expect
+      .poll(async () => await this.activeFilterBadgeCount(), { timeout: 30000 })
+      .toBe(0);
+    await expect(this.page.locator("div").filter({ hasText: /^Filter$/ }).first()).toBeVisible({
+      timeout: 30000,
+    });
+
+    await expect
+      .poll(async () => await this.stageSummaryCount("All Leads"), { timeout: 30000 })
+      .toBeGreaterThan(0);
+
+    await expect
+      .poll(async () => await this.visibleStageSummaryCount(), { timeout: 30000 })
+      .toBeGreaterThanOrEqual(6);
+  }
+
+  async expectLeadListingLoaded() {
+    await this.waitForListingReady();
+
+    await expect(this.searchInput).toBeVisible({ timeout: 30000 });
+    await this.expectFilterControlVisible();
+    await expect(this.page.getByRole("button", { name: /^All Leads\s+\d+$/i }).first()).toBeVisible({
+      timeout: 30000,
+    });
+    await expect(this.page.getByRole("button", { name: /^New Lead\s+\d+$/i }).first()).toBeVisible({
+      timeout: 30000,
+    });
+
+    for (const columnName of ["Lead Name", "Lead ID", "Stage", "Create Date", "Update Date"]) {
+      await expect(this.page.getByText(columnName, { exact: true }).first()).toBeVisible({
+        timeout: 30000,
+      });
+    }
+
+    for (const temperature of ["Hot", "Warm", "Cold"] as const) {
+      await expect(this.page.getByText(new RegExp(`^${escapeRegex(temperature)}\\s*\\(\\d+\\)$`, "i")).first()).toBeVisible({
+        timeout: 30000,
+      });
+    }
+
+    await expect
+      .poll(async () => await this.listingResultCount(), { timeout: 30000 })
+      .toBeGreaterThan(0);
+    await expect(this.page.locator("a[href*='manage-leads'][href*='id=']").first()).toBeVisible({
+      timeout: 30000,
+    });
+    await expect(this.page.getByRole("combobox").first()).toBeVisible({ timeout: 30000 });
+    await expect(this.page.getByRole("button", { name: "1" }).first()).toBeVisible({ timeout: 30000 });
+  }
+
+  private async expectFilterControlVisible() {
+    await expect
+      .poll(async () => {
+        const filterTextVisible = await this.page
+          .getByText(/^Filter(?:\(\d+\))?$/i)
+          .first()
+          .isVisible()
+          .catch(() => false);
+        const filterIconVisible = await this.page
+          .locator('img[alt="filter" i]')
+          .first()
+          .isVisible()
+          .catch(() => false);
+
+        return filterTextVisible || filterIconVisible;
+      }, { timeout: 30000 })
+      .toBeTruthy();
   }
 
   async openLeadByName(leadName: string) {
@@ -329,6 +448,29 @@ export class LeadListPage {
       { force: true },
     );
     await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+  }
+
+  private async waitForFilterApplied() {
+    await expect
+      .poll(async () => await this.activeFilterBadgeCount(), { timeout: 30000 })
+      .toBeGreaterThan(0);
+    await expect
+      .poll(async () => await this.listingResultCount(), { timeout: 30000 })
+      .not.toBe(-1);
+  }
+
+  private async waitForStageFilterApplied(stage: LeadStageFilter, expectedStageCount: number) {
+    await expect
+      .poll(async () => await this.activeFilterBadgeCount(), { timeout: 30000 })
+      .toBeGreaterThan(0);
+
+    if (expectedStageCount >= 0) {
+      await expect
+        .poll(async () => await this.listingResultCount(), { timeout: 30000 })
+        .toBe(expectedStageCount);
+    }
+
+    await this.expectVisibleStatusLinksMatch(stage);
   }
 
   private async clickFilterControlByDirectXPath() {
@@ -574,22 +716,30 @@ export class LeadListPage {
   }
 
   private async removeSelectedFilterChips() {
-    await this.page
-      .locator(".cursor-pointer.flex-shrink-0 > svg")
-      .first()
-      .click({ force: true, timeout: 3000 })
-      .catch(async () => {
-        await this.page.evaluate(() => {
-          const visible = (element: HTMLElement) => {
-            const rect = element.getBoundingClientRect();
-            const style = window.getComputedStyle(element);
-            return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
-          };
-          const removeIcon = Array.from(document.querySelectorAll<SVGElement>(".cursor-pointer.flex-shrink-0 > svg"))
-            .find((element) => visible(element as unknown as HTMLElement));
-          removeIcon?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-        }).catch(() => {});
-      });
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const removed = await this.page
+        .locator(".cursor-pointer.flex-shrink-0 > svg")
+        .first()
+        .click({ force: true, timeout: 1500 })
+        .then(() => true)
+        .catch(async () => {
+          return await this.page.evaluate(() => {
+            const visible = (element: HTMLElement) => {
+              const rect = element.getBoundingClientRect();
+              const style = window.getComputedStyle(element);
+              return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+            };
+            const removeIcon = Array.from(document.querySelectorAll<SVGElement>(".cursor-pointer.flex-shrink-0 > svg"))
+              .find((element) => visible(element as unknown as HTMLElement));
+            removeIcon?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+            return Boolean(removeIcon);
+          }).catch(() => false);
+        });
+
+      if (!removed) {
+        break;
+      }
+    }
   }
 
   private async clickFilterOptionWithDom(optionName: string) {
@@ -616,14 +766,208 @@ export class LeadListPage {
     await expect
       .poll(
         async () => {
-          const statusSummary = this.page
-            .getByRole("button", { name: new RegExp(`^${escapeRegex(expectedStage)}\\s+\\d+$`, "i") })
-            .first();
-          return await statusSummary.isVisible().catch(() => false);
+          const visibleStages = await this.visibleStatusTexts();
+          return (
+            visibleStages.length > 0 &&
+            visibleStages.every((stage) => new RegExp(`^${escapeRegex(expectedStage)}$`, "i").test(stage))
+          );
         },
         { timeout: 30000 },
       )
       .toBeTruthy();
+  }
+
+  private temperatureBadgeCandidates(temperature: LeadTemperatureFilter) {
+    const badgePattern = new RegExp(`^${escapeRegex(temperature)}\\s*\\(\\d+\\)$`, "i");
+
+    return [
+      this.page.getByText(badgePattern).first(),
+      this.page.locator("button").filter({ hasText: badgePattern }).first(),
+      this.page.locator("div").filter({ hasText: badgePattern }).first(),
+    ];
+  }
+
+  private async temperatureBadgeCount(temperature: LeadTemperatureFilter) {
+    const badgePattern = new RegExp(`^${escapeRegex(temperature)}\\s*\\((\\d+)\\)$`, "i");
+
+    const badgeText = await expect
+      .poll(async () => await this.findVisibleTemperatureBadgeText(temperature), {
+        timeout: 30000,
+      })
+      .toMatch(badgePattern)
+      .then(async () => await this.findVisibleTemperatureBadgeText(temperature));
+
+    const count = badgeText.match(badgePattern)?.[1];
+    if (!count) {
+      throw new Error(`Unable to read ${temperature} badge count.`);
+    }
+
+    return Number(count);
+  }
+
+  private async findVisibleTemperatureBadgeText(temperature: LeadTemperatureFilter) {
+    return await this.page.evaluate((expectedTemperature) => {
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const badgePattern = new RegExp(`^${expectedTemperature}\\s*\\(\\d+\\)$`, "i");
+
+      const badge = Array.from(document.querySelectorAll<HTMLElement>("button, div, span"))
+        .find((element) => badgePattern.test(normalize(element.innerText || element.textContent)) && visible(element));
+
+      return normalize(badge?.innerText || badge?.textContent);
+    }, temperature).catch(() => "");
+  }
+
+  private async clickTemperatureBadgeWithDom(temperature: LeadTemperatureFilter) {
+    return await this.page.evaluate((expectedTemperature) => {
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const badgePattern = new RegExp(`^${expectedTemperature}\\s*\\(\\d+\\)$`, "i");
+      const badge = Array.from(document.querySelectorAll<HTMLElement>("button, div, span"))
+        .find((element) => badgePattern.test(normalize(element.innerText || element.textContent)) && visible(element));
+      if (!badge) {
+        return false;
+      }
+
+      let clickable: HTMLElement = badge;
+      let parent = badge.parentElement;
+      for (let depth = 0; parent && depth < 5; depth += 1) {
+        const style = window.getComputedStyle(parent);
+        if (style.cursor === "pointer" || parent.matches("button, [role='button']")) {
+          clickable = parent;
+          break;
+        }
+        parent = parent.parentElement;
+      }
+
+      clickable.click();
+      return true;
+    }, temperature).catch(() => false);
+  }
+
+  private async expectTemperatureFilteredResults(
+    temperature: LeadTemperatureFilter,
+    expectedCount: number,
+  ) {
+    await expect
+      .poll(async () => await this.listingResultCount(), { timeout: 30000 })
+      .toBe(expectedCount);
+
+    if (expectedCount === 0) {
+      await expect(this.page.getByText(/No results|No leads|No data|No records/i).first()).toBeVisible({
+        timeout: 30000,
+      });
+      return;
+    }
+
+    await expect
+      .poll(
+        async () => {
+          const visibleTemperatures = await this.visibleLeadTemperatureTexts();
+          return (
+            visibleTemperatures.length > 0 &&
+            visibleTemperatures.every(
+              (visibleTemperature) => visibleTemperature.toLowerCase() === temperature.toLowerCase(),
+            )
+          );
+        },
+        { timeout: 30000 },
+      )
+      .toBeTruthy();
+  }
+
+  private async listingResultCount() {
+    const footerText = normalizeText(await this.page.locator("body").innerText().catch(() => ""));
+    if (/No results|No leads|No data|No records/i.test(footerText)) {
+      return 0;
+    }
+
+    const totalMatch = footerText.match(/Showing\s+\d+\s*-\s*\d+\s+of\s+([\d,]+)/i);
+    if (!totalMatch) {
+      return -1;
+    }
+
+    return Number(totalMatch[1].replace(/,/g, ""));
+  }
+
+  private async activeFilterBadgeCount() {
+    const filterText = await this.findVisibleFilterButtonText();
+    return Number(filterText.match(/Filter\s*\((\d+)\)/i)?.[1] ?? 0);
+  }
+
+  private async stageSummaryCount(stage: string) {
+    const summaryText = await this.page
+      .getByRole("button", {
+        name: new RegExp(`^${escapeRegex(stage)}\\s+\\d+$`, "i"),
+      })
+      .first()
+      .innerText()
+      .catch(() => "");
+    const count = normalizeText(summaryText).match(/(\d+)$/)?.[1];
+
+    return count ? Number(count) : -1;
+  }
+
+  private async visibleStageSummaryCount() {
+    const bodyText = normalizeText(await this.page.locator("body").innerText().catch(() => ""));
+    const stagePattern =
+      /\b(New Lead|Contacted|Prospect|Open|Qualified|Site Visit|Negotiation|Opportunity|Booked|Dropped)\s+\d+\b/gi;
+    const labels = new Set<string>();
+
+    for (const match of bodyText.matchAll(stagePattern)) {
+      labels.add(match[1].toLowerCase());
+    }
+
+    return labels.size;
+  }
+
+  private async findVisibleFilterButtonText() {
+    return await this.page.evaluate(() => {
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+
+      const elements = Array.from(document.querySelectorAll<HTMLElement>("button, div, span"))
+        .filter((element) => /^Filter(?:\s*\(\d+\))?$/i.test(normalize(element.innerText || element.textContent)) && visible(element));
+      const filter = elements.find((element) => /\(\d+\)/.test(normalize(element.innerText || element.textContent))) ?? elements[0];
+
+      return normalize(filter?.innerText || filter?.textContent);
+    }).catch(() => "");
+  }
+
+  private async visibleLeadTemperatureTexts() {
+    return await this.page.locator("table tr").evaluateAll((rows) =>
+      rows.flatMap((row) =>
+        Array.from(row.querySelectorAll<HTMLElement>("td, [role='cell'], div, span"))
+          .filter((element) => {
+            const text = (element.textContent || "").replace(/\s+/g, " ").trim();
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              /^(Hot|Warm|Cold)$/i.test(text) &&
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== "hidden" &&
+              style.display !== "none"
+            );
+          })
+          .map((element) => (element.textContent || "").replace(/\s+/g, " ").trim()),
+      ),
+    );
   }
 
   private async visibleStatusTexts() {
@@ -637,7 +981,7 @@ export class LeadListPage {
             const rect = htmlElement.getBoundingClientRect();
             const style = window.getComputedStyle(htmlElement);
             return (
-              /^(New Lead|Contacted|Prospect|Site Visit|Negotiation|Booked|Dropped)$/i.test(text) &&
+              /^(New Lead|Contacted|Prospect|Open|Qualified|Site Visit|Negotiation|Opportunity|Booked|Dropped)$/i.test(text) &&
               rect.width > 0 &&
               rect.height > 0 &&
               style.visibility !== "hidden" &&

@@ -1,4 +1,5 @@
 export * from "./ChannelPartnerPage";
+export * from "./LeadDashboardPage";
 export * from "./LeadFormPage";
 export * from "./LeadListPage";
 export * from "./LeadProfilePage";

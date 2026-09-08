@@ -5,10 +5,29 @@ import {
   fillLeadForm,
   goToManageLeads,
 } from "../../support/leads";
-import { LeadListPage, type LeadStageFilter } from "../../pages";
+import {
+  LeadDashboardPage,
+  LeadListPage,
+  type LeadStageFilter,
+  type LeadTemperatureFilter,
+} from "../../pages";
 
 test.describe("Lead search flow", () => {
   test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 120000));
+
+  test("Verify Lead Dashboard loads", async ({ page, app }) => {
+    const leadDashboardPage = new LeadDashboardPage(page);
+
+    await leadDashboardPage.open(app);
+    await leadDashboardPage.expectDashboardOverviewVisible();
+  });
+
+  test("Verify Lead Listing opens", async ({ page, app }) => {
+    await goToManageLeads(page, app);
+
+    const leadListPage = new LeadListPage(page);
+    await leadListPage.expectLeadListingLoaded();
+  });
 
   test("Create lead and search by name, phone number, and email", async ({ page, app }) => {
     await goToManageLeads(page, app);
@@ -59,5 +78,29 @@ test.describe("Lead search flow", () => {
         await leadListPage.clearFilters();
       });
     }
+  });
+
+  test("Filter leads by each temperature and validate result count", async ({ page, app }) => {
+    await goToManageLeads(page, app);
+
+    const leadListPage = new LeadListPage(page);
+    const temperatures: LeadTemperatureFilter[] = ["Hot", "Warm", "Cold"];
+
+    for (const temperature of temperatures) {
+      await test.step(`Apply ${temperature} temperature filter`, async () => {
+        await leadListPage.applyTemperatureFilter(temperature);
+      });
+    }
+  });
+
+  test("Clear applied filters and restore default lead list", async ({ page, app }) => {
+    await goToManageLeads(page, app);
+
+    const leadListPage = new LeadListPage(page);
+    await leadListPage.selectAllProjects();
+
+    await leadListPage.applyStageFilter("Contacted");
+    await leadListPage.clearFilters();
+    await leadListPage.expectAllStageDataLoaded();
   });
 });
