@@ -3,6 +3,7 @@
     "smoke",
     "auth",
     "user-management",
+    "channel-partner",
     "lead-management",
     "lead-report",
     "site-visit"

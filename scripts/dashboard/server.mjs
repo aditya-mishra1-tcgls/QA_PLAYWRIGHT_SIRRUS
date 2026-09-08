@@ -1,21 +1,63 @@
 import { spawn } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { appendFile, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
+import {
+  appendFile,
+  copyFile,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createArtifactPublicUrl, createPresignedGetUrl, databaseEnabled, getRemoteArtifact, getRemoteArtifactByKey, initializePersistence, listPersistentRunSummaries, listPersistentRuns, loadPersistentRun, objectStorageEnabled, savePersistentRun, uploadRunArtifact, uploadRunArtifacts } from "./persistence.mjs";
+import {
+  createArtifactPublicUrl,
+  createPresignedGetUrl,
+  databaseEnabled,
+  deletePersistentDashboardUser,
+  getRemoteArtifact,
+  getRemoteArtifactByKey,
+  initializePersistence,
+  insertPersistentDashboardUser,
+  insertPersistentDashboardUserIfMissing,
+  listPersistentDashboardUsers,
+  listPersistentRunSummaries,
+  listPersistentRuns,
+  loadPersistentRun,
+  objectStorageEnabled,
+  savePersistentRun,
+  updatePersistentDashboardUserAppCredentials,
+  updatePersistentDashboardUserPassword,
+  uploadRunArtifact,
+  uploadRunArtifacts,
+  upsertPersistentDashboardUser,
+} from "./persistence.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "../..");
 const dashboardDir = path.join(rootDir, "dashboard");
 const runsRoot = path.join(rootDir, "data", "test-runs");
-const dashboardUsersPath = path.join(rootDir, "config", "dashboard-users.local.json");
+const dashboardUsersPath = path.join(
+  rootDir,
+  "config",
+  "dashboard-users.local.json",
+);
 
 loadDotEnvFile();
 
-const dashboardBasePath = normalizeBasePath(process.env.QA_DASHBOARD_BASE_PATH || "");
+const dashboardBasePath = normalizeBasePath(
+  process.env.QA_DASHBOARD_BASE_PATH || "",
+);
 const legacyDashboardAuth = getDashboardAuthConfig();
 const eventPrefix = "@@QA_DASHBOARD_EVENT@@";
 const maxStoredEvents = 500;
@@ -49,7 +91,10 @@ function loadDotEnvFile() {
       continue;
     }
 
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
       value = value.slice(1, -1);
     }
     process.env[key] = value;
@@ -57,7 +102,9 @@ function loadDotEnvFile() {
 }
 
 function normalizeBasePath(value) {
-  const trimmed = String(value || "").trim().replace(/\/+$/, "");
+  const trimmed = String(value || "")
+    .trim()
+    .replace(/\/+$/, "");
   if (!trimmed || trimmed === "/") {
     return "";
   }
@@ -82,34 +129,54 @@ function stripDashboardBasePath(pathname) {
 }
 
 function getDashboardAuthConfig() {
-  const username = process.env.QA_DASHBOARD_AUTH_USERNAME || process.env.QA_DASHBOARD_USERNAME || "";
-  const password = process.env.QA_DASHBOARD_AUTH_PASSWORD || process.env.QA_DASHBOARD_PASSWORD || "";
+  const username =
+    process.env.QA_DASHBOARD_AUTH_USERNAME ||
+    process.env.QA_DASHBOARD_USERNAME ||
+    "";
+  const password =
+    process.env.QA_DASHBOARD_AUTH_PASSWORD ||
+    process.env.QA_DASHBOARD_PASSWORD ||
+    "";
 
   if (!username && !password) {
     return null;
   }
 
   if (!username || !password) {
-    throw new Error("Configure both QA_DASHBOARD_AUTH_USERNAME and QA_DASHBOARD_AUTH_PASSWORD, or remove both to disable local dashboard auth.");
+    throw new Error(
+      "Configure both QA_DASHBOARD_AUTH_USERNAME and QA_DASHBOARD_AUTH_PASSWORD, or remove both to disable local dashboard auth.",
+    );
   }
 
   return { username, password };
 }
 
-function loadDashboardUsers() {
-  const bootstrapAdmin = legacyDashboardAuth ? {
-    username: legacyDashboardAuth.username,
-    password: legacyDashboardAuth.password,
-    role: "admin",
-    appCredentials: {},
-    createdAt: new Date().toISOString(),
-    isBootstrapAdmin: true,
-  } : null;
+function bootstrapDashboardAdmin() {
+  return legacyDashboardAuth
+    ? {
+        username: legacyDashboardAuth.username,
+        password: legacyDashboardAuth.password,
+        role: "admin",
+        appCredentials: {},
+        createdAt: new Date().toISOString(),
+        isBootstrapAdmin: true,
+      }
+    : null;
+}
 
+function loadLocalDashboardUsers() {
+  const bootstrapAdmin = bootstrapDashboardAdmin();
   if (existsSync(dashboardUsersPath)) {
-    const configuredUsers = JSON.parse(readFileSync(dashboardUsersPath, "utf8"));
-    const users = Array.isArray(configuredUsers.users) ? configuredUsers.users : [];
-    if (bootstrapAdmin && !users.some((user) => user.username === bootstrapAdmin.username)) {
+    const configuredUsers = JSON.parse(
+      readFileSync(dashboardUsersPath, "utf8"),
+    );
+    const users = Array.isArray(configuredUsers.users)
+      ? configuredUsers.users
+      : [];
+    if (
+      bootstrapAdmin &&
+      !users.some((user) => user.username === bootstrapAdmin.username)
+    ) {
       return [bootstrapAdmin, ...users];
     }
 
@@ -123,7 +190,22 @@ function loadDashboardUsers() {
   return [bootstrapAdmin];
 }
 
+async function loadDashboardUsers() {
+  if (databaseEnabled) {
+    return await listPersistentDashboardUsers();
+  }
+
+  return loadLocalDashboardUsers();
+}
+
 async function saveDashboardUsers(users) {
+  if (databaseEnabled) {
+    for (const user of users) {
+      await upsertPersistentDashboardUser(user);
+    }
+    return;
+  }
+
   const payload = {
     users: users.map((user) => ({
       username: user.username,
@@ -135,6 +217,21 @@ async function saveDashboardUsers(users) {
     })),
   };
   await writeFile(dashboardUsersPath, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+async function syncDashboardUsersToDatabase() {
+  if (!databaseEnabled) {
+    return;
+  }
+
+  const localUsers = loadLocalDashboardUsers();
+  for (const user of localUsers) {
+    if (user.isBootstrapAdmin) {
+      await upsertPersistentDashboardUser(user);
+    } else {
+      await insertPersistentDashboardUserIfMissing(user);
+    }
+  }
 }
 
 function safeEqual(left, right) {
@@ -157,8 +254,11 @@ function parseCookies(req) {
         const separatorIndex = part.indexOf("=");
         return separatorIndex === -1
           ? [part, ""]
-          : [part.slice(0, separatorIndex), decodeURIComponent(part.slice(separatorIndex + 1))];
-      })
+          : [
+              part.slice(0, separatorIndex),
+              decodeURIComponent(part.slice(separatorIndex + 1)),
+            ];
+      }),
   );
 }
 
@@ -175,8 +275,8 @@ function currentDashboardUser(req) {
   };
 }
 
-function authIsEnabled() {
-  return loadDashboardUsers().length > 0;
+async function authIsEnabled() {
+  return (await loadDashboardUsers()).length > 0;
 }
 
 function isPublicPath(req, pathname) {
@@ -188,7 +288,10 @@ function isPublicPath(req, pathname) {
     return true;
   }
 
-  return req.method === "GET" && ["/login.html", "/login.js", "/styles.css"].includes(pathname);
+  return (
+    req.method === "GET" &&
+    ["/login.html", "/login.js", "/styles.css"].includes(pathname)
+  );
 }
 
 function redirectToLogin(res) {
@@ -208,8 +311,8 @@ function redirectToDashboardBase(res, url) {
   res.end();
 }
 
-function requireDashboardAuth(req, res, pathname) {
-  if (!authIsEnabled() || isPublicPath(req, pathname)) {
+async function requireDashboardAuth(req, res, pathname) {
+  if (!(await authIsEnabled()) || isPublicPath(req, pathname)) {
     return true;
   }
 
@@ -239,7 +342,9 @@ function requireAdmin(req, res) {
 async function loginDashboardUser(body, res) {
   const username = String(body.username || "").trim();
   const password = String(body.password || "");
-  const user = loadDashboardUsers().find((candidate) => candidate.username === username);
+  const user = (await loadDashboardUsers()).find(
+    (candidate) => candidate.username === username,
+  );
 
   if (!user || !safeEqual(password, user.password)) {
     sendError(res, 401, "Invalid username or password");
@@ -258,7 +363,11 @@ async function loginDashboardUser(body, res) {
     "set-cookie": `qa_dashboard_session=${encodeURIComponent(token)}; Path=${dashboardBasePath || "/"}; HttpOnly; SameSite=Lax`,
     "cache-control": "no-store",
   });
-  res.end(JSON.stringify({ user: { username: user.username, role: user.role || "user" } }));
+  res.end(
+    JSON.stringify({
+      user: { username: user.username, role: user.role || "user" },
+    }),
+  );
 }
 
 function logoutDashboardUser(req, res) {
@@ -278,17 +387,20 @@ function logoutDashboardUser(req, res) {
 async function createDashboardUser(body) {
   const username = String(body.username || "").trim();
   const password = String(body.password || "");
-  const role = String(body.role || "user").trim() === "admin" ? "admin" : "user";
+  const role =
+    String(body.role || "user").trim() === "admin" ? "admin" : "user";
 
   if (!/^[a-zA-Z0-9._@-]{3,80}$/.test(username)) {
-    throw new Error("Username must be 3-80 characters and use letters, numbers, dot, underscore, hyphen, or @.");
+    throw new Error(
+      "Username must be 3-80 characters and use letters, numbers, dot, underscore, hyphen, or @.",
+    );
   }
 
   if (password.length < 8) {
     throw new Error("Password must be at least 8 characters.");
   }
 
-  const users = loadDashboardUsers();
+  const users = await loadDashboardUsers();
   if (users.some((user) => user.username === username)) {
     throw new Error("Dashboard user already exists.");
   }
@@ -300,14 +412,26 @@ async function createDashboardUser(body) {
     appCredentials: {},
     createdAt: new Date().toISOString(),
   };
-  users.push(nextUser);
-  await saveDashboardUsers(users);
-  return { username: nextUser.username, role: nextUser.role, createdAt: nextUser.createdAt };
+  const savedUser = databaseEnabled
+    ? await insertPersistentDashboardUser(nextUser)
+    : null;
+  if (!databaseEnabled) {
+    users.push(nextUser);
+    await saveDashboardUsers(users);
+  }
+
+  return {
+    username: (savedUser || nextUser).username,
+    password: (savedUser || nextUser).password,
+    role: (savedUser || nextUser).role,
+    createdAt: (savedUser || nextUser).createdAt,
+  };
 }
 
-function listDashboardUsers() {
-  return loadDashboardUsers().map((user) => ({
+async function listDashboardUsers() {
+  return (await loadDashboardUsers()).map((user) => ({
     username: user.username,
+    password: user.password || "",
     role: user.role || "user",
     createdAt: user.createdAt || null,
     isBootstrapAdmin: Boolean(user.isBootstrapAdmin),
@@ -325,7 +449,7 @@ async function resetDashboardUserPassword(username, body) {
     throw new Error("Password must be at least 8 characters.");
   }
 
-  const users = loadDashboardUsers();
+  const users = await loadDashboardUsers();
   const user = users.find((candidate) => candidate.username === username);
   if (!user) {
     throw new Error("Dashboard user not found.");
@@ -333,8 +457,27 @@ async function resetDashboardUserPassword(username, body) {
 
   user.password = nextPassword;
   user.passwordUpdatedAt = new Date().toISOString();
+  if (databaseEnabled) {
+    const updatedUser = await updatePersistentDashboardUserPassword(
+      username,
+      nextPassword,
+    );
+    if (!updatedUser) {
+      throw new Error("Dashboard user not found.");
+    }
+    return {
+      username: updatedUser.username,
+      password: updatedUser.password,
+      role: updatedUser.role || "user",
+    };
+  }
+
   await saveDashboardUsers(users);
-  return { username: user.username, role: user.role || "user" };
+  return {
+    username: user.username,
+    password: user.password,
+    role: user.role || "user",
+  };
 }
 
 async function deleteDashboardUser(username, currentUser) {
@@ -347,18 +490,26 @@ async function deleteDashboardUser(username, currentUser) {
     throw new Error("You cannot delete your own active admin account.");
   }
 
-  const users = loadDashboardUsers();
+  const users = await loadDashboardUsers();
   const user = users.find((candidate) => candidate.username === username);
   if (!user) {
     throw new Error("Dashboard user not found.");
   }
 
-  const adminCount = users.filter((candidate) => (candidate.role || "user") === "admin").length;
+  const adminCount = users.filter(
+    (candidate) => (candidate.role || "user") === "admin",
+  ).length;
   if ((user.role || "user") === "admin" && adminCount <= 1) {
     throw new Error("Cannot delete the last admin user.");
   }
 
-  await saveDashboardUsers(users.filter((candidate) => candidate.username !== username));
+  if (databaseEnabled) {
+    await deletePersistentDashboardUser(username);
+  } else {
+    await saveDashboardUsers(
+      users.filter((candidate) => candidate.username !== username),
+    );
+  }
   for (const [token, session] of dashboardSessions.entries()) {
     if (session.username === username) {
       dashboardSessions.delete(token);
@@ -368,18 +519,22 @@ async function deleteDashboardUser(username, currentUser) {
   return { username };
 }
 
-function userAppCredentials(username) {
-  const user = loadDashboardUsers().find((candidate) => candidate.username === username);
-  return user?.appCredentials && typeof user.appCredentials === "object" ? user.appCredentials : {};
+async function userAppCredentials(username) {
+  const user = (await loadDashboardUsers()).find(
+    (candidate) => candidate.username === username,
+  );
+  return user?.appCredentials && typeof user.appCredentials === "object"
+    ? user.appCredentials
+    : {};
 }
 
-function appCredentialForUser(username, envName) {
-  const credentials = userAppCredentials(username);
+async function appCredentialForUser(username, envName) {
+  const credentials = await userAppCredentials(username);
   return credentials[envName] || null;
 }
 
 async function saveAppCredentialForUser(username, envName, credential) {
-  const users = loadDashboardUsers();
+  const users = await loadDashboardUsers();
   const user = users.find((candidate) => candidate.username === username);
   if (!user) {
     throw new Error("Dashboard user not found.");
@@ -407,7 +562,14 @@ async function saveAppCredentialForUser(username, envName, credential) {
     updatedAt: new Date().toISOString(),
   };
 
-  await saveDashboardUsers(users);
+  if (databaseEnabled) {
+    await updatePersistentDashboardUserAppCredentials(
+      username,
+      user.appCredentials,
+    );
+  } else {
+    await saveDashboardUsers(users);
+  }
   return sanitizedAppCredential(user.appCredentials[envName]);
 }
 
@@ -464,9 +626,18 @@ function listFlowFolders() {
 }
 
 function getConfig() {
-  const environments = readJson("config/environments.json", { default: "", environments: {} });
-  const profiles = readJson("config/execution-profiles.json", { defaultMode: "", modes: {} });
-  const modules = readJson("config/test-modules.json", { defaultModule: "engagement", modules: { engagement: { label: "Engagement" } } });
+  const environments = readJson("config/environments.json", {
+    default: "",
+    environments: {},
+  });
+  const profiles = readJson("config/execution-profiles.json", {
+    defaultMode: "",
+    modes: {},
+  });
+  const modules = readJson("config/test-modules.json", {
+    defaultModule: "engagement",
+    modules: { engagement: { label: "Engagement" } },
+  });
 
   return {
     environments,
@@ -474,7 +645,7 @@ function getConfig() {
     modules,
     flows: listFlowFolders(),
     specFiles: listSpecFiles(),
-    projects: ["chromium", "setup"]
+    projects: ["chromium", "setup"],
   };
 }
 
@@ -510,14 +681,19 @@ function extractLastCompleteRunJson(content) {
       else if (character === '"') quoted = false;
       continue;
     }
-    if (character === '"') { quoted = true; continue; }
+    if (character === '"') {
+      quoted = true;
+      continue;
+    }
     if (character === "{") {
       if (depth === 0) start = index;
       depth += 1;
     } else if (character === "}") {
       depth -= 1;
       if (depth === 0 && start >= 0) {
-        try { latest = JSON.parse(content.slice(start, index + 1)); } catch {}
+        try {
+          latest = JSON.parse(content.slice(start, index + 1));
+        } catch {}
         start = -1;
       }
     }
@@ -542,7 +718,9 @@ async function recoverRunFile(runPath, runId) {
   const temporaryPath = temporaryRunPath(runPath);
   await writeFile(temporaryPath, `${JSON.stringify(recovered, null, 2)}\n`);
   await rename(temporaryPath, runPath);
-  console.warn(`Recovered local run ${runId}; saved its original file as ${path.basename(backupPath)}.`);
+  console.warn(
+    `Recovered local run ${runId}; saved its original file as ${path.basename(backupPath)}.`,
+  );
   return recovered;
 }
 
@@ -561,7 +739,9 @@ async function rebuildRunFromEvents(runId, seedRun = {}) {
     return null;
   }
 
-  const lines = (await readFile(eventsPath, "utf8")).split(/\r?\n/).filter(Boolean);
+  const lines = (await readFile(eventsPath, "utf8"))
+    .split(/\r?\n/)
+    .filter(Boolean);
   if (!lines.length) {
     return null;
   }
@@ -573,14 +753,16 @@ async function rebuildRunFromEvents(runId, seedRun = {}) {
     endedAt: seedRun.endedAt || null,
     exitCode: seedRun.exitCode ?? null,
     command: seedRun.command || "",
-    reportPath: seedRun.reportPath || path.relative(rootDir, path.join(getRunDir(runId), "html-report")),
+    reportPath:
+      seedRun.reportPath ||
+      path.relative(rootDir, path.join(getRunDir(runId), "html-report")),
     options: seedRun.options || {},
     summary: seedRun.summary || {},
     expectedTotal: seedRun.expectedTotal || 0,
     expectedTests: [],
     currentTestId: null,
     tests: {},
-    events: []
+    events: [],
   };
 
   for (const line of lines) {
@@ -595,7 +777,9 @@ async function rebuildRunFromEvents(runId, seedRun = {}) {
 
     if (event.type === "run_begin") {
       run.expectedTotal = event.total || run.expectedTotal || 0;
-      run.expectedTests = Array.isArray(event.tests) ? event.tests : run.expectedTests;
+      run.expectedTests = Array.isArray(event.tests)
+        ? event.tests
+        : run.expectedTests;
       run.startedAt = run.startedAt || event.timestamp;
     }
 
@@ -609,20 +793,30 @@ async function rebuildRunFromEvents(runId, seedRun = {}) {
         ...event,
         status: "running",
         steps: run.tests[event.testId]?.steps || [],
-        startedAt: event.timestamp
+        startedAt: event.timestamp,
       };
     }
 
     if (event.type === "step_begin" && run.tests[event.testId]) {
       run.tests[event.testId].steps = run.tests[event.testId].steps || [];
-      run.tests[event.testId].steps.push({ ...event, status: "running", startedAt: event.timestamp });
-      run.tests[event.testId].steps = run.tests[event.testId].steps.slice(-maxStoredSteps);
+      run.tests[event.testId].steps.push({
+        ...event,
+        status: "running",
+        startedAt: event.timestamp,
+      });
+      run.tests[event.testId].steps =
+        run.tests[event.testId].steps.slice(-maxStoredSteps);
     }
 
     if (event.type === "step_end" && run.tests[event.testId]) {
-      const step = (run.tests[event.testId].steps || []).find((candidate) => candidate.stepId === event.stepId);
+      const step = (run.tests[event.testId].steps || []).find(
+        (candidate) => candidate.stepId === event.stepId,
+      );
       if (step) {
-        Object.assign(step, event, { status: event.error ? "failed" : "passed", endedAt: event.timestamp });
+        Object.assign(step, event, {
+          status: event.error ? "failed" : "passed",
+          endedAt: event.timestamp,
+        });
       }
     }
 
@@ -630,7 +824,7 @@ async function rebuildRunFromEvents(runId, seedRun = {}) {
       run.tests[event.testId] = {
         ...(run.tests[event.testId] || {}),
         ...event,
-        endedAt: event.timestamp
+        endedAt: event.timestamp,
       };
       if (run.currentTestId === event.testId) {
         run.currentTestId = null;
@@ -739,12 +933,10 @@ function isFullRunPayload(run) {
   return Boolean(
     run &&
     typeof run === "object" &&
-    (
-      Object.prototype.hasOwnProperty.call(run, "tests") ||
+    (Object.prototype.hasOwnProperty.call(run, "tests") ||
       Object.prototype.hasOwnProperty.call(run, "expectedTests") ||
       Object.prototype.hasOwnProperty.call(run, "command") ||
-      Object.prototype.hasOwnProperty.call(run, "reportPath")
-    )
+      Object.prototype.hasOwnProperty.call(run, "reportPath")),
   );
 }
 
@@ -764,14 +956,16 @@ function persistentRunSnapshot(run) {
     tests[testId] = {
       ...test,
       steps: (test.steps || []).slice(-maxStoredSteps),
-      retry: test.retry ? {
-        ...test.retry,
-        steps: (test.retry.steps || []).slice(-maxStoredSteps)
-      } : test.retry,
+      retry: test.retry
+        ? {
+            ...test.retry,
+            steps: (test.retry.steps || []).slice(-maxStoredSteps),
+          }
+        : test.retry,
       attempts: Array.isArray(test.attempts)
         ? test.attempts.map((attempt) => ({
             ...attempt,
-            steps: (attempt.steps || []).slice(-maxStoredSteps)
+            steps: (attempt.steps || []).slice(-maxStoredSteps),
           }))
         : test.attempts,
       attachments: Array.isArray(test.attachments)
@@ -779,7 +973,7 @@ function persistentRunSnapshot(run) {
             const { url, ...persistedAttachment } = attachment;
             return persistedAttachment;
           })
-        : test.attachments
+        : test.attachments,
     };
   }
 
@@ -789,7 +983,9 @@ function persistentRunSnapshot(run) {
     events: (run.events || []).slice(-maxStoredEvents),
     expectedTests: Array.isArray(run.expectedTests) ? run.expectedTests : [],
     tests,
-    artifacts: Array.isArray(run.artifacts) ? run.artifacts.map((artifact) => ({ ...artifact })) : run.artifacts
+    artifacts: Array.isArray(run.artifacts)
+      ? run.artifacts.map((artifact) => ({ ...artifact }))
+      : run.artifacts,
   };
 }
 
@@ -807,13 +1003,17 @@ async function writeRunSnapshot(run) {
     await savePersistentRun(persistedRun);
   } catch (error) {
     run.persistenceError = error.message || "DB save failed";
-    console.warn(`DB save failed for run ${run.id}; local run file was saved: ${run.persistenceError}`);
+    console.warn(
+      `DB save failed for run ${run.id}; local run file was saved: ${run.persistenceError}`,
+    );
   }
 }
 
 async function saveRun(run) {
   if (!isFullRunPayload(run)) {
-    throw new Error(`Refusing to save summary-only run payload for ${run?.id || "unknown run"}.`);
+    throw new Error(
+      `Refusing to save summary-only run payload for ${run?.id || "unknown run"}.`,
+    );
   }
 
   const existing = saveQueues.get(run.id);
@@ -855,7 +1055,7 @@ async function archiveRun(run) {
       type: "log",
       source: "dashboard",
       timestamp: new Date().toISOString(),
-      text: `S3 artifact upload failed: ${run.archiveError}`
+      text: `S3 artifact upload failed: ${run.archiveError}`,
     });
   }
   await saveRun(run);
@@ -872,17 +1072,23 @@ function resolveAttachmentSource(attachmentPath) {
 
   const candidates = path.isAbsolute(attachmentPath)
     ? [attachmentPath]
-    : [
-        path.resolve(rootDir, attachmentPath),
-        path.resolve(attachmentPath)
-      ];
+    : [path.resolve(rootDir, attachmentPath), path.resolve(attachmentPath)];
 
-  return candidates.find((candidate) => existsSync(candidate) && !statSync(candidate).isDirectory()) || null;
+  return (
+    candidates.find(
+      (candidate) =>
+        existsSync(candidate) && !statSync(candidate).isDirectory(),
+    ) || null
+  );
 }
 
 async function preserveAttachments(run, event) {
   const attachments = event.attachments || [];
-  const targetDir = path.join(getRunDir(run.id), "artifacts", safeFileSegment(event.testId));
+  const targetDir = path.join(
+    getRunDir(run.id),
+    "artifacts",
+    safeFileSegment(event.testId),
+  );
   const stored = [];
   for (let index = 0; index < attachments.length; index += 1) {
     const attachment = attachments[index];
@@ -900,7 +1106,7 @@ async function preserveAttachments(run, event) {
     }
     stored.push({
       ...attachment,
-      path: path.relative(rootDir, destination).split(path.sep).join("/")
+      path: path.relative(rootDir, destination).split(path.sep).join("/"),
     });
   }
   return stored;
@@ -916,7 +1122,7 @@ async function preserveRunAttachments(run) {
 
     const normalized = await preserveAttachments(run, {
       testId: test.testId,
-      attachments: test.attachments
+      attachments: test.attachments,
     });
 
     if (JSON.stringify(normalized) !== JSON.stringify(test.attachments)) {
@@ -929,7 +1135,9 @@ async function preserveRunAttachments(run) {
 }
 
 function applyUploadedArtifactUrls(run) {
-  const artifactsByPath = new Map((run.artifacts || []).map((artifact) => [artifact.path, artifact]));
+  const artifactsByPath = new Map(
+    (run.artifacts || []).map((artifact) => [artifact.path, artifact]),
+  );
   let changed = false;
 
   for (const test of Object.values(run.tests || {})) {
@@ -979,8 +1187,13 @@ function reportArtifactForRun(run) {
   const relativeReportPath = reportPath.startsWith(`data/test-runs/${run.id}/`)
     ? reportPath.slice(`data/test-runs/${run.id}/`.length)
     : reportPath;
-  const reportIndexPath = `${relativeReportPath || "html-report"}/index.html`.replace(/^\/+/, "");
-  return (run.artifacts || []).find((artifact) => artifact.path === reportIndexPath) || null;
+  const reportIndexPath =
+    `${relativeReportPath || "html-report"}/index.html`.replace(/^\/+/, "");
+  return (
+    (run.artifacts || []).find(
+      (artifact) => artifact.path === reportIndexPath,
+    ) || null
+  );
 }
 
 function applyUploadedReportUrl(run) {
@@ -990,7 +1203,9 @@ function applyUploadedReportUrl(run) {
     return false;
   }
 
-  const reportUrl = createPresignedGetUrl(reportArtifact.key) || createArtifactPublicUrl(reportArtifact.key);
+  const reportUrl =
+    createPresignedGetUrl(reportArtifact.key) ||
+    createArtifactPublicUrl(reportArtifact.key);
   if (!reportUrl) {
     delete run.reportUrl;
     return false;
@@ -1013,7 +1228,7 @@ function broadcastReportReady(run) {
   broadcast(run.id, {
     type: "report_ready",
     timestamp: new Date().toISOString(),
-    reportUrl: run.reportUrl
+    reportUrl: run.reportUrl,
   });
 }
 
@@ -1047,18 +1262,26 @@ function runRelativeAttachmentPath(run, attachment) {
   const runDir = getRunDir(run.id);
   const absolutePath = path.resolve(rootDir, attachment.path);
   const relativePath = path.relative(runDir, absolutePath);
-  return relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)
+  return relativePath &&
+    !relativePath.startsWith("..") &&
+    !path.isAbsolute(relativePath)
     ? relativePath.split(path.sep).join("/")
     : null;
 }
 
 async function uploadStoredAttachments(run, attachments) {
-  if (!objectStorageEnabled || !Array.isArray(attachments) || !attachments.length) {
+  if (
+    !objectStorageEnabled ||
+    !Array.isArray(attachments) ||
+    !attachments.length
+  ) {
     return [];
   }
 
   run.artifacts = run.artifacts || [];
-  const artifactsByPath = new Map(run.artifacts.map((artifact) => [artifact.path, artifact]));
+  const artifactsByPath = new Map(
+    run.artifacts.map((artifact) => [artifact.path, artifact]),
+  );
   const uploaded = [];
 
   for (const attachment of attachments) {
@@ -1070,7 +1293,11 @@ async function uploadStoredAttachments(run, attachments) {
     let artifact = artifactsByPath.get(relativePath);
     if (!artifact) {
       try {
-        artifact = await uploadRunArtifact(run.id, getRunDir(run.id), relativePath);
+        artifact = await uploadRunArtifact(
+          run.id,
+          getRunDir(run.id),
+          relativePath,
+        );
       } catch (error) {
         attachment.uploadError = error.message || "S3 upload failed";
         run.archiveError = attachment.uploadError;
@@ -1148,19 +1375,21 @@ function sendReportUnavailable(res, message) {
 }
 
 function contentTypeForPath(filePath) {
-  return {
-    ".html": "text/html",
-    ".css": "text/css",
-    ".js": "text/javascript",
-    ".json": "application/json",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webm": "video/webm",
-    ".zip": "application/zip",
-    ".md": "text/markdown",
-    ".log": "text/plain"
-  }[path.extname(filePath).toLowerCase()] || "application/octet-stream";
+  return (
+    {
+      ".html": "text/html",
+      ".css": "text/css",
+      ".js": "text/javascript",
+      ".json": "application/json",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".webm": "video/webm",
+      ".zip": "application/zip",
+      ".md": "text/markdown",
+      ".log": "text/plain",
+    }[path.extname(filePath).toLowerCase()] || "application/octet-stream"
+  );
 }
 
 function killRunProcess(child) {
@@ -1197,7 +1426,9 @@ async function readBody(req) {
     chunks.push(chunk);
   }
 
-  return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+  return chunks.length
+    ? JSON.parse(Buffer.concat(chunks).toString("utf8"))
+    : {};
 }
 
 function normalizeFlows(config, body) {
@@ -1211,12 +1442,15 @@ function normalizeFlows(config, body) {
 
 function buildPlaywrightArgs(run) {
   const args = ["playwright", "test"];
-  const selectedFiles = Array.isArray(run.options.specFiles) && run.options.specFiles.length
-    ? run.options.specFiles
-    : run.options.flows.map((flow) => path.join("tests", "flows", flow));
+  const selectedFiles =
+    Array.isArray(run.options.specFiles) && run.options.specFiles.length
+      ? run.options.specFiles
+      : run.options.flows.map((flow) => path.join("tests", "flows", flow));
 
   args.push(...selectedFiles);
-  args.push(`--reporter=list,html,${path.join("scripts", "dashboard", "reporter.mjs")}`);
+  args.push(
+    `--reporter=list,html,${path.join("scripts", "dashboard", "reporter.mjs")}`,
+  );
 
   if (run.options.project) {
     args.push(`--project=${run.options.project}`);
@@ -1253,9 +1487,11 @@ function buildPlaywrightArgs(run) {
   return args;
 }
 
-function playwrightRunEnv(options, reportDir, runId, extra = {}) {
+async function playwrightRunEnv(options, reportDir, runId, extra = {}) {
   const runOwner = options.runOwner || "";
-  const appCredential = runOwner ? appCredentialForUser(runOwner, options.env) : null;
+  const appCredential = runOwner
+    ? await appCredentialForUser(runOwner, options.env)
+    : null;
 
   return {
     ...process.env,
@@ -1274,7 +1510,10 @@ function playwrightRunEnv(options, reportDir, runId, extra = {}) {
 }
 
 function safeAuthStateSegment(value) {
-  return String(value || "").trim().replace(/[^a-zA-Z0-9._-]/g, "-").replace(/-+/g, "-");
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-");
 }
 
 function authStatePathForRun(run) {
@@ -1284,7 +1523,12 @@ function authStatePathForRun(run) {
     return null;
   }
 
-  return path.resolve(rootDir, "playwright", ".auth", `${envName}-${runId}.json`);
+  return path.resolve(
+    rootDir,
+    "playwright",
+    ".auth",
+    `${envName}-${runId}.json`,
+  );
 }
 
 async function cleanupRunAuthState(run) {
@@ -1309,14 +1553,14 @@ async function cleanupRunAuthState(run) {
       type: "log",
       source: "dashboard",
       timestamp: new Date().toISOString(),
-      text: `Cleaned execution auth state ${path.relative(rootDir, resolvedAuthStatePath)}.`
+      text: `Cleaned execution auth state ${path.relative(rootDir, resolvedAuthStatePath)}.`,
     });
   } catch (error) {
     await appendRunEvent(run, {
       type: "log",
       source: "dashboard",
       timestamp: new Date().toISOString(),
-      text: `Could not clean execution auth state: ${error.message}`
+      text: `Could not clean execution auth state: ${error.message}`,
     });
   }
 }
@@ -1326,18 +1570,32 @@ function getRelativeTestTarget(test) {
     return "";
   }
 
-  const filePath = path.isAbsolute(test.file) ? path.relative(rootDir, test.file) : test.file;
+  const filePath = path.isAbsolute(test.file)
+    ? path.relative(rootDir, test.file)
+    : test.file;
   return test.line ? `${filePath}:${test.line}` : filePath;
 }
 
 function testMatchesTarget(event, target) {
   const eventFile = event?.file ? path.resolve(event.file) : "";
-  const targetFile = target?.file ? path.resolve(rootDir, path.isAbsolute(target.file) ? path.relative(rootDir, target.file) : target.file) : "";
-  return eventFile === targetFile && Number(event.line || 0) === Number(target.line || 0);
+  const targetFile = target?.file
+    ? path.resolve(
+        rootDir,
+        path.isAbsolute(target.file)
+          ? path.relative(rootDir, target.file)
+          : target.file,
+      )
+    : "";
+  return (
+    eventFile === targetFile &&
+    Number(event.line || 0) === Number(target.line || 0)
+  );
 }
 
 function isTerminalTestStatus(status) {
-  return ["passed", "failed", "timedOut", "interrupted", "skipped"].includes(status);
+  return ["passed", "failed", "timedOut", "interrupted", "skipped"].includes(
+    status,
+  );
 }
 
 function isFailedStatus(status) {
@@ -1361,8 +1619,12 @@ function shouldShowProcessLog(line) {
   if (
     /^(\d+\)|\[\d+\/\d+\]|Running \d+ tests?|Retry #\d+)/i.test(text) ||
     /^[✓✘×-]\s/.test(text) ||
-    /^(at |Error: expect|Call log:|waiting for|locator\.|page\.|browserContext\.|apiRequestContext\.)/i.test(text) ||
-    /^(npx |TimeoutError:|Test timeout of|Slow test file:|To open last HTML report run:)/i.test(text)
+    /^(at |Error: expect|Call log:|waiting for|locator\.|page\.|browserContext\.|apiRequestContext\.)/i.test(
+      text,
+    ) ||
+    /^(npx |TimeoutError:|Test timeout of|Slow test file:|To open last HTML report run:)/i.test(
+      text,
+    )
   ) {
     return false;
   }
@@ -1387,7 +1649,11 @@ function friendlyStatus(status) {
   return status ? String(status) : "Finished";
 }
 
-async function appendFriendlyLog(run, text, timestamp = new Date().toISOString()) {
+async function appendFriendlyLog(
+  run,
+  text,
+  timestamp = new Date().toISOString(),
+) {
   if (!text) {
     return;
   }
@@ -1396,9 +1662,12 @@ async function appendFriendlyLog(run, text, timestamp = new Date().toISOString()
     type: "log",
     source: "test",
     timestamp,
-    text
+    text,
   };
-  await appendFile(path.join(getRunDir(run.id), "events.ndjson"), `${JSON.stringify(event)}\n`);
+  await appendFile(
+    path.join(getRunDir(run.id), "events.ndjson"),
+    `${JSON.stringify(event)}\n`,
+  );
   run.events.push(event);
   broadcast(run.id, event);
 }
@@ -1407,12 +1676,20 @@ function recomputeRunSummary(run) {
   const tests = Object.values(run.tests || {});
   const summary = {};
   for (const test of tests) {
-    const isCurrentTest = run.currentTestId && run.currentTestId === test.testId;
-    if (!isCurrentTest && ["running", "retrying"].includes(test.status) && (!run.currentTestId || test.expectedStatus === "skipped")) {
+    const isCurrentTest =
+      run.currentTestId && run.currentTestId === test.testId;
+    if (
+      !isCurrentTest &&
+      ["running", "retrying"].includes(test.status) &&
+      (!run.currentTestId || test.expectedStatus === "skipped")
+    ) {
       test.status = "skipped";
     }
 
-    const isActiveCurrentTest = run.currentTestId && run.currentTestId === test.testId && ["running", "retrying"].includes(test.status);
+    const isActiveCurrentTest =
+      run.currentTestId &&
+      run.currentTestId === test.testId &&
+      ["running", "retrying"].includes(test.status);
     const isTerminalTest = isTerminalTestStatus(test.status);
     if (isTerminalTest || isActiveCurrentTest) {
       summary[test.status] = (summary[test.status] || 0) + 1;
@@ -1420,10 +1697,17 @@ function recomputeRunSummary(run) {
   }
 
   run.summary = summary;
-  const expectedTotal = run.expectedTotal || run.expectedTests?.length || tests.length;
-  const completed = tests.filter((test) => isTerminalTestStatus(test.status)).length;
+  const expectedTotal =
+    run.expectedTotal || run.expectedTests?.length || tests.length;
+  const completed = tests.filter((test) =>
+    isTerminalTestStatus(test.status),
+  ).length;
   const failed = tests.some((test) => isFailedStatus(test.status));
-  const active = tests.some((test) => ["running", "retrying"].includes(test.status) && run.currentTestId === test.testId);
+  const active = tests.some(
+    (test) =>
+      ["running", "retrying"].includes(test.status) &&
+      run.currentTestId === test.testId,
+  );
 
   if (expectedTotal > 0 && completed >= expectedTotal && !active) {
     run.status = failed ? "failed" : "passed";
@@ -1443,12 +1727,15 @@ function rememberPreviousAttempt(test) {
     duration: test.duration,
     errors: test.errors || [],
     steps: test.steps || [],
-    endedAt: test.endedAt || null
+    endedAt: test.endedAt || null,
   });
 }
 
 async function appendRetryEvent(run, retry, event) {
-  await appendFile(path.join(getRunDir(run.id), "events.ndjson"), `${JSON.stringify(event)}\n`);
+  await appendFile(
+    path.join(getRunDir(run.id), "events.ndjson"),
+    `${JSON.stringify(event)}\n`,
+  );
   run.events.push(event);
 
   const targetTest = run.tests[retry.testId];
@@ -1465,31 +1752,65 @@ async function appendRetryEvent(run, retry, event) {
       id: retry.id,
       status: "running",
       startedAt: event.timestamp,
-      steps: []
+      steps: [],
     };
     run.currentTestId = retry.testId;
     run.status = "retrying";
     run.endedAt = null;
     run.exitCode = null;
-    await appendFriendlyLog(run, `Retry started: ${targetTest.displayTitle || targetTest.title || event.displayTitle || event.title || "Untitled test"}`, event.timestamp);
-    broadcast(run.id, { type: "test_update", timestamp: event.timestamp, testId: retry.testId, test: targetTest, runStatus: run.status, summary: run.summary });
+    await appendFriendlyLog(
+      run,
+      `Retry started: ${targetTest.displayTitle || targetTest.title || event.displayTitle || event.title || "Untitled test"}`,
+      event.timestamp,
+    );
+    broadcast(run.id, {
+      type: "test_update",
+      timestamp: event.timestamp,
+      testId: retry.testId,
+      test: targetTest,
+      runStatus: run.status,
+      summary: run.summary,
+    });
     return;
   }
 
   if (event.type === "step_begin" && targetTest.retry) {
-    targetTest.retry.steps.push({ ...event, status: "running", startedAt: event.timestamp });
+    targetTest.retry.steps.push({
+      ...event,
+      status: "running",
+      startedAt: event.timestamp,
+    });
     targetTest.retry.steps = targetTest.retry.steps.slice(-maxStoredSteps);
     await appendFriendlyLog(run, friendlyStepTitle(event), event.timestamp);
-    broadcast(run.id, { type: "test_update", timestamp: event.timestamp, testId: retry.testId, test: targetTest, runStatus: run.status, summary: run.summary });
+    broadcast(run.id, {
+      type: "test_update",
+      timestamp: event.timestamp,
+      testId: retry.testId,
+      test: targetTest,
+      runStatus: run.status,
+      summary: run.summary,
+    });
     return;
   }
 
   if (event.type === "step_end" && targetTest.retry) {
-    const step = targetTest.retry.steps.find((candidate) => candidate.stepId === event.stepId);
+    const step = targetTest.retry.steps.find(
+      (candidate) => candidate.stepId === event.stepId,
+    );
     if (step) {
-      Object.assign(step, event, { status: event.error ? "failed" : "passed", endedAt: event.timestamp });
+      Object.assign(step, event, {
+        status: event.error ? "failed" : "passed",
+        endedAt: event.timestamp,
+      });
     }
-    broadcast(run.id, { type: "test_update", timestamp: event.timestamp, testId: retry.testId, test: targetTest, runStatus: run.status, summary: run.summary });
+    broadcast(run.id, {
+      type: "test_update",
+      timestamp: event.timestamp,
+      testId: retry.testId,
+      test: targetTest,
+      runStatus: run.status,
+      summary: run.summary,
+    });
     return;
   }
 
@@ -1504,12 +1825,23 @@ async function appendRetryEvent(run, retry, event) {
       ...(targetTest.retry || { id: retry.id, steps: [] }),
       status: event.status,
       endedAt: event.timestamp,
-      duration: event.duration
+      duration: event.duration,
     };
     run.currentTestId = null;
     recomputeRunSummary(run);
-    await appendFriendlyLog(run, `${friendlyStatus(event.status)} after retry: ${targetTest.displayTitle || targetTest.title || event.displayTitle || event.title || "Untitled test"}`, event.timestamp);
-    broadcast(run.id, { type: "test_update", timestamp: event.timestamp, testId: retry.testId, test: targetTest, runStatus: run.status, summary: run.summary });
+    await appendFriendlyLog(
+      run,
+      `${friendlyStatus(event.status)} after retry: ${targetTest.displayTitle || targetTest.title || event.displayTitle || event.title || "Untitled test"}`,
+      event.timestamp,
+    );
+    broadcast(run.id, {
+      type: "test_update",
+      timestamp: event.timestamp,
+      testId: retry.testId,
+      test: targetTest,
+      runStatus: run.status,
+      summary: run.summary,
+    });
     return;
   }
 
@@ -1531,20 +1863,39 @@ async function appendRunEvent(run, event) {
     run.status = "running";
     run.endedAt = null;
     run.exitCode = null;
-    run.tests[event.testId] = { ...event, status: "running", steps: [], startedAt: event.timestamp };
-    await appendFriendlyLog(run, `Started: ${event.displayTitle || event.title || "Untitled test"}`, event.timestamp);
+    run.tests[event.testId] = {
+      ...event,
+      status: "running",
+      steps: [],
+      startedAt: event.timestamp,
+    };
+    await appendFriendlyLog(
+      run,
+      `Started: ${event.displayTitle || event.title || "Untitled test"}`,
+      event.timestamp,
+    );
   }
 
   if (event.type === "step_begin" && run.tests[event.testId]) {
-    run.tests[event.testId].steps.push({ ...event, status: "running", startedAt: event.timestamp });
-    run.tests[event.testId].steps = run.tests[event.testId].steps.slice(-maxStoredSteps);
+    run.tests[event.testId].steps.push({
+      ...event,
+      status: "running",
+      startedAt: event.timestamp,
+    });
+    run.tests[event.testId].steps =
+      run.tests[event.testId].steps.slice(-maxStoredSteps);
     await appendFriendlyLog(run, friendlyStepTitle(event), event.timestamp);
   }
 
   if (event.type === "step_end" && run.tests[event.testId]) {
-    const step = run.tests[event.testId].steps.find((candidate) => candidate.stepId === event.stepId);
+    const step = run.tests[event.testId].steps.find(
+      (candidate) => candidate.stepId === event.stepId,
+    );
     if (step) {
-      Object.assign(step, event, { status: event.error ? "failed" : "passed", endedAt: event.timestamp });
+      Object.assign(step, event, {
+        status: event.error ? "failed" : "passed",
+        endedAt: event.timestamp,
+      });
     }
   }
 
@@ -1557,14 +1908,22 @@ async function appendRunEvent(run, event) {
         status: "skipped",
         errors: [],
         attachments: run.tests[event.testId]?.attachments || [],
-        skipReason: run.tests[event.testId]?.skipReason || "Skipped from dashboard",
-        endedAt: event.timestamp
+        skipReason:
+          run.tests[event.testId]?.skipReason || "Skipped from dashboard",
+        endedAt: event.timestamp,
       };
       if (run.currentTestId === event.testId) {
         run.currentTestId = null;
       }
       recomputeRunSummary(run);
-      broadcast(run.id, { type: "test_update", timestamp: event.timestamp, testId: event.testId, test: run.tests[event.testId], runStatus: run.status, summary: run.summary });
+      broadcast(run.id, {
+        type: "test_update",
+        timestamp: event.timestamp,
+        testId: event.testId,
+        test: run.tests[event.testId],
+        runStatus: run.status,
+        summary: run.summary,
+      });
       return;
     }
 
@@ -1573,13 +1932,17 @@ async function appendRunEvent(run, event) {
     run.tests[event.testId] = {
       ...(run.tests[event.testId] || {}),
       ...event,
-      endedAt: event.timestamp
+      endedAt: event.timestamp,
     };
     if (run.currentTestId === event.testId) {
       run.currentTestId = null;
     }
     recomputeRunSummary(run);
-    await appendFriendlyLog(run, `${friendlyStatus(event.status)}: ${event.displayTitle || event.title || "Untitled test"}`, event.timestamp);
+    await appendFriendlyLog(
+      run,
+      `${friendlyStatus(event.status)}: ${event.displayTitle || event.title || "Untitled test"}`,
+      event.timestamp,
+    );
   }
 
   broadcast(run.id, event);
@@ -1612,10 +1975,13 @@ async function startRun(body, dashboardUser = null) {
     project: body.project || "chromium",
     grep: body.grep || "",
     workers: clampWorkerCount(body.workers),
-    retries: body.retries === "" || body.retries === undefined ? "" : Number(body.retries),
+    retries:
+      body.retries === "" || body.retries === undefined
+        ? ""
+        : Number(body.retries),
     testTimeoutMs: Number(body.testTimeoutMs || 120000),
     headed: Boolean(body.headed),
-    debug: Boolean(body.debug)
+    debug: Boolean(body.debug),
   };
   const runOwner = dashboardUser?.username || "";
 
@@ -1632,10 +1998,13 @@ async function startRun(body, dashboardUser = null) {
     options.rerunOf = {
       title: body.rerunTest.displayTitle || body.rerunTest.title || target,
       file: body.rerunTest.file || "",
-      line: body.rerunTest.line || 0
+      line: body.rerunTest.line || 0,
     };
   }
 
+  const userAppCredential = runOwner
+    ? await appCredentialForUser(runOwner, options.env)
+    : null;
   const run = {
     id,
     status: "running",
@@ -1648,14 +2017,14 @@ async function startRun(body, dashboardUser = null) {
       ...options,
       runOwner,
       authStateKey: id,
-      usesUserAppCredential: Boolean(runOwner && appCredentialForUser(runOwner, options.env)),
+      usesUserAppCredential: Boolean(userAppCredential),
     },
     summary: {},
     expectedTotal: 0,
     expectedTests: [],
     currentTestId: null,
     tests: {},
-    events: []
+    events: [],
   };
 
   const args = buildPlaywrightArgs(run);
@@ -1665,7 +2034,7 @@ async function startRun(body, dashboardUser = null) {
   const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, {
     cwd: rootDir,
     detached: process.platform !== "win32",
-    env: playwrightRunEnv(run.options, reportDir, id)
+    env: await playwrightRunEnv(run.options, reportDir, id),
   });
 
   activeRuns.set(id, { child, subscribers: new Set(), run });
@@ -1687,10 +2056,20 @@ async function startRun(body, dashboardUser = null) {
         try {
           await appendRunEvent(run, JSON.parse(line.slice(eventPrefix.length)));
         } catch (error) {
-          await appendRunEvent(run, { type: "log", source: "dashboard", timestamp: new Date().toISOString(), text: `Ignored malformed reporter event: ${error.message}` });
+          await appendRunEvent(run, {
+            type: "log",
+            source: "dashboard",
+            timestamp: new Date().toISOString(),
+            text: `Ignored malformed reporter event: ${error.message}`,
+          });
         }
       } else if (shouldShowProcessLog(line)) {
-        await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: line });
+        await appendRunEvent(run, {
+          type: "log",
+          source,
+          timestamp: new Date().toISOString(),
+          text: line,
+        });
       }
     }
 
@@ -1708,7 +2087,12 @@ async function startRun(body, dashboardUser = null) {
       if (outputBuffers[source]) {
         for (const line of outputBuffers[source].split(/\r?\n/)) {
           if (shouldShowProcessLog(line)) {
-            await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: line });
+            await appendRunEvent(run, {
+              type: "log",
+              source,
+              timestamp: new Date().toISOString(),
+              text: line,
+            });
           }
         }
       }
@@ -1716,14 +2100,28 @@ async function startRun(body, dashboardUser = null) {
 
     const activeRun = activeRuns.get(id);
     if (activeRun?.skipRequested) {
-      await continueRunAfterSkip(run, activeRun.skipRequested, activeRun.subscribers);
+      await continueRunAfterSkip(
+        run,
+        activeRun.skipRequested,
+        activeRun.subscribers,
+      );
       return;
     }
 
-    run.status = run.status === "stopping" ? "interrupted" : code === 0 ? "passed" : "failed";
+    run.status =
+      run.status === "stopping"
+        ? "interrupted"
+        : code === 0
+          ? "passed"
+          : "failed";
     run.exitCode = code;
     run.endedAt = new Date().toISOString();
-    await appendRunEvent(run, { type: "run_end", timestamp: run.endedAt, status: run.status, exitCode: code });
+    await appendRunEvent(run, {
+      type: "run_end",
+      timestamp: run.endedAt,
+      status: run.status,
+      exitCode: code,
+    });
     await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
@@ -1736,17 +2134,30 @@ async function startRun(body, dashboardUser = null) {
 
 async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
   const expectedTests = run.expectedTests || [];
-  const skippedIndex = expectedTests.findIndex((test) => test.testId === skippedTest.testId);
+  const skippedIndex = expectedTests.findIndex(
+    (test) => test.testId === skippedTest.testId,
+  );
   const remainingTests = expectedTests
     .slice(skippedIndex >= 0 ? skippedIndex + 1 : 0)
     .filter((test) => !isTerminalTestStatus(run.tests?.[test.testId]?.status));
-  const remainingTargets = remainingTests.map(getRelativeTestTarget).filter(Boolean);
+  const remainingTargets = remainingTests
+    .map(getRelativeTestTarget)
+    .filter(Boolean);
 
   if (!remainingTargets.length) {
     run.currentTestId = null;
-    run.status = Object.values(run.tests || {}).some((test) => isFailedStatus(test.status)) ? "failed" : "passed";
+    run.status = Object.values(run.tests || {}).some((test) =>
+      isFailedStatus(test.status),
+    )
+      ? "failed"
+      : "passed";
     run.endedAt = new Date().toISOString();
-    await appendRunEvent(run, { type: "run_end", timestamp: run.endedAt, status: run.status, reason: "No remaining tests after skip." });
+    await appendRunEvent(run, {
+      type: "run_end",
+      timestamp: run.endedAt,
+      status: run.status,
+      reason: "No remaining tests after skip.",
+    });
     await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
@@ -1756,7 +2167,11 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
   }
 
   const continuationId = new Date().toISOString().replace(/[:.]/g, "-");
-  const continuationDir = path.join(getRunDir(run.id), "continuations", continuationId);
+  const continuationDir = path.join(
+    getRunDir(run.id),
+    "continuations",
+    continuationId,
+  );
   const reportDir = path.join(continuationDir, "html-report");
   mkdirSync(continuationDir, { recursive: true });
 
@@ -1767,7 +2182,7 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
     type: "log",
     source: "dashboard",
     timestamp: new Date().toISOString(),
-    text: `Skipped ${skippedTest.displayTitle || skippedTest.title || skippedTest.testId}. Continuing with ${remainingTargets.length} remaining test(s).`
+    text: `Skipped ${skippedTest.displayTitle || skippedTest.title || skippedTest.testId}. Continuing with ${remainingTargets.length} remaining test(s).`,
   });
   await saveRun(run);
 
@@ -1781,16 +2196,16 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
       grep: "",
       workers: 1,
       noDeps: true,
-      continuationOf: skippedTest.testId
-    }
+      continuationOf: skippedTest.testId,
+    },
   };
   const args = buildPlaywrightArgs(continuationRun);
   const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, {
     cwd: rootDir,
     detached: process.platform !== "win32",
-    env: playwrightRunEnv(continuationRun.options, reportDir, run.id, {
-      QA_DASHBOARD_CONTINUATION_ID: continuationId
-    })
+    env: await playwrightRunEnv(continuationRun.options, reportDir, run.id, {
+      QA_DASHBOARD_CONTINUATION_ID: continuationId,
+    }),
   });
 
   activeRuns.set(run.id, { child, subscribers, run });
@@ -1811,24 +2226,43 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
         try {
           await appendRunEvent(run, JSON.parse(line.slice(eventPrefix.length)));
         } catch (error) {
-          await appendRunEvent(run, { type: "log", source: "dashboard", timestamp: new Date().toISOString(), text: `Ignored malformed reporter event: ${error.message}` });
+          await appendRunEvent(run, {
+            type: "log",
+            source: "dashboard",
+            timestamp: new Date().toISOString(),
+            text: `Ignored malformed reporter event: ${error.message}`,
+          });
         }
       } else if (shouldShowProcessLog(line)) {
-        await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: line });
+        await appendRunEvent(run, {
+          type: "log",
+          source,
+          timestamp: new Date().toISOString(),
+          text: line,
+        });
       }
     }
 
     await saveRun(run);
   };
 
-  child.stdout.on("data", (chunk) => handleOutput("stdout", chunk).catch(console.error));
-  child.stderr.on("data", (chunk) => handleOutput("stderr", chunk).catch(console.error));
+  child.stdout.on("data", (chunk) =>
+    handleOutput("stdout", chunk).catch(console.error),
+  );
+  child.stderr.on("data", (chunk) =>
+    handleOutput("stderr", chunk).catch(console.error),
+  );
   child.on("exit", async (code) => {
     for (const source of ["stdout", "stderr"]) {
       if (outputBuffers[source]) {
         for (const line of outputBuffers[source].split(/\r?\n/)) {
           if (shouldShowProcessLog(line)) {
-            await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: line });
+            await appendRunEvent(run, {
+              type: "log",
+              source,
+              timestamp: new Date().toISOString(),
+              text: line,
+            });
           }
         }
       }
@@ -1837,14 +2271,28 @@ async function continueRunAfterSkip(run, skippedTest, subscribers = new Set()) {
     delete run.continuingAfterSkip;
     const activeRun = activeRuns.get(run.id);
     if (activeRun?.skipRequested) {
-      await continueRunAfterSkip(run, activeRun.skipRequested, activeRun.subscribers);
+      await continueRunAfterSkip(
+        run,
+        activeRun.skipRequested,
+        activeRun.subscribers,
+      );
       return;
     }
 
-    run.status = run.status === "stopping" ? "interrupted" : code === 0 ? "passed" : "failed";
+    run.status =
+      run.status === "stopping"
+        ? "interrupted"
+        : code === 0
+          ? "passed"
+          : "failed";
     run.exitCode = code;
     run.endedAt = new Date().toISOString();
-    await appendRunEvent(run, { type: "run_end", timestamp: run.endedAt, status: run.status, exitCode: code });
+    await appendRunEvent(run, {
+      type: "run_end",
+      timestamp: run.endedAt,
+      status: run.status,
+      exitCode: code,
+    });
     await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
@@ -1862,7 +2310,9 @@ async function skipCurrentTestInRun(runId, testId) {
   }
 
   const run = activeRun.run;
-  const targetTest = run.tests?.[testId] || run.expectedTests?.find((test) => test.testId === testId);
+  const targetTest =
+    run.tests?.[testId] ||
+    run.expectedTests?.find((test) => test.testId === testId);
   if (!targetTest) {
     throw new Error("Test was not found in this active run.");
   }
@@ -1871,14 +2321,17 @@ async function skipCurrentTestInRun(runId, testId) {
     throw new Error("Only the currently running test can be skipped.");
   }
 
-  if (targetTest.status && !["running", "retrying"].includes(targetTest.status)) {
+  if (
+    targetTest.status &&
+    !["running", "retrying"].includes(targetTest.status)
+  ) {
     throw new Error("Only the currently running test can be skipped.");
   }
 
   activeRun.skipRequested = { ...targetTest, testId };
   run.tests[testId] = {
     ...(run.tests?.[testId] || {}),
-    ...targetTest
+    ...targetTest,
   };
   const activeTest = run.tests[testId];
   activeTest.status = "skipped";
@@ -1892,14 +2345,23 @@ async function skipCurrentTestInRun(runId, testId) {
     type: "log",
     source: "dashboard",
     timestamp: new Date().toISOString(),
-    text: `Skip requested for ${activeTest.displayTitle || activeTest.title || testId}. Restarting remaining tests...`
+    text: `Skip requested for ${activeTest.displayTitle || activeTest.title || testId}. Restarting remaining tests...`,
   });
   await saveRun(run);
-  broadcast(run.id, { type: "test_update", timestamp: activeTest.endedAt, testId, test: activeTest, runStatus: run.status, summary: run.summary });
+  broadcast(run.id, {
+    type: "test_update",
+    timestamp: activeTest.endedAt,
+    testId,
+    test: activeTest,
+    runStatus: run.status,
+    summary: run.summary,
+  });
 
   const killed = killRunProcess(activeRun.child);
   if (!killed) {
-    throw new Error("Unable to stop the active Playwright process for this test.");
+    throw new Error(
+      "Unable to stop the active Playwright process for this test.",
+    );
   }
 
   return run;
@@ -1907,7 +2369,12 @@ async function skipCurrentTestInRun(runId, testId) {
 
 function activeRunIsAlive(activeRun) {
   const child = activeRun?.child;
-  return Boolean(child && child.exitCode === null && child.signalCode === null && !child.killed);
+  return Boolean(
+    child &&
+    child.exitCode === null &&
+    child.signalCode === null &&
+    !child.killed,
+  );
 }
 
 function clearInactiveRun(runId) {
@@ -1922,7 +2389,9 @@ function clearInactiveRun(runId) {
 async function retryTestInRun(runId, testId, body = {}) {
   clearInactiveRun(runId);
   const run = await readRun(runId);
-  const targetTest = run.tests?.[testId] || run.expectedTests?.find((test) => test.testId === testId);
+  const targetTest =
+    run.tests?.[testId] ||
+    run.expectedTests?.find((test) => test.testId === testId);
   if (!targetTest) {
     throw new Error("Test was not found in this run.");
   }
@@ -1956,11 +2425,18 @@ async function retryTestInRun(runId, testId, body = {}) {
     id: retryId,
     status: "queued",
     startedAt: new Date().toISOString(),
-    steps: []
+    steps: [],
   };
 
   await saveRun(run);
-  broadcast(run.id, { type: "test_update", timestamp: new Date().toISOString(), testId, test: targetTest, runStatus: run.status, summary: run.summary });
+  broadcast(run.id, {
+    type: "test_update",
+    timestamp: new Date().toISOString(),
+    testId,
+    test: targetTest,
+    runStatus: run.status,
+    summary: run.summary,
+  });
 
   const retryRun = {
     ...run,
@@ -1969,23 +2445,27 @@ async function retryTestInRun(runId, testId, body = {}) {
       mode: "retry-failed",
       flows: [],
       specFiles: [target],
-      project: targetTest.projectName || body.project || run.options?.project || "chromium",
+      project:
+        targetTest.projectName ||
+        body.project ||
+        run.options?.project ||
+        "chromium",
       grep: "",
       workers: 1,
       retries: body.retries ?? 0,
       testTimeoutMs: run.options?.testTimeoutMs || body.testTimeoutMs || 120000,
       headed: Boolean(body.headed ?? run.options?.headed),
       debug: Boolean(body.debug ?? run.options?.debug),
-      runOwner: run.options?.runOwner || ""
-    }
+      runOwner: run.options?.runOwner || "",
+    },
   };
   const args = buildPlaywrightArgs(retryRun);
   const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", args, {
     cwd: rootDir,
     detached: process.platform !== "win32",
-    env: playwrightRunEnv(retryRun.options, reportDir, run.id, {
-      QA_DASHBOARD_RETRY_ID: retryId
-    })
+    env: await playwrightRunEnv(retryRun.options, reportDir, run.id, {
+      QA_DASHBOARD_RETRY_ID: retryId,
+    }),
   });
 
   activeRuns.set(run.id, { child, subscribers: new Set(), run });
@@ -1993,7 +2473,7 @@ async function retryTestInRun(runId, testId, body = {}) {
     type: "log",
     source: "dashboard",
     timestamp: new Date().toISOString(),
-    text: `Retry started for ${targetTest.displayTitle || targetTest.title || target}`
+    text: `Retry started for ${targetTest.displayTitle || targetTest.title || target}`,
   });
   await saveRun(run);
 
@@ -2002,8 +2482,8 @@ async function retryTestInRun(runId, testId, body = {}) {
     testId,
     target: {
       file: targetTest.file,
-      line: targetTest.line
-    }
+      line: targetTest.line,
+    },
   };
   const outputBuffers = { stdout: "", stderr: "" };
   const handleOutput = async (source, chunk) => {
@@ -2020,26 +2500,49 @@ async function retryTestInRun(runId, testId, body = {}) {
 
       if (line.startsWith(eventPrefix)) {
         try {
-          await appendRetryEvent(run, retry, JSON.parse(line.slice(eventPrefix.length)));
+          await appendRetryEvent(
+            run,
+            retry,
+            JSON.parse(line.slice(eventPrefix.length)),
+          );
         } catch (error) {
-          await appendRunEvent(run, { type: "log", source: "dashboard", timestamp: new Date().toISOString(), text: `Ignored malformed reporter event: ${error.message}` });
+          await appendRunEvent(run, {
+            type: "log",
+            source: "dashboard",
+            timestamp: new Date().toISOString(),
+            text: `Ignored malformed reporter event: ${error.message}`,
+          });
         }
       } else if (shouldShowProcessLog(line)) {
-        await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: line });
+        await appendRunEvent(run, {
+          type: "log",
+          source,
+          timestamp: new Date().toISOString(),
+          text: line,
+        });
       }
     }
 
     await saveRun(run);
   };
 
-  child.stdout.on("data", (chunk) => handleOutput("stdout", chunk).catch(console.error));
-  child.stderr.on("data", (chunk) => handleOutput("stderr", chunk).catch(console.error));
+  child.stdout.on("data", (chunk) =>
+    handleOutput("stdout", chunk).catch(console.error),
+  );
+  child.stderr.on("data", (chunk) =>
+    handleOutput("stderr", chunk).catch(console.error),
+  );
   child.on("exit", async (code) => {
     for (const source of ["stdout", "stderr"]) {
       if (outputBuffers[source]) {
         for (const line of outputBuffers[source].split(/\r?\n/)) {
           if (shouldShowProcessLog(line)) {
-            await appendRunEvent(run, { type: "log", source, timestamp: new Date().toISOString(), text: line });
+            await appendRunEvent(run, {
+              type: "log",
+              source,
+              timestamp: new Date().toISOString(),
+              text: line,
+            });
           }
         }
       }
@@ -2050,7 +2553,7 @@ async function retryTestInRun(runId, testId, body = {}) {
       targetTest.retry = {
         ...(targetTest.retry || { id: retryId, steps: [] }),
         status: targetTest.status,
-        endedAt: new Date().toISOString()
+        endedAt: new Date().toISOString(),
       };
     }
 
@@ -2058,7 +2561,11 @@ async function retryTestInRun(runId, testId, body = {}) {
     recomputeRunSummary(run);
     run.exitCode = code;
     run.endedAt = new Date().toISOString();
-    await appendRunEvent(run, { type: "run_status", timestamp: new Date().toISOString(), status: run.status });
+    await appendRunEvent(run, {
+      type: "run_status",
+      timestamp: new Date().toISOString(),
+      status: run.status,
+    });
     await cleanupRunAuthState(run);
     await saveRun(run);
     await archiveRun(run);
@@ -2086,16 +2593,25 @@ function mergeActiveRunSnapshots(runs) {
   }
 
   return Array.from(runMap.values())
-    .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))
+    .sort((a, b) =>
+      String(b.startedAt || "").localeCompare(String(a.startedAt || "")),
+    )
     .slice(0, 20);
 }
 
 async function listRuns() {
   try {
-    const remoteRuns = databaseEnabled ? await listPersistentRunSummaries() : await listPersistentRuns();
-    if (remoteRuns !== null) return mergeActiveRunSnapshots(remoteRuns.map(recomputeRunSummaryIfTestsAreLoaded));
+    const remoteRuns = databaseEnabled
+      ? await listPersistentRunSummaries()
+      : await listPersistentRuns();
+    if (remoteRuns !== null)
+      return mergeActiveRunSnapshots(
+        remoteRuns.map(recomputeRunSummaryIfTestsAreLoaded),
+      );
   } catch (error) {
-    console.warn(`DB run list failed; falling back to local run files: ${error.message}`);
+    console.warn(
+      `DB run list failed; falling back to local run files: ${error.message}`,
+    );
   }
 
   if (!existsSync(runsRoot)) {
@@ -2124,18 +2640,24 @@ async function listRuns() {
 }
 
 async function reconcileStaleRuns() {
-  const staleRunSummaries = (await listRuns()).filter((run) => ["running", "stopping"].includes(run.status));
+  const staleRunSummaries = (await listRuns()).filter((run) =>
+    ["running", "stopping"].includes(run.status),
+  );
   for (const staleRunSummary of staleRunSummaries) {
     let run;
     try {
       run = await readRun(staleRunSummary.id);
     } catch (error) {
-      console.warn(`Skipped stale run reconciliation for ${staleRunSummary.id}: ${error.message}`);
+      console.warn(
+        `Skipped stale run reconciliation for ${staleRunSummary.id}: ${error.message}`,
+      );
       continue;
     }
 
     if (!isFullRunPayload(run)) {
-      console.warn(`Skipped stale run reconciliation for ${staleRunSummary.id}: summary-only payload.`);
+      console.warn(
+        `Skipped stale run reconciliation for ${staleRunSummary.id}: summary-only payload.`,
+      );
       continue;
     }
 
@@ -2148,7 +2670,7 @@ async function reconcileStaleRuns() {
       timestamp: run.endedAt,
       status: "interrupted",
       exitCode: run.exitCode,
-      reason: "Dashboard server restarted before the run completed."
+      reason: "Dashboard server restarted before the run completed.",
     });
     await saveRun(run);
   }
@@ -2156,12 +2678,15 @@ async function reconcileStaleRuns() {
 
 async function streamEvents(req, res, runId) {
   const run = await readRun(runId);
-  const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const requestUrl = new URL(
+    req.url,
+    `http://${req.headers.host || "localhost"}`,
+  );
   const liveOnly = requestUrl.searchParams.get("liveOnly") === "1";
   res.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",
-    connection: "keep-alive"
+    connection: "keep-alive",
   });
 
   if (!liveOnly) {
@@ -2181,9 +2706,16 @@ async function streamEvents(req, res, runId) {
 }
 
 function serveStatic(res, pathname) {
-  const filePath = pathname === "/" ? path.join(dashboardDir, "index.html") : path.join(dashboardDir, pathname);
+  const filePath =
+    pathname === "/"
+      ? path.join(dashboardDir, "index.html")
+      : path.join(dashboardDir, pathname);
   const resolved = path.resolve(filePath);
-  if (!resolved.startsWith(dashboardDir) || !existsSync(resolved) || statSync(resolved).isDirectory()) {
+  if (
+    !resolved.startsWith(dashboardDir) ||
+    !existsSync(resolved) ||
+    statSync(resolved).isDirectory()
+  ) {
     sendError(res, 404, "Not found");
     return;
   }
@@ -2191,24 +2723,34 @@ function serveStatic(res, pathname) {
   const ext = path.extname(resolved);
   const contentType = contentTypeForPath(resolved);
 
-  res.writeHead(200, { "content-type": contentType, "cache-control": "no-store" });
+  res.writeHead(200, {
+    "content-type": contentType,
+    "cache-control": "no-store",
+  });
   createReadStream(resolved).pipe(res);
 }
 
 async function serveRunAttachment(res, runId, testId, attachmentIndex) {
   const run = await readRun(runId);
-  const attachment = run.tests?.[testId]?.attachments?.[Number(attachmentIndex)];
+  const attachment =
+    run.tests?.[testId]?.attachments?.[Number(attachmentIndex)];
   const sourcePath = resolveAttachmentSource(attachment?.path);
 
   if (sourcePath) {
-    res.writeHead(200, { "content-type": attachment.contentType || contentTypeForPath(sourcePath), "cache-control": "private, max-age=300" });
+    res.writeHead(200, {
+      "content-type": attachment.contentType || contentTypeForPath(sourcePath),
+      "cache-control": "private, max-age=300",
+    });
     createReadStream(sourcePath).pipe(res);
     return;
   }
 
   const relativePath = runRelativeAttachmentPath(run, attachment);
   const remote = attachment?.s3Key
-    ? await getRemoteArtifactByKey(attachment.s3Key, relativePath || attachment.name || "")
+    ? await getRemoteArtifactByKey(
+        attachment.s3Key,
+        relativePath || attachment.name || "",
+      )
     : relativePath
       ? await getRemoteArtifact(runId, relativePath)
       : null;
@@ -2218,17 +2760,30 @@ async function serveRunAttachment(res, runId, testId, attachmentIndex) {
     return;
   }
 
-  res.writeHead(200, { "content-type": remote.contentType || attachment.contentType || "application/octet-stream", "cache-control": "private, max-age=300" });
+  res.writeHead(200, {
+    "content-type":
+      remote.contentType ||
+      attachment.contentType ||
+      "application/octet-stream",
+    "cache-control": "private, max-age=300",
+  });
   remote.body.pipe(res);
 }
 
 async function serveRunAsset(res, pathname) {
   const relativePath = pathname.replace(/^\/data\/test-runs\//, "");
   const resolved = path.resolve(path.join(runsRoot, relativePath));
-  if (!resolved.startsWith(runsRoot) || !existsSync(resolved) || statSync(resolved).isDirectory()) {
+  if (
+    !resolved.startsWith(runsRoot) ||
+    !existsSync(resolved) ||
+    statSync(resolved).isDirectory()
+  ) {
     const [runId, ...pathParts] = relativePath.split("/");
     const remote = await getRemoteArtifact(runId, pathParts.join("/"));
-    if (!remote) { sendError(res, 404, "Not found"); return; }
+    if (!remote) {
+      sendError(res, 404, "Not found");
+      return;
+    }
     res.writeHead(200, { "content-type": remote.contentType });
     remote.body.pipe(res);
     return;
@@ -2263,11 +2818,15 @@ async function serveRunReport(res, runId) {
     return;
   }
 
-  const reportPath = String(run.reportPath || path.relative(rootDir, path.join(getRunDir(runId), "html-report")));
+  const reportPath = String(
+    run.reportPath ||
+      path.relative(rootDir, path.join(getRunDir(runId), "html-report")),
+  );
   const localIndexPath = path.resolve(rootDir, reportPath, "index.html");
   const localReportRoot = path.resolve(rootDir, reportPath);
-  const isSafeLocalReportPath = localReportRoot.startsWith(`${rootDir}${path.sep}`)
-    && localIndexPath.startsWith(`${localReportRoot}${path.sep}`);
+  const isSafeLocalReportPath =
+    localReportRoot.startsWith(`${rootDir}${path.sep}`) &&
+    localIndexPath.startsWith(`${localReportRoot}${path.sep}`);
   if (isSafeLocalReportPath && existsSync(localIndexPath)) {
     if (objectStorageEnabled) {
       try {
@@ -2279,15 +2838,23 @@ async function serveRunReport(res, runId) {
           return;
         }
       } catch (error) {
-        console.warn(`HTML report upload failed for ${run.id}: ${error.message}`);
+        console.warn(
+          `HTML report upload failed for ${run.id}: ${error.message}`,
+        );
       }
     }
 
-    redirectTo(res, `${dashboardBasePath}/${reportPath.replace(/^\/+/, "")}/index.html`);
+    redirectTo(
+      res,
+      `${dashboardBasePath}/${reportPath.replace(/^\/+/, "")}/index.html`,
+    );
     return;
   }
 
-  sendReportUnavailable(res, "The report files are not present locally and the uploaded S3 report URL is not available for this run.");
+  sendReportUnavailable(
+    res,
+    "The report files are not present locally and the uploaded S3 report URL is not available for this run.",
+  );
 }
 
 const server = http.createServer(async (req, res) => {
@@ -2301,7 +2868,7 @@ const server = http.createServer(async (req, res) => {
 
     const pathname = stripDashboardBasePath(rawPathname);
 
-    if (!requireDashboardAuth(req, res, pathname)) {
+    if (!(await requireDashboardAuth(req, res, pathname))) {
       return;
     }
 
@@ -2324,7 +2891,7 @@ const server = http.createServer(async (req, res) => {
       if (!requireAdmin(req, res)) {
         return;
       }
-      sendJson(res, 200, { users: listDashboardUsers() });
+      sendJson(res, 200, { users: await listDashboardUsers() });
       return;
     }
 
@@ -2332,7 +2899,9 @@ const server = http.createServer(async (req, res) => {
       if (!requireAdmin(req, res)) {
         return;
       }
-      sendJson(res, 201, { user: await createDashboardUser(await readBody(req)) });
+      sendJson(res, 201, {
+        user: await createDashboardUser(await readBody(req)),
+      });
       return;
     }
 
@@ -2342,7 +2911,10 @@ const server = http.createServer(async (req, res) => {
       }
       const body = await readBody(req);
       sendJson(res, 200, {
-        user: await resetDashboardUserPassword(String(body.username || ""), body),
+        user: await resetDashboardUserPassword(
+          String(body.username || ""),
+          body,
+        ),
       });
       return;
     }
@@ -2354,30 +2926,43 @@ const server = http.createServer(async (req, res) => {
       }
       const body = await readBody(req);
       sendJson(res, 200, {
-        deleted: await deleteDashboardUser(String(body.username || ""), currentUser),
+        deleted: await deleteDashboardUser(
+          String(body.username || ""),
+          currentUser,
+        ),
       });
       return;
     }
 
-    const dashboardUserPasswordMatch = pathname.match(/^\/api\/dashboard-users\/([^/]+)\/password$/);
+    const dashboardUserPasswordMatch = pathname.match(
+      /^\/api\/dashboard-users\/([^/]+)\/password$/,
+    );
     if (req.method === "POST" && dashboardUserPasswordMatch) {
       if (!requireAdmin(req, res)) {
         return;
       }
       sendJson(res, 200, {
-        user: await resetDashboardUserPassword(decodeURIComponent(dashboardUserPasswordMatch[1]), await readBody(req)),
+        user: await resetDashboardUserPassword(
+          decodeURIComponent(dashboardUserPasswordMatch[1]),
+          await readBody(req),
+        ),
       });
       return;
     }
 
-    const dashboardUserMatch = pathname.match(/^\/api\/dashboard-users\/([^/]+)$/);
+    const dashboardUserMatch = pathname.match(
+      /^\/api\/dashboard-users\/([^/]+)$/,
+    );
     if (req.method === "DELETE" && dashboardUserMatch) {
       const currentUser = currentDashboardUser(req);
       if (!requireAdmin(req, res)) {
         return;
       }
       sendJson(res, 200, {
-        deleted: await deleteDashboardUser(decodeURIComponent(dashboardUserMatch[1]), currentUser),
+        deleted: await deleteDashboardUser(
+          decodeURIComponent(dashboardUserMatch[1]),
+          currentUser,
+        ),
       });
       return;
     }
@@ -2385,7 +2970,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && pathname === "/api/app-credentials") {
       const user = currentDashboardUser(req);
       const envName = url.searchParams.get("env") || "";
-      const credential = appCredentialForUser(user.username, envName);
+      const credential = await appCredentialForUser(user.username, envName);
       sendJson(res, 200, {
         credential: sanitizedAppCredential(credential),
         usesDefault: !credential,
@@ -2403,7 +2988,11 @@ const server = http.createServer(async (req, res) => {
       }
 
       sendJson(res, 200, {
-        credential: await saveAppCredentialForUser(user.username, envName, body),
+        credential: await saveAppCredentialForUser(
+          user.username,
+          envName,
+          body,
+        ),
       });
       return;
     }
@@ -2419,7 +3008,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && pathname === "/api/runs") {
-      sendJson(res, 201, await startRun(await readBody(req), currentDashboardUser(req)));
+      sendJson(
+        res,
+        201,
+        await startRun(await readBody(req), currentDashboardUser(req)),
+      );
       return;
     }
 
@@ -2447,13 +3040,13 @@ const server = http.createServer(async (req, res) => {
       await appendRunEvent(activeRun.run, {
         type: "run_status",
         timestamp: new Date().toISOString(),
-        status: "stopping"
+        status: "stopping",
       });
       await appendRunEvent(activeRun.run, {
         type: "log",
         source: "dashboard",
         timestamp: new Date().toISOString(),
-        text: "Stop requested. Terminating Playwright process tree..."
+        text: "Stop requested. Terminating Playwright process tree...",
       });
       await saveRun(activeRun.run);
 
@@ -2461,13 +3054,21 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const retryMatch = pathname.match(/^\/api\/runs\/([^/]+)\/tests\/([^/]+)\/rerun$/);
+    const retryMatch = pathname.match(
+      /^\/api\/runs\/([^/]+)\/tests\/([^/]+)\/rerun$/,
+    );
     if (req.method === "POST" && retryMatch) {
-      sendJson(res, 200, await retryTestInRun(retryMatch[1], retryMatch[2], await readBody(req)));
+      sendJson(
+        res,
+        200,
+        await retryTestInRun(retryMatch[1], retryMatch[2], await readBody(req)),
+      );
       return;
     }
 
-    const retryQueryMatch = pathname.match(/^\/api\/runs\/([^/]+)\/tests\/rerun$/);
+    const retryQueryMatch = pathname.match(
+      /^\/api\/runs\/([^/]+)\/tests\/rerun$/,
+    );
     if (req.method === "POST" && retryQueryMatch) {
       const testId = url.searchParams.get("testId");
       if (!testId) {
@@ -2475,17 +3076,29 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      sendJson(res, 200, await retryTestInRun(retryQueryMatch[1], testId, await readBody(req)));
+      sendJson(
+        res,
+        200,
+        await retryTestInRun(retryQueryMatch[1], testId, await readBody(req)),
+      );
       return;
     }
 
-    const skipMatch = pathname.match(/^\/api\/runs\/([^/]+)\/tests\/([^/]+)\/skip-current$/);
+    const skipMatch = pathname.match(
+      /^\/api\/runs\/([^/]+)\/tests\/([^/]+)\/skip-current$/,
+    );
     if (req.method === "POST" && skipMatch) {
-      sendJson(res, 200, await skipCurrentTestInRun(skipMatch[1], skipMatch[2]));
+      sendJson(
+        res,
+        200,
+        await skipCurrentTestInRun(skipMatch[1], skipMatch[2]),
+      );
       return;
     }
 
-    const skipQueryMatch = pathname.match(/^\/api\/runs\/([^/]+)\/tests\/skip-current$/);
+    const skipQueryMatch = pathname.match(
+      /^\/api\/runs\/([^/]+)\/tests\/skip-current$/,
+    );
     if (req.method === "POST" && skipQueryMatch) {
       const testId = url.searchParams.get("testId");
       if (!testId) {
@@ -2497,9 +3110,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const attachmentMatch = pathname.match(/^\/api\/runs\/([^/]+)\/tests\/([^/]+)\/attachments\/(\d+)$/);
+    const attachmentMatch = pathname.match(
+      /^\/api\/runs\/([^/]+)\/tests\/([^/]+)\/attachments\/(\d+)$/,
+    );
     if (req.method === "GET" && attachmentMatch) {
-      await serveRunAttachment(res, attachmentMatch[1], attachmentMatch[2], attachmentMatch[3]);
+      await serveRunAttachment(
+        res,
+        attachmentMatch[1],
+        attachmentMatch[2],
+        attachmentMatch[3],
+      );
       return;
     }
 
@@ -2523,13 +3143,27 @@ const server = http.createServer(async (req, res) => {
 const port = Number(process.env.QA_DASHBOARD_PORT || process.env.PORT || 9324);
 const host = process.env.QA_DASHBOARD_HOST || "127.0.0.1";
 if (!authIsEnabled() && !["127.0.0.1", "localhost", "::1"].includes(host)) {
-  throw new Error("Refusing to start public dashboard without auth. Set QA_DASHBOARD_AUTH_USERNAME and QA_DASHBOARD_AUTH_PASSWORD in .env.");
+  throw new Error(
+    "Refusing to start public dashboard without auth. Set QA_DASHBOARD_AUTH_USERNAME and QA_DASHBOARD_AUTH_PASSWORD in .env.",
+  );
 }
 await initializePersistence();
+await syncDashboardUsersToDatabase();
+const dashboardAuthEnabled = await authIsEnabled();
+if (
+  !dashboardAuthEnabled &&
+  !["127.0.0.1", "localhost", "::1"].includes(host)
+) {
+  throw new Error(
+    "Refusing to start public dashboard without auth. Set QA_DASHBOARD_AUTH_USERNAME and QA_DASHBOARD_AUTH_PASSWORD in .env, or create a dashboard user in qa_dashboard_users.",
+  );
+}
 await recoverCorruptedRunFiles();
 await syncLocalRunsToDatabase();
 await reconcileStaleRuns();
 server.listen(port, host, () => {
   const displayHost = host === "0.0.0.0" ? "localhost" : host;
-  console.log(`QA dashboard running at http://${displayHost}:${port}${dashboardBasePath || ""} (bind: ${host}, auth: ${authIsEnabled() ? "enabled" : "disabled"}, PostgreSQL: ${databaseEnabled ? "enabled" : "local only"}, object storage: ${objectStorageEnabled ? "enabled" : "local only"})`);
+  console.log(
+    `QA dashboard running at http://${displayHost}:${port}${dashboardBasePath || ""} (bind: ${host}, auth: ${dashboardAuthEnabled ? "enabled" : "disabled"}, PostgreSQL: ${databaseEnabled ? "enabled" : "local only"}, object storage: ${objectStorageEnabled ? "enabled" : "local only"})`,
+  );
 });

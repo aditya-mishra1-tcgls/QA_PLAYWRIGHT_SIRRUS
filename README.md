@@ -83,7 +83,7 @@ docker run --env-file .env -p 9324:9324 <image-name>
 
 If Playwright reports that the Chromium executable does not exist on the server, rebuild the Docker image after dependency changes. The Docker base image version must match the `@playwright/test` version in `package.json`.
 
-These values bootstrap the first dashboard admin. After login, the admin-only **Dashboard Users** section can create more dashboard users. Created users are stored locally in `config/dashboard-users.local.json`, which is ignored by git. Normal users can open the dashboard and run/view tests, but only admins can create dashboard users.
+These values bootstrap the first dashboard admin. When `QA_DATABASE_URL` is configured, dashboard users are stored in the PostgreSQL `qa_dashboard_users` table and any existing local users from `config/dashboard-users.local.json` are migrated into that table on startup. Without PostgreSQL, the dashboard falls back to `config/dashboard-users.local.json`, which is ignored by git. Normal users can open the dashboard and run/view tests, but only admins can create dashboard users.
 
 Each dashboard user can save their own app-test login from the **Configuration** page. Runs started by that user use their saved app login for the selected environment. If no user-specific app login is saved, tests fall back to the current shared `config/accounts.local.json` credentials.
 
@@ -169,11 +169,11 @@ Suggested intake examples:
 Tests can read the selected environment through the shared `app` fixture:
 
 ```ts
-app.envName
-app.baseUrl
-app.mobileNumber
-app.otp
-app.leads[app.envName]
+app.envName;
+app.baseUrl;
+app.mobileNumber;
+app.otp;
+app.leads[app.envName];
 ```
 
 ## Login baseline

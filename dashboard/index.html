@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>QA Test Dashboard</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <svg aria-hidden="true" class="icon-sprite">
@@ -14,13 +14,17 @@
       <symbol id="icon-alert" viewBox="0 0 24 24">
         <path d="M12 9v4"></path>
         <path d="M12 17h.01"></path>
-        <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path>
+        <path
+          d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"
+        ></path>
       </symbol>
       <symbol id="icon-check" viewBox="0 0 24 24">
         <path d="m20 6-11 11-5-5"></path>
       </symbol>
       <symbol id="icon-file" viewBox="0 0 24 24">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <path
+          d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+        ></path>
         <path d="M14 2v6h6"></path>
       </symbol>
       <symbol id="icon-lock" viewBox="0 0 24 24">
@@ -62,7 +66,19 @@
     <main class="shell">
       <header class="topbar">
         <div class="brand-lockup">
-          <img class="brand-logo" src="assets/sirrus-ai-logo.png" alt="sirrus.ai">
+          <a
+            id="brandHomeLink"
+            class="brand-logo-link"
+            href="index.html"
+            title="Open dashboard home"
+            aria-label="Open dashboard home"
+          >
+            <img
+              class="brand-logo"
+              src="assets/sirrus-ai-logo.png"
+              alt="sirrus.ai"
+            />
+          </a>
           <div>
             <h1>QA Test Dashboard</h1>
             <p id="subtitle">Local Playwright execution console</p>
@@ -74,7 +90,12 @@
             <svg class="icon"><use href="#icon-lock"></use></svg>
             Configuration
           </a>
-          <button id="refreshRunsButton" class="icon-button" title="Refresh runs" type="button">
+          <button
+            id="refreshRunsButton"
+            class="icon-button"
+            title="Refresh runs"
+            type="button"
+          >
             <svg class="icon"><use href="#icon-refresh"></use></svg>
             Refresh
           </button>
@@ -91,7 +112,10 @@
 
       <section class="layout">
         <aside class="panel controls">
-          <h2><svg class="icon"><use href="#icon-activity"></use></svg> Run Configuration</h2>
+          <h2>
+            <svg class="icon"><use href="#icon-activity"></use></svg> Run
+            Configuration
+          </h2>
           <form id="runForm">
             <label>
               Environment
@@ -130,27 +154,56 @@
 
             <label>
               Grep / Test Name
-              <input id="grepInput" name="grep" placeholder="e.g. login|lead creation">
+              <input
+                id="grepInput"
+                name="grep"
+                placeholder="e.g. login|lead creation"
+              />
             </label>
 
             <div class="number-grid">
               <label>
                 Workers
-                <input id="workersInput" name="workers" type="number" min="1" max="10" value="1">
+                <input
+                  id="workersInput"
+                  name="workers"
+                  type="number"
+                  min="1"
+                  max="10"
+                  value="1"
+                />
               </label>
               <label>
                 Retries
-                <input id="retriesInput" name="retries" type="number" min="0" value="0">
+                <input
+                  id="retriesInput"
+                  name="retries"
+                  type="number"
+                  min="0"
+                  value="0"
+                />
               </label>
               <label>
                 Test Timeout (min)
-                <input id="testTimeoutInput" name="testTimeoutMinutes" type="number" min="1" value="2">
+                <input
+                  id="testTimeoutInput"
+                  name="testTimeoutMinutes"
+                  type="number"
+                  min="1"
+                  value="2"
+                />
               </label>
             </div>
 
             <div class="toggle-row">
-              <label><input id="headedInput" name="headed" type="checkbox"> Headed</label>
-              <label><input id="debugInput" name="debug" type="checkbox"> Debug</label>
+              <label
+                ><input id="headedInput" name="headed" type="checkbox" />
+                Headed</label
+              >
+              <label
+                ><input id="debugInput" name="debug" type="checkbox" />
+                Debug</label
+              >
             </div>
 
             <button id="startRunButton" class="primary" type="submit">
@@ -163,23 +216,37 @@
         <section class="workspace">
           <div class="summary-strip">
             <article class="summary-card status-card">
-              <span><svg class="icon"><use href="#icon-activity"></use></svg> Status</span>
+              <span
+                ><svg class="icon"><use href="#icon-activity"></use></svg>
+                Status</span
+              >
               <strong id="statusValue">Idle</strong>
             </article>
             <article class="summary-card passed-card">
-              <span><svg class="icon"><use href="#icon-check"></use></svg> Passed</span>
+              <span
+                ><svg class="icon"><use href="#icon-check"></use></svg>
+                Passed</span
+              >
               <strong id="passedValue">0</strong>
             </article>
             <article class="summary-card failed-card">
-              <span><svg class="icon"><use href="#icon-x"></use></svg> Failed</span>
+              <span
+                ><svg class="icon"><use href="#icon-x"></use></svg> Failed</span
+              >
               <strong id="failedValue">0</strong>
             </article>
             <article class="summary-card expected-card">
-              <span><svg class="icon"><use href="#icon-file"></use></svg> Expected</span>
+              <span
+                ><svg class="icon"><use href="#icon-file"></use></svg>
+                Expected</span
+              >
               <strong id="expectedValue">0</strong>
             </article>
             <article class="summary-card duration-card">
-              <span><svg class="icon"><use href="#icon-timer"></use></svg> Duration</span>
+              <span
+                ><svg class="icon"><use href="#icon-timer"></use></svg>
+                Duration</span
+              >
               <strong id="durationValue">0s</strong>
             </article>
           </div>
@@ -187,11 +254,20 @@
           <div class="panel current-run">
             <div class="panel-heading">
               <div>
-                <h2><svg class="icon"><use href="#icon-play"></use></svg> Execution</h2>
+                <h2>
+                  <svg class="icon"><use href="#icon-play"></use></svg>
+                  Execution
+                </h2>
                 <p id="commandValue">No run started</p>
                 <p id="runOwnerValue" class="run-owner" hidden></p>
               </div>
-              <a id="htmlReportLink" href="#" target="_blank" rel="noreferrer" hidden>
+              <a
+                id="htmlReportLink"
+                href="#"
+                target="_blank"
+                rel="noreferrer"
+                hidden
+              >
                 <svg class="icon"><use href="#icon-file"></use></svg>
                 HTML Report
               </a>
@@ -204,12 +280,17 @@
                 Skip Current
               </button>
             </div>
-            <div id="testList" class="test-list empty">No test execution yet.</div>
+            <div id="testList" class="test-list empty">
+              No test execution yet.
+            </div>
           </div>
 
           <div class="panel logs">
             <div class="panel-heading">
-              <h2><svg class="icon"><use href="#icon-activity"></use></svg> Realtime Logs</h2>
+              <h2>
+                <svg class="icon"><use href="#icon-activity"></use></svg>
+                Realtime Logs
+              </h2>
               <button id="clearLogsButton" type="button">
                 <svg class="icon"><use href="#icon-x"></use></svg>
                 Clear
@@ -220,7 +301,9 @@
         </section>
 
         <aside class="panel history">
-          <h2><svg class="icon"><use href="#icon-file"></use></svg> Local Reports</h2>
+          <h2>
+            <svg class="icon"><use href="#icon-file"></use></svg> Local Reports
+          </h2>
           <div id="runsList" class="runs-list empty">No saved reports yet.</div>
         </aside>
       </section>
@@ -228,17 +311,33 @@
 
     <div id="videoModal" class="video-modal" hidden>
       <div class="video-modal-backdrop" data-close-video-modal></div>
-      <section class="video-dialog" role="dialog" aria-modal="true" aria-labelledby="videoModalTitle">
+      <section
+        class="video-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="videoModalTitle"
+      >
         <div class="video-dialog-header">
           <div>
             <span>Test Recording</span>
             <strong id="videoModalTitle">Test video</strong>
           </div>
-          <button id="videoModalCloseButton" class="icon-button" type="button" title="Close video preview" data-close-video-modal>
+          <button
+            id="videoModalCloseButton"
+            class="icon-button"
+            type="button"
+            title="Close video preview"
+            data-close-video-modal
+          >
             <svg class="icon"><use href="#icon-x"></use></svg>
           </button>
         </div>
-        <video id="videoPreviewPlayer" controls playsinline preload="metadata"></video>
+        <video
+          id="videoPreviewPlayer"
+          controls
+          playsinline
+          preload="metadata"
+        ></video>
       </section>
     </div>
 

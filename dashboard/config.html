@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>QA Dashboard Configuration</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <svg aria-hidden="true" class="icon-sprite">
@@ -24,9 +24,24 @@
     </svg>
     <main class="shell">
       <header class="topbar">
-        <div>
-          <h1>Configuration</h1>
-          <p>Dashboard users and app-test login setup</p>
+        <div class="brand-lockup">
+          <a
+            class="brand-logo-link"
+            id="brandHomeLink"
+            href="index.html"
+            title="Open dashboard home"
+            aria-label="Open dashboard home"
+          >
+            <img
+              class="brand-logo"
+              src="assets/sirrus-ai-logo.png"
+              alt="sirrus.ai"
+            />
+          </a>
+          <div>
+            <h1>Configuration</h1>
+            <p>Dashboard users and app-test login setup</p>
+          </div>
         </div>
         <div class="topbar-actions">
           <span id="currentUserBadge" class="user-badge" hidden></span>
@@ -43,23 +58,44 @@
 
       <section class="config-layout">
         <aside class="panel config-nav">
-          <button class="config-nav-button active" type="button" data-config-section="configSetup">
+          <button
+            class="config-nav-button active"
+            type="button"
+            data-config-section="configSetup"
+          >
             <svg class="icon"><use href="#icon-lock"></use></svg>
             Config Setup
           </button>
-          <button class="config-nav-button admin-only" type="button" data-config-section="createUser" hidden>
+          <button
+            class="config-nav-button admin-only"
+            type="button"
+            data-config-section="createUser"
+            hidden
+          >
             <svg class="icon"><use href="#icon-user-plus"></use></svg>
             Create User
           </button>
-          <button class="config-nav-button admin-only" type="button" data-config-section="userList" hidden>
+          <button
+            class="config-nav-button admin-only"
+            type="button"
+            data-config-section="userList"
+            hidden
+          >
             <svg class="icon"><use href="#icon-check"></use></svg>
             User List
           </button>
         </aside>
 
         <section class="config-content">
-          <section id="configSetupSection" class="panel config-panel app-credentials" data-config-panel="configSetup">
-            <h2><svg class="icon"><use href="#icon-lock"></use></svg> App Login Configuration</h2>
+          <section
+            id="configSetupSection"
+            class="panel config-panel app-credentials"
+            data-config-panel="configSetup"
+          >
+            <h2>
+              <svg class="icon"><use href="#icon-lock"></use></svg> App Login
+              Configuration
+            </h2>
             <form id="appCredentialForm">
               <label>
                 Environment
@@ -67,11 +103,22 @@
               </label>
               <label>
                 Login ID / Mobile
-                <input id="appLoginIdInput" name="loginId" autocomplete="off" placeholder="default shared login is used if empty">
+                <input
+                  id="appLoginIdInput"
+                  name="loginId"
+                  autocomplete="off"
+                  placeholder="default shared login is used if empty"
+                />
               </label>
               <label>
                 Password / OTP
-                <input id="appPasswordInput" name="password" type="password" autocomplete="new-password" placeholder="default shared OTP is used if empty">
+                <input
+                  id="appPasswordInput"
+                  name="password"
+                  type="password"
+                  autocomplete="new-password"
+                  placeholder="default shared OTP is used if empty"
+                />
               </label>
               <button type="submit">
                 <svg class="icon"><use href="#icon-check"></use></svg>
@@ -81,16 +128,35 @@
             </form>
           </section>
 
-          <section id="createUserSection" class="panel config-panel admin-users" data-config-panel="createUser" hidden>
-            <h2><svg class="icon"><use href="#icon-user-plus"></use></svg> Create User</h2>
+          <section
+            id="createUserSection"
+            class="panel config-panel admin-users"
+            data-config-panel="createUser"
+            hidden
+          >
+            <h2>
+              <svg class="icon"><use href="#icon-user-plus"></use></svg> Create
+              User
+            </h2>
             <form id="dashboardUserForm">
               <label>
                 Username / Email
-                <input id="dashboardUsernameInput" name="username" autocomplete="off" required>
+                <input
+                  id="dashboardUsernameInput"
+                  name="username"
+                  autocomplete="off"
+                  required
+                />
               </label>
               <label>
                 Password
-                <input id="dashboardPasswordInput" name="password" type="password" autocomplete="new-password" required>
+                <input
+                  id="dashboardPasswordInput"
+                  name="password"
+                  type="password"
+                  autocomplete="new-password"
+                  required
+                />
               </label>
               <label>
                 Role
@@ -107,8 +173,15 @@
             </form>
           </section>
 
-          <section id="userListSection" class="panel config-panel admin-users" data-config-panel="userList" hidden>
-            <h2><svg class="icon"><use href="#icon-check"></use></svg> User List</h2>
+          <section
+            id="userListSection"
+            class="panel config-panel admin-users"
+            data-config-panel="userList"
+            hidden
+          >
+            <h2>
+              <svg class="icon"><use href="#icon-check"></use></svg> User List
+            </h2>
             <p id="dashboardUserListMessage" class="form-message" hidden></p>
             <div id="dashboardUsersList" class="user-list"></div>
           </section>

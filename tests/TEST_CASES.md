@@ -15,14 +15,31 @@ Default sequential order is controlled in `config/flows.json`.
 
 1. `smoke`
 2. `auth`
-3. `lead-management`
+3. `channel-partner`
+   Includes:
+   Channel Partner creation
+   Channel Partner listing
+4. `lead-management`
    Includes:
    Lead creation
    Lead edit
-4. `lead-report`
+5. `lead-report`
    Includes:
    Dashboard creation
    Chart creation
+
+## Channel Partner creation rules
+
+1. Open `Channel Partner` after login.
+2. Click `Add Channel Partner`.
+3. Use generated seed data:
+   Company Name: `Automation CP ######`
+   Full Name: `Automation Head AAAAAA`
+   WhatsApp: random 10-digit number
+   Email: unique automation email
+   Entity Type: `One Person Company (OPC)`
+4. Save and verify the success message appears.
+5. Search the CP listing by generated company name and verify the created CP is present.
 
 ## Designed next flows
 

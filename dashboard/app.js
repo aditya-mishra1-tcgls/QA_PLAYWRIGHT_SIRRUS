@@ -9,13 +9,16 @@ const state = {
   logLines: [],
   logAutoScroll: true,
   renderScheduled: false,
-  counterTimers: new Map()
+  counterTimers: new Map(),
 };
 
 const maxVisibleSteps = 80;
 const maxVisibleLogs = 300;
 const dashboardBasePath = (() => {
-  const scriptUrl = new URL(document.currentScript?.getAttribute("src") || "app.js", window.location.href);
+  const scriptUrl = new URL(
+    document.currentScript?.getAttribute("src") || "app.js",
+    window.location.href,
+  );
   const basePath = scriptUrl.pathname.replace(/\/[^/]*$/, "");
   return basePath === "/" ? "" : basePath;
 })();
@@ -40,6 +43,7 @@ const elements = {
   refreshRunsButton: document.querySelector("#refreshRunsButton"),
   clearLogsButton: document.querySelector("#clearLogsButton"),
   logoutButton: document.querySelector("#logoutButton"),
+  brandHomeLink: document.querySelector("#brandHomeLink"),
   configLink: document.querySelector("#configLink"),
   currentUserBadge: document.querySelector("#currentUserBadge"),
   statusValue: document.querySelector("#statusValue"),
@@ -59,7 +63,7 @@ const elements = {
   videoModal: document.querySelector("#videoModal"),
   videoModalTitle: document.querySelector("#videoModalTitle"),
   videoModalCloseButton: document.querySelector("#videoModalCloseButton"),
-  videoPreviewPlayer: document.querySelector("#videoPreviewPlayer")
+  videoPreviewPlayer: document.querySelector("#videoPreviewPlayer"),
 };
 
 function formatDuration(ms) {
@@ -81,7 +85,11 @@ function formatElapsedSeconds(timestamp, startedAt) {
   return `${(elapsedMs / 1000).toFixed(1)}s`;
 }
 
-function formatLogLine(text, timestamp = new Date().toISOString(), startedAt = state.activeRun?.startedAt) {
+function formatLogLine(
+  text,
+  timestamp = new Date().toISOString(),
+  startedAt = state.activeRun?.startedAt,
+) {
   return `[${formatElapsedSeconds(timestamp, startedAt)}] ${text}`;
 }
 
@@ -131,8 +139,180 @@ function setAnimatedNumber(element, value) {
 function setSummaryStatus(status) {
   setText(elements.statusValue, status);
   const normalizedStatus = String(status || "Idle").toLowerCase();
-  for (const className of ["idle", "running", "passed", "failed", "interrupted", "stopping"]) {
-    elements.statusValue.parentElement.classList.toggle(`is-${className}`, normalizedStatus === className);
+  for (const className of [
+    "idle",
+    "running",
+    "passed",
+    "failed",
+    "interrupted",
+    "stopping",
+  ]) {
+    elements.statusValue.parentElement.classList.toggle(
+      `is-${className}`,
+      normalizedStatus === className,
+    );
+  }
+}
+
+function buildOdometerDigitSequence(currentDigit, nextDigit, shouldIncrease) {
+  if (!/\d/.test(currentDigit) || !/\d/.test(nextDigit)) {
+    return [nextDigit];
+  }
+
+  const start = Number(currentDigit);
+  const end = Number(nextDigit);
+  if (start === end) {
+    return [nextDigit];
+  }
+
+  const sequence = [currentDigit];
+  let cursor = start;
+  for (let step = 0; step < 10 && cursor !== end; step += 1) {
+    cursor = shouldIncrease ? (cursor + 1) % 10 : (cursor + 9) % 10;
+    sequence.push(String(cursor));
+  }
+
+  return sequence;
+}
+
+function renderSettledOdometerValue(value) {
+  return value
+    .split("")
+    .map(
+      (digit) => `
+    ${
+      /\d/.test(digit)
+        ? `<span class="odometer-digit"><span class="odometer-digit-stack settled"><span>${escapeHtml(digit)}</span></span></span>`
+        : `<span class="odometer-static">${escapeHtml(digit)}</span>`
+    }
+  `,
+    )
+    .join("");
+}
+
+function getComparableNumber(value) {
+  const digits = String(value).match(/\d/g);
+  return digits ? Number(digits.join("")) : null;
+}
+
+function setOdometerValue(element, value) {
+  const nextValue = String(value);
+  clearTimeout(state.counterTimers.get(element.id));
+  state.counterTimers.delete(element.id);
+
+  if (!element.classList.contains("odometer-value")) {
+    element.classList.add("odometer-value");
+  }
+
+  const currentValue =
+    element.dataset.counterValue || element.textContent.trim() || "0";
+  if (currentValue === nextValue) {
+    return;
+  }
+
+  const isNumeric = /^\d+$/.test(nextValue) && /^\d+$/.test(currentValue);
+  const hasSameShape = isNumeric || currentValue.length === nextValue.length;
+  if (!hasSameShape) {
+    element.dataset.counterValue = nextValue;
+    element.innerHTML = renderSettledOdometerValue(nextValue);
+    return;
+  }
+
+  const digitCount = isNumeric
+    ? Math.max(currentValue.length, nextValue.length)
+    : nextValue.length;
+  const paddedCurrentValue = isNumeric
+    ? currentValue.padStart(digitCount, "0")
+    : currentValue.padEnd(digitCount, " ");
+  const paddedNextValue = isNumeric
+    ? nextValue.padStart(digitCount, "0")
+    : nextValue;
+  const currentComparable = getComparableNumber(currentValue);
+  const nextComparable = getComparableNumber(nextValue);
+  const shouldIncrease =
+    currentComparable !== null && nextComparable !== null
+      ? nextComparable >= currentComparable
+      : true;
+  let maxRollDuration = 0;
+
+  element.innerHTML = paddedNextValue
+    .split("")
+    .map((nextDigit, index) => {
+      const currentDigit = paddedCurrentValue[index] || "0";
+      if (!/\d/.test(nextDigit)) {
+        return `<span class="odometer-static">${escapeHtml(nextDigit)}</span>`;
+      }
+
+      const sequence = buildOdometerDigitSequence(
+        currentDigit,
+        nextDigit,
+        shouldIncrease,
+      );
+      if (sequence.length === 1) {
+        return `
+        <span class="odometer-digit">
+          <span class="odometer-digit-stack settled">
+            <span>${escapeHtml(nextDigit)}</span>
+          </span>
+        </span>
+      `;
+      }
+
+      const rollDistance = (sequence.length - 1) * 22;
+      const rollDuration = Math.min(
+        980,
+        Math.max(360, (sequence.length - 1) * 150),
+      );
+      maxRollDuration = Math.max(maxRollDuration, rollDuration);
+
+      return `
+      <span class="odometer-digit">
+        <span
+          class="odometer-digit-stack will-roll"
+          style="--odometer-shift: -${rollDistance}px; --odometer-duration: ${rollDuration}ms;"
+        >
+          ${sequence.map((digit) => `<span>${escapeHtml(digit)}</span>`).join("")}
+        </span>
+      </span>
+    `;
+    })
+    .join("");
+
+  requestAnimationFrame(() => {
+    element
+      .querySelectorAll(".odometer-digit-stack.will-roll")
+      .forEach((stack) => {
+        stack.classList.add("rolling");
+      });
+  });
+
+  const timer = setTimeout(() => {
+    element.dataset.counterValue = nextValue;
+    element.innerHTML = renderSettledOdometerValue(nextValue);
+    state.counterTimers.delete(element.id);
+  }, maxRollDuration + 90);
+  state.counterTimers.set(element.id, timer);
+}
+
+function setOdometerNumber(element, value) {
+  setOdometerValue(element, Number(value || 0));
+}
+
+function setSummaryStatus(status) {
+  setText(elements.statusValue, status);
+  const normalizedStatus = String(status || "Idle").toLowerCase();
+  for (const className of [
+    "idle",
+    "running",
+    "passed",
+    "failed",
+    "interrupted",
+    "stopping",
+  ]) {
+    elements.statusValue.parentElement.classList.toggle(
+      `is-${className}`,
+      normalizedStatus === className,
+    );
   }
 }
 
@@ -167,16 +347,21 @@ function runCountSummary(run) {
   const summary = run?.summary || {};
   const tests = Object.values(run?.tests || {});
 
-  const fallbackCount = (statuses) => tests.filter((test) => statuses.includes(test.status)).length;
+  const fallbackCount = (statuses) =>
+    tests.filter((test) => statuses.includes(test.status)).length;
   const passed = numberOrZero(summary.passed ?? fallbackCount(["passed"]));
-  const failed = numberOrZero(summary.failed ?? fallbackCount(["failed"]))
-    + numberOrZero(summary.timedOut ?? fallbackCount(["timedOut"]))
-    + numberOrZero(summary.interrupted ?? fallbackCount(["interrupted"]));
-  const skipped = numberOrZero(summary.skipped ?? fallbackCount(["skipped"]))
-    + numberOrZero(summary.queued ?? fallbackCount(["queued"]))
-    + numberOrZero(summary.pending ?? fallbackCount(["pending"]))
-    + numberOrZero(summary["not executed"] ?? 0)
-    + numberOrZero(summary.notExecuted ?? fallbackCount(["notExecuted", "not-executed"]));
+  const failed =
+    numberOrZero(summary.failed ?? fallbackCount(["failed"])) +
+    numberOrZero(summary.timedOut ?? fallbackCount(["timedOut"])) +
+    numberOrZero(summary.interrupted ?? fallbackCount(["interrupted"]));
+  const skipped =
+    numberOrZero(summary.skipped ?? fallbackCount(["skipped"])) +
+    numberOrZero(summary.queued ?? fallbackCount(["queued"])) +
+    numberOrZero(summary.pending ?? fallbackCount(["pending"])) +
+    numberOrZero(summary["not executed"] ?? 0) +
+    numberOrZero(
+      summary.notExecuted ?? fallbackCount(["notExecuted", "not-executed"]),
+    );
 
   return { passed, failed, skipped };
 }
@@ -204,7 +389,9 @@ function attachmentUrl(run, test, attachment, index) {
     return "#";
   }
 
-  return dashboardUrl(`/api/runs/${encodeURIComponent(run.id)}/tests/${encodeURIComponent(test.testId)}/attachments/${index}`);
+  return dashboardUrl(
+    `/api/runs/${encodeURIComponent(run.id)}/tests/${encodeURIComponent(test.testId)}/attachments/${index}`,
+  );
 }
 
 function isVideoAttachment(attachment) {
@@ -256,9 +443,14 @@ function testDisplayTitle(test) {
 }
 
 function testSubtitle(test) {
-  const titlePath = Array.isArray(test?.titlePath) ? test.titlePath.filter(Boolean) : [];
-  const suitePath = titlePath.length > 1 ? titlePath.slice(0, -1).join(" > ") : "";
-  const filePath = test?.file ? `${test.file}${test.line ? `:${test.line}` : ""}` : "";
+  const titlePath = Array.isArray(test?.titlePath)
+    ? test.titlePath.filter(Boolean)
+    : [];
+  const suitePath =
+    titlePath.length > 1 ? titlePath.slice(0, -1).join(" > ") : "";
+  const filePath = test?.file
+    ? `${test.file}${test.line ? `:${test.line}` : ""}`
+    : "";
   return [suitePath, filePath].filter(Boolean).join(" | ");
 }
 
@@ -277,12 +469,17 @@ function humanStepsFor(test) {
 }
 
 function isLogScrolledToBottom(threshold = 12) {
-  const remaining = elements.logsOutput.scrollHeight - elements.logsOutput.scrollTop - elements.logsOutput.clientHeight;
+  const remaining =
+    elements.logsOutput.scrollHeight -
+    elements.logsOutput.scrollTop -
+    elements.logsOutput.clientHeight;
   return remaining <= threshold;
 }
 
 function renderLogLines() {
-  elements.logsOutput.textContent = state.logLines.length ? `${state.logLines.join("\n")}\n` : "";
+  elements.logsOutput.textContent = state.logLines.length
+    ? `${state.logLines.join("\n")}\n`
+    : "";
   if (state.logAutoScroll) {
     elements.logsOutput.scrollTop = elements.logsOutput.scrollHeight;
   }
@@ -311,8 +508,12 @@ function shouldShowLogEvent(event) {
   if (
     /^(\d+\)|\[\d+\/\d+\]|Running \d+ tests?|Retry #\d+)/i.test(text) ||
     /^[✓✘×-]\s/.test(text) ||
-    /^(at |Error: expect|Call log:|waiting for|locator\.|page\.|browserContext\.|apiRequestContext\.)/i.test(text) ||
-    /^(npx |TimeoutError:|Test timeout of|Slow test file:|To open last HTML report run:)/i.test(text)
+    /^(at |Error: expect|Call log:|waiting for|locator\.|page\.|browserContext\.|apiRequestContext\.)/i.test(
+      text,
+    ) ||
+    /^(npx |TimeoutError:|Test timeout of|Slow test file:|To open last HTML report run:)/i.test(
+      text,
+    )
   ) {
     return false;
   }
@@ -329,7 +530,7 @@ function resetLogs(lines = []) {
 async function api(path, options) {
   const response = await fetch(dashboardUrl(path), {
     headers: { "content-type": "application/json" },
-    ...options
+    ...options,
   });
 
   if (!response.ok) {
@@ -351,6 +552,7 @@ async function requireSession() {
     state.session = session;
     elements.currentUserBadge.textContent = `${session.user.username} (${session.user.role})`;
     elements.currentUserBadge.hidden = false;
+    elements.brandHomeLink.href = dashboardUrl("/");
     elements.configLink.href = dashboardUrl("/config.html");
     return session;
   } catch {
@@ -365,7 +567,9 @@ async function logout() {
 }
 
 function selectedFlows() {
-  return [...elements.flowsList.querySelectorAll("input:checked")].map((input) => input.value);
+  return [...elements.flowsList.querySelectorAll("input:checked")].map(
+    (input) => input.value,
+  );
 }
 
 function selectedSpecs() {
@@ -373,11 +577,16 @@ function selectedSpecs() {
 }
 
 function clampWorkerInput() {
-  elements.workersInput.value = String(Math.min(10, Math.max(1, Number(elements.workersInput.value || 1))));
+  elements.workersInput.value = String(
+    Math.min(10, Math.max(1, Number(elements.workersInput.value || 1))),
+  );
 }
 
 function selectedModuleConfig() {
-  const moduleName = elements.moduleSelect.value || state.config?.modules?.defaultModule || "engagement";
+  const moduleName =
+    elements.moduleSelect.value ||
+    state.config?.modules?.defaultModule ||
+    "engagement";
   return state.config?.modules?.modules?.[moduleName] || null;
 }
 
@@ -387,7 +596,9 @@ function moduleScopedFlows() {
     return state.config?.flows || [];
   }
 
-  return (state.config?.flows || []).filter((flow) => moduleConfig.flows.includes(flow));
+  return (state.config?.flows || []).filter((flow) =>
+    moduleConfig.flows.includes(flow),
+  );
 }
 
 function moduleScopedSpecFiles() {
@@ -397,7 +608,9 @@ function moduleScopedSpecFiles() {
     return state.config?.specFiles || [];
   }
 
-  return (state.config?.specFiles || []).filter((file) => prefixes.some((prefix) => file.startsWith(prefix)));
+  return (state.config?.specFiles || []).filter((file) =>
+    prefixes.some((prefix) => file.startsWith(prefix)),
+  );
 }
 
 function refreshModuleScopedOptions() {
@@ -405,12 +618,20 @@ function refreshModuleScopedOptions() {
   const scopedFlows = moduleScopedFlows();
   const scopedSpecFiles = moduleScopedSpecFiles();
 
-  elements.flowsList.innerHTML = scopedFlows
-    .map((flow) => `<label><input type="checkbox" value="${escapeHtml(flow)}"> ${escapeHtml(flow)}</label>`)
-    .join("") || '<span class="hint">No flows configured for this module yet.</span>';
+  elements.flowsList.innerHTML =
+    scopedFlows
+      .map(
+        (flow) =>
+          `<label><input type="checkbox" value="${escapeHtml(flow)}"> ${escapeHtml(flow)}</label>`,
+      )
+      .join("") ||
+    '<span class="hint">No flows configured for this module yet.</span>';
 
   elements.specSelect.innerHTML = scopedSpecFiles
-    .map((file) => `<option value="${escapeHtml(file)}" ${previouslySelectedSpecs.has(file) ? "selected" : ""}>${escapeHtml(file)}</option>`)
+    .map(
+      (file) =>
+        `<option value="${escapeHtml(file)}" ${previouslySelectedSpecs.has(file) ? "selected" : ""}>${escapeHtml(file)}</option>`,
+    )
     .join("");
 
   applyModeFlows();
@@ -419,26 +640,43 @@ function refreshModuleScopedOptions() {
 function populateConfig(config) {
   state.config = config;
 
-  elements.envSelect.innerHTML = Object.keys(config.environments.environments || {})
-    .map((env) => `<option value="${escapeHtml(env)}">${escapeHtml(env)}</option>`)
+  elements.envSelect.innerHTML = Object.keys(
+    config.environments.environments || {},
+  )
+    .map(
+      (env) => `<option value="${escapeHtml(env)}">${escapeHtml(env)}</option>`,
+    )
     .join("");
-  elements.envSelect.value = config.environments.default || elements.envSelect.value;
+  elements.envSelect.value =
+    config.environments.default || elements.envSelect.value;
 
   elements.modeSelect.innerHTML = Object.entries(config.profiles.modes || {})
-    .map(([name, mode]) => `<option value="${escapeHtml(name)}">${escapeHtml(name)} - ${escapeHtml(mode.description || "")}</option>`)
+    .map(
+      ([name, mode]) =>
+        `<option value="${escapeHtml(name)}">${escapeHtml(name)} - ${escapeHtml(mode.description || "")}</option>`,
+    )
     .join("");
-  elements.modeSelect.value = config.profiles.defaultMode || elements.modeSelect.value;
+  elements.modeSelect.value =
+    config.profiles.defaultMode || elements.modeSelect.value;
 
-  const modules = config.modules?.modules || { engagement: { label: "Engagement" } };
+  const modules = config.modules?.modules || {
+    engagement: { label: "Engagement" },
+  };
   elements.moduleSelect.innerHTML = Object.entries(modules)
-    .map(([name, module]) => `<option value="${escapeHtml(name)}">${escapeHtml(module.label || name)}</option>`)
+    .map(
+      ([name, module]) =>
+        `<option value="${escapeHtml(name)}">${escapeHtml(module.label || name)}</option>`,
+    )
     .join("");
   elements.moduleSelect.value = config.modules?.defaultModule || "engagement";
 
   refreshModuleScopedOptions();
 
   elements.projectSelect.innerHTML = config.projects
-    .map((project) => `<option value="${escapeHtml(project)}">${escapeHtml(project)}</option>`)
+    .map(
+      (project) =>
+        `<option value="${escapeHtml(project)}">${escapeHtml(project)}</option>`,
+    )
     .join("");
   elements.projectSelect.value = "chromium";
 
@@ -449,9 +687,11 @@ function applyModeFlows() {
   const mode = state.config?.profiles.modes?.[elements.modeSelect.value];
   const moduleConfig = selectedModuleConfig();
   const scopedFlows = new Set(moduleScopedFlows());
-  const modeFlows = new Set(Array.isArray(moduleConfig?.flows)
-    ? (mode?.flows || []).filter((flow) => scopedFlows.has(flow))
-    : (mode?.flows || []));
+  const modeFlows = new Set(
+    Array.isArray(moduleConfig?.flows)
+      ? (mode?.flows || []).filter((flow) => scopedFlows.has(flow))
+      : mode?.flows || [],
+  );
   for (const checkbox of elements.flowsList.querySelectorAll("input")) {
     checkbox.checked = modeFlows.has(checkbox.value);
   }
@@ -470,10 +710,13 @@ function buildRunPayload() {
     project: elements.projectSelect.value,
     grep: elements.grepInput.value.trim(),
     workers,
-    retries: elements.retriesInput.value === "" ? "" : Number(elements.retriesInput.value),
+    retries:
+      elements.retriesInput.value === ""
+        ? ""
+        : Number(elements.retriesInput.value),
     testTimeoutMs: Number(elements.testTimeoutInput.value || 2) * 60 * 1000,
     headed: elements.headedInput.checked,
-    debug: elements.debugInput.checked
+    debug: elements.debugInput.checked,
   };
 }
 
@@ -481,22 +724,31 @@ function updateSummary(run) {
   const tests = Object.values(run?.tests || {});
   const passed = tests.filter((test) => test.status === "passed").length;
   const failed = tests.filter((test) => isFailedStatus(test.status)).length;
-  const expected = run?.expectedTotal || run?.expectedTests?.length || tests.length;
+  const expected =
+    run?.expectedTotal || run?.expectedTests?.length || tests.length;
 
   setSummaryStatus(run?.status || "Idle");
-  setAnimatedNumber(elements.passedValue, passed);
-  setAnimatedNumber(elements.failedValue, failed);
-  setAnimatedNumber(elements.expectedValue, expected);
+  setOdometerNumber(elements.passedValue, passed);
+  setOdometerNumber(elements.failedValue, failed);
+  setOdometerNumber(elements.expectedValue, expected);
   updateDuration(run);
 }
 
 function updateDuration(run) {
   if (run?.startedAt && isRunningStatus(run.status)) {
-    setText(elements.durationValue, formatDuration(Date.now() - new Date(run.startedAt).getTime()));
+    setOdometerValue(
+      elements.durationValue,
+      formatDuration(Date.now() - new Date(run.startedAt).getTime()),
+    );
   } else if (run?.startedAt && run?.endedAt) {
-    setText(elements.durationValue, formatDuration(new Date(run.endedAt).getTime() - new Date(run.startedAt).getTime()));
+    setOdometerValue(
+      elements.durationValue,
+      formatDuration(
+        new Date(run.endedAt).getTime() - new Date(run.startedAt).getTime(),
+      ),
+    );
   } else {
-    setText(elements.durationValue, "0s");
+    setOdometerValue(elements.durationValue, "0s");
   }
 }
 
@@ -507,16 +759,20 @@ function getDisplayTests(run) {
     ...test,
     ...(actualTests[test.testId] || {}),
     status: actualTests[test.testId]?.status || "queued",
-    steps: actualTests[test.testId]?.steps || []
+    steps: actualTests[test.testId]?.steps || [],
   }));
   const expectedIds = new Set(expectedCards.map((test) => test.testId));
-  const extraActualTests = Object.values(actualTests).filter((test) => !expectedIds.has(test.testId));
+  const extraActualTests = Object.values(actualTests).filter(
+    (test) => !expectedIds.has(test.testId),
+  );
 
   return [...expectedCards, ...extraActualTests];
 }
 
 function updateCurrentTest(run) {
-  const currentTest = Object.values(run?.tests || {}).find((test) => isRunningStatus(test.status));
+  const currentTest = Object.values(run?.tests || {}).find((test) =>
+    isRunningStatus(test.status),
+  );
   if (!currentTest) {
     elements.currentTestCard.hidden = true;
     elements.currentTestValue.textContent = "";
@@ -526,7 +782,8 @@ function updateCurrentTest(run) {
 
   elements.currentTestCard.hidden = false;
   elements.currentTestValue.textContent = testDisplayTitle(currentTest);
-  elements.skipCurrentTestButton.dataset.skipCurrentTestId = currentTest.testId || "";
+  elements.skipCurrentTestButton.dataset.skipCurrentTestId =
+    currentTest.testId || "";
 }
 
 function renderTests(run) {
@@ -538,19 +795,24 @@ function renderTests(run) {
   }
 
   elements.testList.className = "test-list";
-  elements.testList.innerHTML = tests.map((test) => {
-    const isExpanded = state.expandedTestIds.has(test.testId);
-    const shouldCollapse = !isRunningStatus(test.status) && !isExpanded;
-    const isOpen = !shouldCollapse;
-    const imageAttachments = (test.attachments || [])
-      .map((attachment, index) => ({ attachment, index }))
-      .filter(({ attachment }) => attachment.contentType === "image/png" || attachment.contentType === "image/jpeg");
-    const videoAttachments = (test.attachments || [])
-      .map((attachment, index) => ({ attachment, index }))
-      .filter(({ attachment }) => isVideoAttachment(attachment));
-    const humanSteps = humanStepsFor(test);
+  elements.testList.innerHTML = tests
+    .map((test) => {
+      const isExpanded = state.expandedTestIds.has(test.testId);
+      const shouldCollapse = !isRunningStatus(test.status) && !isExpanded;
+      const isOpen = !shouldCollapse;
+      const imageAttachments = (test.attachments || [])
+        .map((attachment, index) => ({ attachment, index }))
+        .filter(
+          ({ attachment }) =>
+            attachment.contentType === "image/png" ||
+            attachment.contentType === "image/jpeg",
+        );
+      const videoAttachments = (test.attachments || [])
+        .map((attachment, index) => ({ attachment, index }))
+        .filter(({ attachment }) => isVideoAttachment(attachment));
+      const humanSteps = humanStepsFor(test);
 
-    return `
+      return `
     <article class="test-card ${test.status || "running"} ${shouldCollapse ? "collapsed" : ""}" data-test-id="${escapeHtml(test.testId || "")}" aria-expanded="${isOpen ? "true" : "false"}">
       <div class="test-title">
         <div class="test-title-main">
@@ -565,57 +827,87 @@ function renderTests(run) {
       </div>
       <div class="meta">${escapeHtml(testSubtitle(test))} ${test.duration ? `- ${formatDuration(test.duration)}` : ""}</div>
       ${test.retry ? `<div class="retry-meta">Retry ${escapeHtml(test.retry.status)}${test.retry.duration ? ` - ${formatDuration(test.retry.duration)}` : ""}</div>` : ""}
-      ${humanSteps.length ? `<div class="steps">
-        ${humanSteps.map((step) => `
+      ${
+        humanSteps.length
+          ? `<div class="steps">
+        ${humanSteps
+          .map(
+            (step) => `
           <div class="step">
             <div class="step-row">
               <span>${escapeHtml(step.title)}</span>
               <strong>${step.duration === undefined ? "..." : formatDuration(step.duration)}</strong>
             </div>
           </div>
-        `).join("")}
-      </div>` : ""}
-      ${(test.attempts || []).slice(-1).map((attempt) => `
+        `,
+          )
+          .join("")}
+      </div>`
+          : ""
+      }
+      ${(test.attempts || [])
+        .slice(-1)
+        .map(
+          (attempt) => `
         <details class="previous-attempt">
           <summary>Previous failure</summary>
           ${(attempt.errors || []).map((error) => `<pre class="error">${escapeHtml(error.message || error.stack || "Unknown error")}</pre>`).join("")}
         </details>
-      `).join("")}
+      `,
+        )
+        .join("")}
       ${(test.errors || []).map((error) => `<pre class="error">${escapeHtml(error.message || error.stack || "Unknown error")}</pre>`).join("")}
-      ${videoAttachments.length ? `
+      ${
+        videoAttachments.length
+          ? `
         <details class="test-videos" open>
           <summary>Test videos (${videoAttachments.length})</summary>
           <div class="video-list">
-            ${videoAttachments.map(({ attachment, index }) => {
-              const src = attachmentUrl(run, test, attachment, index);
-              return `
+            ${videoAttachments
+              .map(({ attachment, index }) => {
+                const src = attachmentUrl(run, test, attachment, index);
+                return `
                 <button class="video-preview-button" type="button" data-video-src="${escapeHtml(src)}" data-video-title="${escapeHtml(attachment.name || testDisplayTitle(test) || "Test video")}">
                   <svg class="icon"><use href="#icon-play"></use></svg>
                   <span>${escapeHtml(attachment.name || "Preview video")}</span>
                 </button>
                 ${attachment.uploadError ? `<small>${escapeHtml(attachment.uploadError)}</small>` : ""}
               `;
-            }).join("")}
+              })
+              .join("")}
           </div>
-        </details>` : ""}
-      ${imageAttachments.length ? `
+        </details>`
+          : ""
+      }
+      ${
+        imageAttachments.length
+          ? `
         <details class="failure-screenshots" data-screenshot-test-id="${escapeHtml(test.testId || "")}" ${state.expandedScreenshotTestIds.has(test.testId) ? "open" : ""}>
           <summary>Failure screenshots (${imageAttachments.length})</summary>
           <div class="screenshot-grid">
-            ${imageAttachments.map(({ attachment, index }) => `
+            ${imageAttachments
+              .map(
+                ({ attachment, index }) => `
               <a href="${attachmentUrl(run, test, attachment, index)}" target="_blank" rel="noreferrer">
                 <img src="${attachmentUrl(run, test, attachment, index)}" alt="${escapeHtml(attachment.name || "Failure screenshot")}">
                 <span>${escapeHtml(attachment.name || "Screenshot")}</span>
                 ${attachment.uploadError ? `<small>${escapeHtml(attachment.uploadError)}</small>` : ""}
               </a>
-            `).join("")}
+            `,
+              )
+              .join("")}
           </div>
-        </details>` : ""}
+        </details>`
+          : ""
+      }
     </article>
   `;
-  }).join("");
+    })
+    .join("");
 
-  const runningSteps = elements.testList.querySelector(".test-card.running .steps, .test-card.retrying .steps");
+  const runningSteps = elements.testList.querySelector(
+    ".test-card.running .steps, .test-card.retrying .steps",
+  );
   if (runningSteps) {
     runningSteps.scrollTop = runningSteps.scrollHeight;
   }
@@ -630,8 +922,12 @@ function renderRun(run) {
     : "";
   elements.htmlReportLink.hidden = !run?.reportPath;
   if (run?.reportPath) {
-    elements.htmlReportLink.href = run.reportUrl || dashboardUrl(`/api/runs/${encodeURIComponent(run.id)}/report`);
-    elements.htmlReportLink.title = run.reportUrl ? "Open presigned S3 HTML report" : "Open HTML report";
+    elements.htmlReportLink.href =
+      run.reportUrl ||
+      dashboardUrl(`/api/runs/${encodeURIComponent(run.id)}/report`);
+    elements.htmlReportLink.title = run.reportUrl
+      ? "Open presigned S3 HTML report"
+      : "Open HTML report";
   }
 
   elements.stopRunButton.disabled = !isRunningStatus(run?.status);
@@ -658,7 +954,11 @@ function appendLog(event) {
     return;
   }
 
-  const line = formatLogLine(event.text, event.timestamp, state.activeRun?.startedAt);
+  const line = formatLogLine(
+    event.text,
+    event.timestamp,
+    state.activeRun?.startedAt,
+  );
   state.logLines.push(line);
   state.logLines = state.logLines.slice(-maxVisibleLogs);
   renderLogLines();
@@ -686,7 +986,11 @@ function applyEvent(event) {
   }
 
   if (event.type === "run_begin") {
-    const isSingleTestRetry = run.status === "retrying" && Array.isArray(event.tests) && event.tests.length <= 1 && (run.expectedTests || []).length > 1;
+    const isSingleTestRetry =
+      run.status === "retrying" &&
+      Array.isArray(event.tests) &&
+      event.tests.length <= 1 &&
+      (run.expectedTests || []).length > 1;
     if (!isSingleTestRetry) {
       run.expectedTotal = event.total || 0;
       run.expectedTests = Array.isArray(event.tests) ? event.tests : [];
@@ -694,14 +998,21 @@ function applyEvent(event) {
     shouldRender = true;
   }
 
-  if (event.type === "step_begin" && event.category === "test.step" && run.tests[event.testId]) {
+  if (
+    event.type === "step_begin" &&
+    event.category === "test.step" &&
+    run.tests[event.testId]
+  ) {
     run.tests[event.testId].steps.push({ ...event, status: "running" });
-    run.tests[event.testId].steps = run.tests[event.testId].steps.slice(-maxVisibleSteps);
+    run.tests[event.testId].steps =
+      run.tests[event.testId].steps.slice(-maxVisibleSteps);
     shouldRender = true;
   }
 
   if (event.type === "step_end" && run.tests[event.testId]) {
-    const step = run.tests[event.testId].steps.find((candidate) => candidate.stepId === event.stepId);
+    const step = run.tests[event.testId].steps.find(
+      (candidate) => candidate.stepId === event.stepId,
+    );
     if (step) {
       Object.assign(step, event, { status: event.error ? "failed" : "passed" });
       shouldRender = true;
@@ -741,7 +1052,10 @@ function applyEvent(event) {
 
   if (event.type === "test_update") {
     run.tests[event.testId] = event.test;
-    if (run.currentTestId === event.testId && !isRunningStatus(event.test?.status)) {
+    if (
+      run.currentTestId === event.testId &&
+      !isRunningStatus(event.test?.status)
+    ) {
       run.currentTestId = null;
     }
     run.status = event.runStatus || run.status;
@@ -760,8 +1074,13 @@ function connectEvents(runId, options = {}) {
     state.eventSource.close();
   }
 
-  state.eventSource = new EventSource(dashboardUrl(`/api/runs/${runId}/events${options.liveOnly ? "?liveOnly=1" : ""}`));
-  state.eventSource.onmessage = (message) => applyEvent(JSON.parse(message.data));
+  state.eventSource = new EventSource(
+    dashboardUrl(
+      `/api/runs/${runId}/events${options.liveOnly ? "?liveOnly=1" : ""}`,
+    ),
+  );
+  state.eventSource.onmessage = (message) =>
+    applyEvent(JSON.parse(message.data));
 }
 
 async function startRun(event) {
@@ -772,7 +1091,7 @@ async function startRun(event) {
   try {
     const run = await api("/api/runs", {
       method: "POST",
-      body: JSON.stringify(buildRunPayload())
+      body: JSON.stringify(buildRunPayload()),
     });
     renderRun(run);
     connectEvents(run.id);
@@ -804,17 +1123,23 @@ async function startRerun(testId) {
 
   appendDashboardLog(`Starting retry for ${testDisplayTitle(failedTest)}...`);
 
-  const run = await api(`/api/runs/${activeRun.id}/tests/rerun?testId=${encodeURIComponent(testId)}`, {
-    method: "POST",
-    body: JSON.stringify({
-      env: activeRun.options?.env || elements.envSelect.value,
-      module: activeRun.options?.module || elements.moduleSelect.value,
-      project: failedTest.projectName || activeRun.options?.project || elements.projectSelect.value,
-      retries: activeRun.options?.retries ?? 0,
-      headed: Boolean(activeRun.options?.headed),
-      debug: Boolean(activeRun.options?.debug)
-    })
-  });
+  const run = await api(
+    `/api/runs/${activeRun.id}/tests/rerun?testId=${encodeURIComponent(testId)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        env: activeRun.options?.env || elements.envSelect.value,
+        module: activeRun.options?.module || elements.moduleSelect.value,
+        project:
+          failedTest.projectName ||
+          activeRun.options?.project ||
+          elements.projectSelect.value,
+        retries: activeRun.options?.retries ?? 0,
+        headed: Boolean(activeRun.options?.headed),
+        debug: Boolean(activeRun.options?.debug),
+      }),
+    },
+  );
   renderRun(run);
   connectEvents(run.id, { liveOnly: true });
   loadRuns();
@@ -822,7 +1147,10 @@ async function startRerun(testId) {
 
 async function skipCurrentTest(testId) {
   if (!testId && state.activeRun?.tests) {
-    testId = Object.values(state.activeRun.tests).find((test) => isRunningStatus(test.status))?.testId || "";
+    testId =
+      Object.values(state.activeRun.tests).find((test) =>
+        isRunningStatus(test.status),
+      )?.testId || "";
   }
 
   if (!state.activeRun?.id || !testId) {
@@ -832,7 +1160,10 @@ async function skipCurrentTest(testId) {
 
   appendDashboardLog("Skipping current test...");
 
-  const run = await api(`/api/runs/${state.activeRun.id}/tests/skip-current?testId=${encodeURIComponent(testId)}`, { method: "POST" });
+  const run = await api(
+    `/api/runs/${state.activeRun.id}/tests/skip-current?testId=${encodeURIComponent(testId)}`,
+    { method: "POST" },
+  );
   renderRun(run);
   connectEvents(run.id, { liveOnly: true });
   loadRuns();
@@ -847,7 +1178,9 @@ async function loadRuns() {
   }
 
   elements.runsList.className = "runs-list";
-  elements.runsList.innerHTML = state.runs.map((run) => `
+  elements.runsList.innerHTML = state.runs
+    .map(
+      (run) => `
     <article class="run-card" data-run-id="${run.id}">
       <div class="run-title">
         <strong>${escapeHtml(run.options?.module || "engagement")} / ${escapeHtml(run.options?.mode || "custom")} / ${escapeHtml(run.options?.env || "")}</strong>
@@ -859,7 +1192,9 @@ async function loadRuns() {
         <span>${escapeHtml((run.options?.flows || []).join(", ") || "custom selection")}</span>
       </div>
     </article>
-  `).join("");
+  `,
+    )
+    .join("");
 }
 
 async function openRun(runId) {
@@ -899,11 +1234,13 @@ elements.workersInput.addEventListener("blur", clampWorkerInput);
 elements.logoutButton.addEventListener("click", logout);
 elements.skipCurrentTestButton.addEventListener("click", () => {
   elements.skipCurrentTestButton.disabled = true;
-  skipCurrentTest(elements.skipCurrentTestButton.dataset.skipCurrentTestId).catch((error) => {
-    appendDashboardLog(`Skip failed: ${error.message}`);
-  }).finally(() => {
-    elements.skipCurrentTestButton.disabled = false;
-  });
+  skipCurrentTest(elements.skipCurrentTestButton.dataset.skipCurrentTestId)
+    .catch((error) => {
+      appendDashboardLog(`Skip failed: ${error.message}`);
+    })
+    .finally(() => {
+      elements.skipCurrentTestButton.disabled = false;
+    });
 });
 elements.refreshRunsButton.addEventListener("click", loadRuns);
 elements.clearLogsButton.addEventListener("click", () => {
@@ -927,12 +1264,22 @@ elements.testList.addEventListener("click", (event) => {
   const videoButton = event.target.closest("[data-video-src]");
   if (videoButton) {
     event.stopPropagation();
-    openVideoPreview(videoButton.dataset.videoTitle, videoButton.dataset.videoSrc);
+    openVideoPreview(
+      videoButton.dataset.videoTitle,
+      videoButton.dataset.videoSrc,
+    );
     return;
   }
 
-  const interactiveTarget = event.target.closest("a, button, summary, input, select, textarea, label");
-  if (interactiveTarget && !interactiveTarget.matches("[data-rerun-test-id], [data-skip-current-test-id]")) {
+  const interactiveTarget = event.target.closest(
+    "a, button, summary, input, select, textarea, label",
+  );
+  if (
+    interactiveTarget &&
+    !interactiveTarget.matches(
+      "[data-rerun-test-id], [data-skip-current-test-id]",
+    )
+  ) {
     return;
   }
 
@@ -940,11 +1287,13 @@ elements.testList.addEventListener("click", (event) => {
   if (rerunButton) {
     event.stopPropagation();
     rerunButton.disabled = true;
-    startRerun(rerunButton.dataset.rerunTestId).catch((error) => {
-      appendDashboardLog(`Rerun failed: ${error.message}`);
-    }).finally(() => {
-      rerunButton.disabled = false;
-    });
+    startRerun(rerunButton.dataset.rerunTestId)
+      .catch((error) => {
+        appendDashboardLog(`Rerun failed: ${error.message}`);
+      })
+      .finally(() => {
+        rerunButton.disabled = false;
+      });
     return;
   }
 
@@ -952,11 +1301,13 @@ elements.testList.addEventListener("click", (event) => {
   if (skipButton) {
     event.stopPropagation();
     skipButton.disabled = true;
-    skipCurrentTest(skipButton.dataset.skipCurrentTestId).catch((error) => {
-      appendDashboardLog(`Skip failed: ${error.message}`);
-    }).finally(() => {
-      skipButton.disabled = false;
-    });
+    skipCurrentTest(skipButton.dataset.skipCurrentTestId)
+      .catch((error) => {
+        appendDashboardLog(`Skip failed: ${error.message}`);
+      })
+      .finally(() => {
+        skipButton.disabled = false;
+      });
     return;
   }
 
@@ -977,18 +1328,22 @@ elements.testList.addEventListener("click", (event) => {
 
   renderRun(state.activeRun);
 });
-elements.testList.addEventListener("toggle", (event) => {
-  const details = event.target.closest?.("[data-screenshot-test-id]");
-  if (!details?.dataset.screenshotTestId) {
-    return;
-  }
+elements.testList.addEventListener(
+  "toggle",
+  (event) => {
+    const details = event.target.closest?.("[data-screenshot-test-id]");
+    if (!details?.dataset.screenshotTestId) {
+      return;
+    }
 
-  if (details.open) {
-    state.expandedScreenshotTestIds.add(details.dataset.screenshotTestId);
-  } else {
-    state.expandedScreenshotTestIds.delete(details.dataset.screenshotTestId);
-  }
-}, true);
+    if (details.open) {
+      state.expandedScreenshotTestIds.add(details.dataset.screenshotTestId);
+    } else {
+      state.expandedScreenshotTestIds.delete(details.dataset.screenshotTestId);
+    }
+  },
+  true,
+);
 
 elements.videoModal.addEventListener("click", (event) => {
   if (event.target.closest("[data-close-video-modal]")) {
@@ -1013,10 +1368,7 @@ requireSession()
       return null;
     }
 
-    return Promise.all([
-      api("/api/config").then(populateConfig),
-      loadRuns(),
-    ]);
+    return Promise.all([api("/api/config").then(populateConfig), loadRuns()]);
   })
   .catch((error) => {
     appendDashboardLog(error.message);

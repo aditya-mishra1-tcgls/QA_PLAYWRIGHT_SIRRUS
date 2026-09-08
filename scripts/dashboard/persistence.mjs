@@ -77,6 +77,110 @@ export async function initializePersistence() {
     payload JSONB NOT NULL
   )`);
   await pool.query("CREATE INDEX IF NOT EXISTS qa_test_runs_started_at_idx ON qa_test_runs (started_at DESC)");
+  await pool.query(`CREATE TABLE IF NOT EXISTS qa_dashboard_users (
+    username TEXT PRIMARY KEY,
+    password TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    app_credentials JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    password_updated_at TIMESTAMPTZ
+  )`);
+  await pool.query("CREATE INDEX IF NOT EXISTS qa_dashboard_users_created_at_idx ON qa_dashboard_users (created_at DESC)");
+}
+
+function dashboardUserFromRow(row) {
+  return {
+    username: row.username,
+    password: row.password,
+    role: row.role || "user",
+    appCredentials: row.app_credentials || {},
+    createdAt: row.created_at?.toISOString?.() || row.created_at || null,
+    passwordUpdatedAt: row.password_updated_at?.toISOString?.() || row.password_updated_at || null,
+  };
+}
+
+export async function listPersistentDashboardUsers() {
+  if (!pool) return null;
+  const result = await pool.query(`SELECT username, password, role, app_credentials, created_at, password_updated_at
+    FROM qa_dashboard_users
+    ORDER BY created_at ASC, username ASC`);
+  return result.rows.map(dashboardUserFromRow);
+}
+
+export async function insertPersistentDashboardUser(user) {
+  if (!pool) return null;
+  const result = await pool.query(`INSERT INTO qa_dashboard_users (username, password, role, app_credentials, created_at)
+    VALUES ($1, $2, $3, $4::jsonb, $5)
+    RETURNING username, password, role, app_credentials, created_at, password_updated_at`,
+  [
+    user.username,
+    user.password,
+    user.role || "user",
+    JSON.stringify(user.appCredentials || {}),
+    user.createdAt || new Date().toISOString(),
+  ]);
+  return dashboardUserFromRow(result.rows[0]);
+}
+
+export async function upsertPersistentDashboardUser(user) {
+  if (!pool) return null;
+  const result = await pool.query(`INSERT INTO qa_dashboard_users (username, password, role, app_credentials, created_at)
+    VALUES ($1, $2, $3, $4::jsonb, $5)
+    ON CONFLICT (username) DO UPDATE SET
+      password = EXCLUDED.password,
+      role = EXCLUDED.role,
+      app_credentials = COALESCE(qa_dashboard_users.app_credentials, '{}'::jsonb) || EXCLUDED.app_credentials
+    RETURNING username, password, role, app_credentials, created_at, password_updated_at`,
+  [
+    user.username,
+    user.password,
+    user.role || "user",
+    JSON.stringify(user.appCredentials || {}),
+    user.createdAt || new Date().toISOString(),
+  ]);
+  return dashboardUserFromRow(result.rows[0]);
+}
+
+export async function insertPersistentDashboardUserIfMissing(user) {
+  if (!pool) return null;
+  const result = await pool.query(`INSERT INTO qa_dashboard_users (username, password, role, app_credentials, created_at)
+    VALUES ($1, $2, $3, $4::jsonb, $5)
+    ON CONFLICT (username) DO NOTHING
+    RETURNING username, password, role, app_credentials, created_at, password_updated_at`,
+  [
+    user.username,
+    user.password,
+    user.role || "user",
+    JSON.stringify(user.appCredentials || {}),
+    user.createdAt || new Date().toISOString(),
+  ]);
+  return result.rows[0] ? dashboardUserFromRow(result.rows[0]) : null;
+}
+
+export async function updatePersistentDashboardUserPassword(username, password) {
+  if (!pool) return null;
+  const result = await pool.query(`UPDATE qa_dashboard_users
+    SET password = $2, password_updated_at = NOW()
+    WHERE username = $1
+    RETURNING username, password, role, app_credentials, created_at, password_updated_at`,
+  [username, password]);
+  return result.rows[0] ? dashboardUserFromRow(result.rows[0]) : null;
+}
+
+export async function deletePersistentDashboardUser(username) {
+  if (!pool) return null;
+  const result = await pool.query("DELETE FROM qa_dashboard_users WHERE username = $1 RETURNING username", [username]);
+  return result.rows[0] || null;
+}
+
+export async function updatePersistentDashboardUserAppCredentials(username, appCredentials) {
+  if (!pool) return null;
+  const result = await pool.query(`UPDATE qa_dashboard_users
+    SET app_credentials = $2::jsonb
+    WHERE username = $1
+    RETURNING username, password, role, app_credentials, created_at, password_updated_at`,
+  [username, JSON.stringify(appCredentials || {})]);
+  return result.rows[0] ? dashboardUserFromRow(result.rows[0]) : null;
 }
 
 export async function savePersistentRun(run) {

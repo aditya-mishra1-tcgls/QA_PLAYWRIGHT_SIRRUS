@@ -11,7 +11,7 @@
     },
     "lead": {
       "description": "Lead management focused execution.",
-      "flows": ["smoke", "lead-management"]
+      "flows": ["smoke", "channel-partner", "lead-management"]
     },
     "site-visit": {
       "description": "Site visit focused execution.",
@@ -23,7 +23,7 @@
     },
     "regression": {
       "description": "Full manually triggered regression pack.",
-      "flows": ["smoke", "auth", "lead-management", "site-visit"]
+      "flows": ["smoke", "auth", "channel-partner", "lead-management", "site-visit"]
     }
   }
 }
