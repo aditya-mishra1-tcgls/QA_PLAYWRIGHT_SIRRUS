@@ -169,11 +169,11 @@ Suggested intake examples:
 Tests can read the selected environment through the shared `app` fixture:
 
 ```ts
-app.envName
-app.baseUrl
-app.mobileNumber
-app.otp
-app.leads[app.envName]
+app.envName;
+app.baseUrl;
+app.mobileNumber;
+app.otp;
+app.leads[app.envName];
 ```
 
 ## Login baseline

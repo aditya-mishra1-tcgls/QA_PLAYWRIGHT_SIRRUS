@@ -4,7 +4,10 @@ const state = {
 };
 
 const dashboardBasePath = (() => {
-  const scriptUrl = new URL(document.currentScript?.getAttribute("src") || "config.js", window.location.href);
+  const scriptUrl = new URL(
+    document.currentScript?.getAttribute("src") || "config.js",
+    window.location.href,
+  );
   const basePath = scriptUrl.pathname.replace(/\/[^/]*$/, "");
   return basePath === "/" ? "" : basePath;
 })();
@@ -73,11 +76,20 @@ function showConfigSection(sectionName) {
   }
 
   for (const button of elements.navButtons) {
-    button.classList.toggle("active", button.dataset.configSection === sectionName);
+    button.classList.toggle(
+      "active",
+      button.dataset.configSection === sectionName,
+    );
   }
 
   if (sectionName === "userList") {
-    loadDashboardUsers().catch((error) => showFormMessage(elements.dashboardUserListMessage, error.message, "error"));
+    loadDashboardUsers().catch((error) =>
+      showFormMessage(
+        elements.dashboardUserListMessage,
+        error.message,
+        "error",
+      ),
+    );
   }
 }
 
@@ -117,10 +129,15 @@ async function logout() {
 
 async function loadConfig() {
   state.config = await api("/api/config");
-  elements.appCredentialEnvSelect.innerHTML = Object.keys(state.config.environments.environments || {})
-    .map((env) => `<option value="${escapeHtml(env)}">${escapeHtml(env)}</option>`)
+  elements.appCredentialEnvSelect.innerHTML = Object.keys(
+    state.config.environments.environments || {},
+  )
+    .map(
+      (env) => `<option value="${escapeHtml(env)}">${escapeHtml(env)}</option>`,
+    )
     .join("");
-  elements.appCredentialEnvSelect.value = state.config.environments.default || elements.appCredentialEnvSelect.value;
+  elements.appCredentialEnvSelect.value =
+    state.config.environments.default || elements.appCredentialEnvSelect.value;
 }
 
 async function loadAppCredential() {
@@ -130,15 +147,26 @@ async function loadAppCredential() {
   }
 
   elements.appCredentialMessage.hidden = true;
-  const result = await api(`/api/app-credentials?env=${encodeURIComponent(env)}`);
+  const result = await api(
+    `/api/app-credentials?env=${encodeURIComponent(env)}`,
+  );
   const credential = result.credential;
-  elements.appLoginIdInput.value = credential?.loginId || credential?.mobileNumber || "";
+  elements.appLoginIdInput.value =
+    credential?.loginId || credential?.mobileNumber || "";
   elements.appPasswordInput.value = "";
 
   if (result.usesDefault) {
-    showFormMessage(elements.appCredentialMessage, "Using default shared credentials for this environment.", "info");
+    showFormMessage(
+      elements.appCredentialMessage,
+      "Using default shared credentials for this environment.",
+      "info",
+    );
   } else {
-    showFormMessage(elements.appCredentialMessage, "Using your saved app login for this environment.", "success");
+    showFormMessage(
+      elements.appCredentialMessage,
+      "Using your saved app login for this environment.",
+      "success",
+    );
   }
 }
 
@@ -161,7 +189,11 @@ async function saveAppCredential(event) {
       }),
     });
     elements.appPasswordInput.value = "";
-    showFormMessage(elements.appCredentialMessage, `Saved app login for ${env}. Future runs you start will use it.`, "success");
+    showFormMessage(
+      elements.appCredentialMessage,
+      `Saved app login for ${env}. Future runs you start will use it.`,
+      "success",
+    );
   } catch (error) {
     showFormMessage(elements.appCredentialMessage, error.message, "error");
   } finally {
@@ -177,7 +209,9 @@ function renderDashboardUsers(users) {
   }
 
   elements.dashboardUsersList.className = "user-list";
-  elements.dashboardUsersList.innerHTML = users.map((user) => `
+  elements.dashboardUsersList.innerHTML = users
+    .map(
+      (user) => `
     <article class="user-row">
       <div>
         <strong>${escapeHtml(user.username)}</strong>
@@ -194,7 +228,9 @@ function renderDashboardUsers(users) {
         <button class="danger" type="button" data-delete-user="${escapeHtml(user.username)}">Delete</button>
       </div>
     </article>
-  `).join("");
+  `,
+    )
+    .join("");
 }
 
 async function loadDashboardUsers() {
@@ -222,7 +258,11 @@ async function createDashboardUser(event) {
       }),
     });
     elements.dashboardUserForm.reset();
-    showFormMessage(elements.dashboardUserMessage, `Created ${result.user.username}.`, "success");
+    showFormMessage(
+      elements.dashboardUserMessage,
+      `Created ${result.user.username}.`,
+      "success",
+    );
     await loadDashboardUsers();
     showConfigSection("userList");
   } catch (error) {
@@ -233,7 +273,9 @@ async function createDashboardUser(event) {
 }
 
 async function resetDashboardUserPassword(username) {
-  const password = window.prompt(`Enter a new password for ${username}. Minimum 8 characters.`);
+  const password = window.prompt(
+    `Enter a new password for ${username}. Minimum 8 characters.`,
+  );
   if (password === null) {
     return;
   }
@@ -243,7 +285,11 @@ async function resetDashboardUserPassword(username) {
       method: "POST",
       body: JSON.stringify({ username, password }),
     });
-    showFormMessage(elements.dashboardUserListMessage, `Password reset for ${username}.`, "success");
+    showFormMessage(
+      elements.dashboardUserListMessage,
+      `Password reset for ${username}.`,
+      "success",
+    );
     await loadDashboardUsers();
   } catch (error) {
     showFormMessage(elements.dashboardUserListMessage, error.message, "error");
@@ -260,7 +306,11 @@ async function deleteDashboardUser(username) {
       method: "POST",
       body: JSON.stringify({ username }),
     });
-    showFormMessage(elements.dashboardUserListMessage, `Deleted ${username}.`, "success");
+    showFormMessage(
+      elements.dashboardUserListMessage,
+      `Deleted ${username}.`,
+      "success",
+    );
     await loadDashboardUsers();
   } catch (error) {
     showFormMessage(elements.dashboardUserListMessage, error.message, "error");
@@ -269,7 +319,9 @@ async function deleteDashboardUser(username) {
 
 elements.logoutButton.addEventListener("click", logout);
 for (const button of elements.navButtons) {
-  button.addEventListener("click", () => showConfigSection(button.dataset.configSection));
+  button.addEventListener("click", () =>
+    showConfigSection(button.dataset.configSection),
+  );
 }
 elements.appCredentialEnvSelect.addEventListener("change", loadAppCredential);
 elements.appCredentialForm.addEventListener("submit", saveAppCredential);
@@ -277,11 +329,15 @@ elements.dashboardUserForm.addEventListener("submit", createDashboardUser);
 elements.dashboardUsersList.addEventListener("click", (event) => {
   const passwordButton = event.target.closest("[data-toggle-password]");
   if (passwordButton) {
-    const passwordValue = passwordButton.parentElement.querySelector("[data-password-value]");
+    const passwordValue = passwordButton.parentElement.querySelector(
+      "[data-password-value]",
+    );
     const isVisible = passwordButton.dataset.visible === "true";
     passwordButton.dataset.visible = isVisible ? "false" : "true";
     passwordButton.textContent = isVisible ? "Show Password" : "Hide Password";
-    passwordValue.textContent = isVisible ? "********" : passwordValue.dataset.passwordValue;
+    passwordValue.textContent = isVisible
+      ? "********"
+      : passwordValue.dataset.passwordValue;
     return;
   }
 
