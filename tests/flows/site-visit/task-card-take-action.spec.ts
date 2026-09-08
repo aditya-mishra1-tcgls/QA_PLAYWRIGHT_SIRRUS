@@ -40,7 +40,7 @@ test.describe("Site visit task card action flow", () => {
     });
 
     await test.step("Cancel site visit with automation reason", async () => {
-      await cancelSiteVisitFromOpenedLead(page, "automation is done", "Out of Town");
+      await cancelSiteVisitFromOpenedLead(page, "automation is done", "Out of Town", leadName);
       await assertLeadJourneyStages(page, ["Cancelled"]);
     });
   });

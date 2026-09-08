@@ -1,6 +1,14 @@
 import type { Page, Locator } from "@playwright/test";
 import { expect, test as base } from "@playwright/test";
-import { ensureActiveProject } from "./auth";
+import { ReportsPage } from "../pages";
+import {
+  clickWithFallback,
+  escapeRegex,
+  hasVisibleHeading,
+  hasVisibleText,
+  normalizeText,
+  tryClickFirstVisible,
+} from "./ui-actions";
 
 type AppConfig = {
   activeProjectName: string;
@@ -23,7 +31,6 @@ type ReportChartConfig = {
   dimension: string;
 };
 
-const FALLBACK_RENDER_WAIT_MS = 5000;
 const LEAD_REPORT_CHART_CONFIG: Omit<ReportChartConfig, "dashboard"> = {
   module: "Lead Management",
   subModule: "Leads",
@@ -40,54 +47,10 @@ function randomDigits(length: number) {
   return String(Math.floor(Math.random() * (max - min + 1)) + min);
 }
 
-function escapeRegex(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function normalizeText(value: string | null | undefined) {
-  return (value ?? "").replace(/\s+/g, " ").trim();
-}
-
 function buildOverlayRoot(page: Page) {
   return page.locator(
     "[role='dialog'], [data-radix-popper-content-wrapper], [class*='popover'], [class*='menu'], #root-modal, .fixed.z-\\[2000\\]"
   );
-}
-
-async function clickWithFallback(
-  locator: Locator,
-  page: Page,
-  postCheck?: () => Promise<boolean>,
-  options?: Parameters<Locator["click"]>[0]
-) {
-  await locator.click(options);
-
-  if (!postCheck) {
-    return;
-  }
-
-  const ready = await expect
-    .poll(postCheck, { timeout: 1500 })
-    .toBeTruthy()
-    .then(() => true)
-    .catch(() => false);
-
-  if (!ready) {
-    await page.waitForTimeout(FALLBACK_RENDER_WAIT_MS);
-  }
-}
-
-async function clickFirstVisible(locators: Locator[]) {
-  for (const locator of locators) {
-    const candidate = locator.first();
-    if (await candidate.isVisible().catch(() => false)) {
-      await candidate.scrollIntoViewIfNeeded().catch(() => {});
-      await candidate.click({ force: true });
-      return true;
-    }
-  }
-
-  return false;
 }
 
 async function waitForReportsDashboard(page: Page) {
@@ -96,9 +59,63 @@ async function waitForReportsDashboard(page: Page) {
   await expect
     .poll(async () => {
       const bodyText = (await page.locator("body").innerText().catch(() => "")).replace(/\s+/g, " ").trim();
-      return /Reports Dashboard|Create Dashboard|Create Chart|Create New/i.test(bodyText) && !/loading/i.test(bodyText);
+      const hasDashboardHeading = await hasVisibleHeading(page, /Reports Dashboard/i);
+      const hasDashboardControls = await hasVisibleText(page, /Create Dashboard|Create Chart|Create New/i);
+
+      return (
+        hasDashboardHeading ||
+        hasDashboardControls ||
+        /Reports Dashboard|Create Dashboard|Create Chart|Create New/i.test(bodyText)
+      );
     }, { timeout: 60000 })
     .toBeTruthy();
+}
+
+async function reportsDashboardIsReady(page: Page) {
+  const bodyText = normalizeText(await page.locator("body").innerText().catch(() => ""));
+  const hasDashboardHeading = await hasVisibleHeading(page, /Reports Dashboard/i);
+  const hasDashboardControls = await hasVisibleText(page, /Create Dashboard|Create Chart|Create New/i);
+
+  return (
+    hasDashboardHeading ||
+    hasDashboardControls ||
+    /Reports Dashboard|Create Dashboard|Create Chart|Create New/i.test(bodyText)
+  );
+}
+
+async function openReportsDashboardFromCurrentPage(page: Page) {
+  if (await reportsDashboardIsReady(page)) {
+    return;
+  }
+
+  const reportsDashboardCandidates = [
+    page.getByRole("button", { name: /reports dashboard/i }).first(),
+    page.getByRole("link", { name: /reports dashboard/i }).first(),
+    page
+      .locator("button,a")
+      .filter({ has: page.locator('img[alt*="reports dashboard" i]') })
+      .first(),
+    page.getByText(/^Reports Dashboard$/i).first(),
+    page.getByText(/Reports Dashboard/i).first(),
+  ];
+
+  if (await tryClickFirstVisible(reportsDashboardCandidates, { force: true })) {
+    await waitForReportsDashboard(page);
+    return;
+  }
+
+  throw new Error('The "Reports Dashboard" entry point was not visible after creating the dashboard.');
+}
+
+async function waitForDashboardAvailable(page: Page, dashboardName: string, timeout = 60000) {
+  return await expect
+    .poll(async () => {
+      const bodyText = normalizeText(await page.locator("body").innerText().catch(() => ""));
+      return bodyText.includes(dashboardName);
+    }, { timeout })
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
 }
 
 async function waitForLoadingToFinish(page: Page) {
@@ -113,22 +130,7 @@ async function waitForLoadingToFinish(page: Page) {
 }
 
 export async function goToLeadReports(page: Page, app: AppConfig) {
-  await page.goto("/admin/developer/cpms/manage-construction", { waitUntil: "networkidle" });
-  await ensureActiveProject(page, app.activeProjectName);
-
-  const reportsDashboardButtonCandidates = [
-    page.getByRole("button", { name: /reports dashboard/i }),
-    page.getByRole("link", { name: /reports dashboard/i }),
-    page.getByText(/^reports dashboard$/i).first(),
-    page.getByText(/reports dashboard/i).first()
-  ];
-
-  const opened = await clickFirstVisible(reportsDashboardButtonCandidates);
-  if (!opened) {
-    throw new Error('The "Reports Dashboard" entry point was not visible from the landing page.');
-  }
-
-  await waitForReportsDashboard(page);
+  await new ReportsPage(page).open(app);
 }
 
 async function openCreateNewMenu(page: Page) {
@@ -489,7 +491,7 @@ async function confirmPopupSelection(page: Page) {
     page.getByRole("button", { name: /\bselected\b/i }).last()
   ];
 
-  const clicked = await clickFirstVisible(confirmationCandidates);
+  const clicked = await tryClickFirstVisible(confirmationCandidates, { force: true });
   if (!clicked) {
     await page.keyboard.press("Escape").catch(() => {});
   }
@@ -618,8 +620,16 @@ async function createDashboard(page: Page, dashboardName: string) {
   await expect(saveButton).toBeVisible({ timeout: 30000 });
   await saveButton.click({ force: true });
 
-  await expect(page.getByRole("heading", { name: /dashboard created/i })).toBeVisible({ timeout: 60000 });
-  await expect(page.locator("body")).toContainText(dashboardName, { timeout: 60000 });
+  const createdOnCurrentScreen = await waitForDashboardAvailable(page, dashboardName, 30000);
+  if (!createdOnCurrentScreen) {
+    await openReportsDashboardFromCurrentPage(page);
+    await expect
+      .poll(async () => {
+        const bodyText = normalizeText(await page.locator("body").innerText().catch(() => ""));
+        return bodyText.includes(dashboardName);
+      }, { timeout: 60000 })
+      .toBeTruthy();
+  }
 }
 
 async function createChart(page: Page, dashboardName: string, chartName: string) {

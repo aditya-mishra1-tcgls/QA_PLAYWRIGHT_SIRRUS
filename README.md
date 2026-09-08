@@ -11,6 +11,7 @@ This project is organized flow-wise so we can add UI journeys gradually and run 
 - `tests/flows/site-visit`: site visit lifecycle validation
 - `tests/setup`: shared one-time login setup for all authenticated tests
 - `tests/data`: reusable test data
+- `tests/pages`: Page Object Model classes and object repositories
 - `tests/support`: shared helpers and fixtures
 - `docs/features`: feature requirements, dynamic data rules, and automation mapping
 - `docs/templates`: templates for documenting new features before or alongside automation
@@ -182,6 +183,13 @@ app.leads[app.envName];
 - Local CLI runs save authenticated browser state under `playwright/.auth/<env>.json`.
 - Dashboard runs save authenticated browser state under `playwright/.auth/<env>-<run-id>.json`, so parallel executions do not overwrite each other. The dashboard removes that execution-specific auth file automatically when the run, retry, or continuation finishes.
 - All normal test flows reuse that state automatically, which keeps execution fast.
+
+## Page Object Model
+
+New reusable locators and page-level actions should live in `tests/pages`.
+Existing flow helpers in `tests/support` remain backward-compatible and delegate common entry points to Page Objects while the older large helpers are gradually reduced.
+
+See `docs/PAGE_OBJECT_MODEL.md` before adding new selectors or moving shared actions.
 
 ## User Management And Parallel Runs
 

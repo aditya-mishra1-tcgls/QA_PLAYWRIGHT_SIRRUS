@@ -1,6 +1,6 @@
-import type { Locator, Page } from "@playwright/test";
-import { expect, test as base } from "@playwright/test";
-import { ensureActiveProject } from "./auth";
+import type { Page } from "@playwright/test";
+import { test as base } from "@playwright/test";
+import { ChannelPartnerPage } from "../pages";
 
 type AppConfig = {
   activeProjectName: string;
@@ -182,24 +182,7 @@ async function waitForChannelPartnerListing(page: Page) {
 
 export async function goToChannelPartnerListing(page: Page, app: AppConfig) {
   await base.step("Open Channel Partner listing", async () => {
-    await page.goto("/admin/developer/cpms/manage-construction", {
-      waitUntil: "networkidle",
-    });
-    await ensureActiveProject(page, app.activeProjectName);
-
-    const channelPartnerEntryPoints = [
-      page.getByRole("button", { name: /channel partner/i }),
-      page.getByRole("link", { name: /channel partner/i }),
-      page.locator("button").filter({ hasText: /channel partner/i }),
-      page.locator("a").filter({ hasText: /channel partner/i }),
-    ];
-
-    const opened = await clickFirstVisible(channelPartnerEntryPoints);
-    if (!opened) {
-      throw new Error('The "Channel Partner" entry point was not visible from the landing page.');
-    }
-
-    await waitForChannelPartnerListing(page);
+    await new ChannelPartnerPage(page).open(app);
   });
 }
 
@@ -446,41 +429,13 @@ export async function assertChannelPartnerCreated(page: Page, seed: ChannelPartn
 
 export async function selectChannelPartnerTab(page: Page, label: "Unregistered" | "Registered") {
   await base.step(`Open ${label} CP tab`, async () => {
-    const tab = page.getByRole("tab", { name: tabName(label) });
-    await expect(tab).toBeVisible({ timeout: 30000 });
-    await clickWithFallback(
-      page,
-      tab,
-      async () => await tab.evaluate((element) => element.getAttribute("aria-selected") === "true").catch(() => false),
-    );
-    await expect(tab).toHaveAttribute("aria-selected", "true", { timeout: 30000 });
-    await waitForLoadingToFinish(page);
+    await new ChannelPartnerPage(page).selectTab(label);
   });
 }
 
 export async function expectChannelPartnerListVisible(page: Page) {
   await base.step("Verify CP list is visible", async () => {
-    await waitForLoadingToFinish(page);
-
-    const listCandidates = [
-      page.locator('a[href*="/channel-partners/channel-partner-qualification"]').first(),
-      page.getByRole("table").first(),
-      page.getByRole("row").filter({ hasText: /\S/ }).nth(1),
-      page.locator("table tbody tr").filter({ hasText: /\S/ }).first(),
-      page.locator("[role='row']").filter({ hasText: /\S/ }).nth(1),
-      page.locator("[class*='table'] [class*='row']").filter({ hasText: /\S/ }).first(),
-      page.locator("[class*='card'], [class*='Card']").filter({ hasText: /cp|partner|registered|unregistered/i }).first(),
-    ];
-
-    for (const candidate of listCandidates) {
-      if (await candidate.isVisible().catch(() => false)) {
-        await expect(candidate).toBeVisible();
-        return;
-      }
-    }
-
-    const bodyText = normalizeText(await page.locator("body").innerText().catch(() => ""));
-    throw new Error(`CP list was not visible. Page text: ${bodyText.slice(0, 500)}`);
+    await new ChannelPartnerPage(page).expectListVisible();
   });
 }
 
@@ -489,19 +444,6 @@ export async function expectChannelPartnerListFilteredByStage(
   stage: "Unregistered" | "Registered",
 ) {
   await base.step(`Verify ${stage} CP list is visible`, async () => {
-    await waitForLoadingToFinish(page);
-
-    const activeTab = page.getByRole("tab", { name: tabName(stage) });
-    const cpRows = page.locator('a[href*="/channel-partners/channel-partner-qualification"]');
-
-    await expect(activeTab).toHaveAttribute("aria-selected", "true", { timeout: 30000 });
-
-    await expect
-      .poll(async () => {
-        return await cpRows.count().catch(() => 0);
-      }, { timeout: 30000 })
-      .toBeGreaterThan(0);
-
-    await expect(cpRows.first()).toBeVisible();
+    await new ChannelPartnerPage(page).expectListFilteredByStage(stage);
   });
 }
