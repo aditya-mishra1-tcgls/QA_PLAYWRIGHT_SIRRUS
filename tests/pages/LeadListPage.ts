@@ -19,6 +19,7 @@ export type LeadListAppConfig = {
 
 export type LeadStageFilter =
   | "New Lead"
+  | "Contacted"
   | "Open"
   | "Qualified"
   | "Site Visit"
@@ -443,6 +444,14 @@ export class LeadListPage {
       .last();
     if (await dropdownSearch.isVisible().catch(() => false)) {
       await dropdownSearch.fill(optionName);
+    }
+
+    const directStageOption = this.page
+      .getByRole("button", { name: optionName, exact: true })
+      .first();
+    if (await directStageOption.isVisible().catch(() => false)) {
+      await directStageOption.click({ force: true });
+      return;
     }
 
     const optionCandidates = [

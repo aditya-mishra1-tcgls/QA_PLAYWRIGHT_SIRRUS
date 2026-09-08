@@ -28,7 +28,7 @@ test.describe("Lead search flow", () => {
 
     const criteria = {
       stage: "New Lead" as LeadStageFilter,
-      source: "Direct Site Visit",
+      source: "Digital Marketing",
       projectName: "All Projects",
     };
 
