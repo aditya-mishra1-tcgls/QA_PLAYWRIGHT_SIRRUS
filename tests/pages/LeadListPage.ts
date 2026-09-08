@@ -18,6 +18,7 @@ export type LeadListAppConfig = {
 };
 
 export type LeadStageFilter =
+  | "New Lead"
   | "Open"
   | "Qualified"
   | "Site Visit"
@@ -138,6 +139,7 @@ export class LeadListPage {
     }
 
     await this.clickApplyFilters();
+    await this.waitForListingReady();
   }
 
   async applyFilters(criteria: LeadFilterCriteria) {
@@ -146,14 +148,19 @@ export class LeadListPage {
 
     if (criteria.stage) {
       await this.selectFilterOption("stage", criteria.stage);
+      await this.clickApplyFilters();
+      await this.waitForListingReady();
     }
 
     if (criteria.source) {
+      await this.openFilterPanel();
       await this.selectFilterOption("source", criteria.source);
+      await this.clickApplyFilters();
+      await this.waitForListingReady();
+    } else if (!criteria.stage) {
+      await this.clickApplyFilters();
+      await this.waitForListingReady();
     }
-
-    await this.clickApplyFilters();
-    await this.waitForListingReady();
   }
 
   async expectFilteredResults(criteria: LeadFilterCriteria) {
@@ -320,7 +327,7 @@ export class LeadListPage {
       ],
       { force: true },
     );
-    await this.page.waitForLoadState("networkidle").catch(() => {});
+    await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
   }
 
   private async clickFilterControlByDirectXPath() {
@@ -405,6 +412,22 @@ export class LeadListPage {
 
   private async selectFilterOption(dropdown: FilterDropdown, optionName: string) {
     const dropdownLabel = dropdown === "stage" ? "Select the Stage" : "Select the Source";
+
+    if (dropdown === "source") {
+      const sourceDropdown = this.page
+        .getByRole("button", { name: "Select the Source", exact: true })
+        .first();
+      await expect(sourceDropdown).toBeVisible({ timeout: 30000 });
+      await sourceDropdown.click({ force: true });
+
+      const sourceOption = this.page
+        .getByRole("button", { name: optionName, exact: true })
+        .first();
+      await expect(sourceOption).toBeVisible({ timeout: 30000 });
+      await sourceOption.click({ force: true });
+      return;
+    }
+
     const dropdownCandidates = this.filterDropdownCandidates(dropdownLabel);
 
     const opened =
@@ -423,9 +446,10 @@ export class LeadListPage {
     }
 
     const optionCandidates = [
+      this.page.getByRole("button", { name: optionPattern, exact: true }),
+      this.page.getByRole("option", { name: optionPattern, exact: true }),
+      this.page.getByRole("menuitem", { name: optionPattern, exact: true }),
       this.page.locator("button").filter({ hasText: optionPattern }),
-      this.page.getByRole("option", { name: optionPattern }),
-      this.page.getByRole("menuitem", { name: optionPattern }),
       this.page.getByText(optionPattern),
     ];
 
@@ -477,8 +501,8 @@ export class LeadListPage {
     const label = dropdownLabel === "Select the Source" ? this.page.getByText(/^Source$/i).first() : null;
 
     return [
-      ...(label ? [label.locator("xpath=following::button[1]").first()] : []),
       this.page.getByRole("button", { name: new RegExp(`^${escapeRegex(dropdownLabel)}$`, "i") }).first(),
+      ...(label ? [label.locator("xpath=following::button[1]").first()] : []),
       this.page.locator("button").filter({ hasText: new RegExp(`^${escapeRegex(dropdownLabel)}$`, "i") }).first(),
       this.page.getByText(new RegExp(`^${escapeRegex(dropdownLabel)}$`, "i")).locator("xpath=ancestor-or-self::button[1]").first(),
       this.page.getByText(new RegExp(`^${escapeRegex(dropdownLabel)}$`, "i")).locator("xpath=following::button[1]").first(),
@@ -500,6 +524,23 @@ export class LeadListPage {
       if (directButton) {
         directButton.click();
         return true;
+      }
+
+      if (dropdownName === "stage") {
+        const stageLabel = Array.from(document.querySelectorAll<HTMLElement>("label, p, span, div"))
+          .find((element) => normalize(element.innerText || element.textContent) === "Stage" && visible(element));
+        if (stageLabel) {
+          let container: HTMLElement | null = stageLabel.parentElement;
+          for (let depth = 0; container && depth < 5; depth += 1) {
+            const button = Array.from(container.querySelectorAll<HTMLElement>("button, [role='button']"))
+              .find((element) => visible(element));
+            if (button) {
+              button.click();
+              return true;
+            }
+            container = container.parentElement;
+          }
+        }
       }
 
       const label = Array.from(document.querySelectorAll<HTMLElement>("label, p, span, div"))

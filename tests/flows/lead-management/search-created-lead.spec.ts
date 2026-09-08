@@ -27,14 +27,13 @@ test.describe("Lead search flow", () => {
     await leadListPage.selectAllProjects();
 
     const criteria = {
-      stage: "Dropped" as LeadStageFilter,
+      stage: "New Lead" as LeadStageFilter,
       source: "Direct Site Visit",
       projectName: "All Projects",
     };
 
     await leadListPage.applyFilters(criteria);
     await leadListPage.expectFilteredResults(criteria);
-    await leadListPage.clearFilters();
   });
 
   test("Filter leads by each single status", async ({ page, app }) => {
@@ -57,9 +56,8 @@ test.describe("Lead search flow", () => {
         const criteria = { stage: status };
         await leadListPage.applyFilters(criteria);
         await leadListPage.expectFilteredResults(criteria);
+        await leadListPage.clearFilters();
       });
     }
-
-    await leadListPage.clearFilters();
   });
 });
