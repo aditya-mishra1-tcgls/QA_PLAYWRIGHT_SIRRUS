@@ -16,11 +16,13 @@
     "test:manual:qa": "node ./scripts/run-flows.mjs --env=qa",
     "test:manual:uat": "node ./scripts/run-flows.mjs --env=uat",
     "dashboard": "node ./scripts/dashboard/server.mjs",
-    "report": "playwright show-report"
+    "report": "playwright show-report",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
-    "@types/node": "^24.3.0"
+    "@types/node": "^24.3.0",
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1127.0",

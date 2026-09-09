@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
-import { expect, test as base, type Locator } from "@playwright/test";
-import { ensureActiveProject } from "./auth";
+import { test as base } from "@playwright/test";
+import { UserManagementPage } from "../pages";
+import { clickFirstVisible, escapeRegex, fillFirstVisible, visibleCandidate } from "./ui-actions";
 
 type AppConfig = {
   envName: string;
@@ -22,39 +23,6 @@ type AutomationUserSeed = {
 function randomAlphaNumeric(length: number) {
   const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   return Array.from({ length }, () => characters[Math.floor(Math.random() * characters.length)]).join("");
-}
-
-function escapeRegex(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function visibleCandidate(page: Page, selectors: string[]) {
-  return page
-    .locator(selectors.join(", "))
-    .filter({ hasNot: page.locator("[disabled]") })
-    .first();
-}
-
-async function fillFirstVisible(candidates: Locator[], value: string, label: string) {
-  for (const candidate of candidates) {
-    if (await candidate.isVisible().catch(() => false)) {
-      await candidate.fill(value);
-      return;
-    }
-  }
-
-  throw new Error(`Unable to find visible ${label} field on the user creation form.`);
-}
-
-async function clickFirstVisible(candidates: Locator[], label: string) {
-  for (const candidate of candidates) {
-    if (await candidate.isVisible().catch(() => false)) {
-      await candidate.click();
-      return;
-    }
-  }
-
-  throw new Error(`Unable to find visible ${label} control on the user management screen.`);
 }
 
 export function getConfiguredAdminCredential(app: AppConfig) {
@@ -81,37 +49,7 @@ export function buildAutomationUserSeed(app: AppConfig): AutomationUserSeed {
 
 export async function openUserManagement(page: Page, app: AppConfig) {
   await base.step("Open admin user management", async () => {
-    await ensureActiveProject(page, app.activeProjectName);
-
-    const directPaths = [
-      "/admin/developer/users",
-      "/admin/developer/user-management",
-      "/admin/developer/settings/users",
-      "/admin/developer/cpms/users",
-    ];
-
-    for (const directPath of directPaths) {
-      await page.goto(directPath, { waitUntil: "domcontentloaded" });
-      const looksLikeUserPage = await page
-        .getByRole("heading", { name: /users?|user management|team|members/i })
-        .first()
-        .isVisible({ timeout: 5000 })
-        .catch(() => false);
-
-      if (looksLikeUserPage) {
-        return;
-      }
-    }
-
-    await page.goto("/admin/developer/cpms/manage-construction", { waitUntil: "networkidle" });
-    await clickFirstVisible(
-      [
-        page.getByRole("link", { name: /users?|user management|team|members/i }).first(),
-        page.getByRole("button", { name: /users?|user management|team|members/i }).first(),
-        page.locator("a,button").filter({ hasText: /users?|user management|team|members/i }).first(),
-      ],
-      "user management navigation"
-    );
+    await new UserManagementPage(page).open(app);
   });
 }
 
@@ -119,25 +57,31 @@ export async function createAutomationUser(page: Page, app: AppConfig, seed = bu
   await openUserManagement(page, app);
 
   await base.step("Open create user form", async () => {
-    await clickFirstVisible(
-      [
-        page.getByRole("button", { name: /add user|create user|new user|invite user|add member/i }).first(),
-        page.getByRole("link", { name: /add user|create user|new user|invite user|add member/i }).first(),
-        page.locator("button,a").filter({ hasText: /add user|create user|new user|invite user|add member/i }).first(),
-      ],
-      "create user"
-    );
+    await new UserManagementPage(page).openCreateUserForm();
   });
 
   await base.step("Fill user details", async () => {
-    await fillFirstVisible(
-      [
-        page.getByLabel(/full name|name/i).first(),
-        visibleCandidate(page, ['input[name="name"]', 'input[name="fullName"]', 'input[placeholder*="name" i]']),
-      ],
-      seed.fullName,
-      "name"
+    const genericTextFields = page.locator(
+      'input:not([type="hidden"]):not([type="email"]):not([type="password"]):not([type="date"]):not([type="time"]):not([type="search"]), textarea'
     );
+    const nameFieldCandidates = [
+      page.getByLabel(/full name|name/i).first(),
+      visibleCandidate(page, ['input[name="name"]', 'input[name="fullName"]', 'input[placeholder*="name" i]', 'input[aria-label*="name" i]']),
+      genericTextFields.filter({ hasNot: page.locator('[disabled],[aria-disabled="true"],[readonly]') }).first(),
+      page.locator('input:not([type]), input[type="text"]').filter({ hasNot: page.locator('[disabled],[aria-disabled="true"],[readonly]') }).first(),
+    ];
+
+    let visibleNameField = null as ReturnType<typeof page.locator> | null;
+    for (const candidate of nameFieldCandidates) {
+      if (await candidate.isVisible().catch(() => false)) {
+        visibleNameField = candidate;
+        break;
+      }
+    }
+    if (!visibleNameField) {
+      throw new Error("Unable to find visible name field.");
+    }
+    await visibleNameField.fill(seed.fullName);
 
     await fillFirstVisible(
       [
@@ -179,7 +123,7 @@ export async function createAutomationUser(page: Page, app: AppConfig, seed = bu
   });
 
   await base.step("Verify user is listed", async () => {
-    await expect(page.getByText(seed.email, { exact: false })).toBeVisible({ timeout: 60000 });
+    await new UserManagementPage(page).expectUserListed(seed.email);
   });
 
   return seed;

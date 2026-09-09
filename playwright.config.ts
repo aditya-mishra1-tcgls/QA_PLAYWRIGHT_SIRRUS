@@ -4,7 +4,7 @@ import { getAuthStatePath } from "./tests/support/auth";
 
 const env = loadEnv();
 const authStatePath = getAuthStatePath(env.envName);
-const pageZoom = Number(process.env.PLAYWRIGHT_PAGE_ZOOM || 0.6);
+const pageZoom = Number(process.env.PLAYWRIGHT_PAGE_ZOOM || 1);
 const desktopChrome = devices["Desktop Chrome"];
 const zoomedViewport = {
   width: Math.round((desktopChrome.viewport?.width || 1280) / pageZoom),

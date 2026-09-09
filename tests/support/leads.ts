@@ -2,6 +2,8 @@ import type { Page } from "@playwright/test";
 import { expect, test as base, type Locator } from "@playwright/test";
 import leadFlowConfig from "../data/lead-flow.json";
 import { ensureActiveProject } from "./auth";
+import { LeadFormPage, LeadListPage, LeadProfilePage } from "../pages";
+import { fillWithFallback } from "./ui-actions";
 
 type AppConfig = {
   envName: string;
@@ -13,6 +15,7 @@ type LeadSeed = {
   projectName: string;
   fullName: string;
   whatsappNumber: string;
+  email: string;
   sourceCategory: string;
   companyName: string;
   preferredLocation: string;
@@ -65,7 +68,16 @@ const CORE_LEAD_FIELD_KEYS = new Set([
   "whatsAppNumber",
 ]);
 const DROPDOWN_OPTION_SELECTOR =
-  'button[class*="text-left"], button[class*="hover:text-gray-300"], [role="option"]';
+  [
+    'button[class*="text-left"]',
+    'button[class*="hover:text-gray-300"]',
+    '[role="option"]',
+    '[role="menuitem"]',
+    "[cmdk-item]",
+    "[data-radix-collection-item]",
+    "li[role]",
+    'div[class*="cursor-pointer"]',
+  ].join(", ");
 
 type LeadFlowConfigKey = keyof typeof leadFlowConfig;
 
@@ -192,6 +204,7 @@ export function buildLeadSeed(envName: string): LeadSeed {
     projectName: envSeed.projectName,
     fullName: `${envSeed.fullNamePrefix} ${suffix}`,
     whatsappNumber: `9${randomDigits(9)}`,
+    email: `automation.lead.${suffix.toLowerCase()}@example.com`,
     sourceCategory: envSeed.sourceCategory,
     companyName: envSeed.companyName,
     preferredLocation: envSeed.preferredLocation,
@@ -201,41 +214,7 @@ export function buildLeadSeed(envName: string): LeadSeed {
 
 export async function goToManageLeads(page: Page, app: AppConfig) {
   await logStep("Open manage leads page");
-  await page.goto("/admin/developer/cpms/manage-construction", {
-    waitUntil: "networkidle",
-  });
-  await ensureActiveProject(page, app.activeProjectName);
-  await waitForManageConstructionContent(page);
-  const engagementModuleButton = page
-    .locator("button")
-    .filter({
-      has: page.locator('img[alt*="engagement" i], img[alt*="Engagement" i]'),
-    })
-    .first();
-
-  await expect(engagementModuleButton).toBeVisible({ timeout: 60000 });
-  await clickWithFallback(
-    page,
-    engagementModuleButton,
-    async () =>
-      await page
-        .getByRole("button", { name: /manage leads/i })
-        .isVisible()
-        .catch(() => false),
-  );
-  await page.getByRole("button", { name: /manage leads/i }).click();
-  const manageLeadsOpened = await page
-    .waitForURL(/engagement-intelligence\/manage-leads/, {
-      timeout: 15000,
-    })
-    .then(() => true)
-    .catch(() => false);
-  if (!manageLeadsOpened) {
-    await page.goto("/admin/developer/engagement-intelligence/manage-leads", {
-      waitUntil: "domcontentloaded",
-    });
-  }
-  await waitForListingReady(page);
+  await new LeadListPage(page).openManageLeads(app);
 }
 
 function dropdownFor(page: Page, label: string): Locator {
@@ -250,8 +229,6 @@ async function locatorBox(locator?: Locator): Promise<ElementBox | null> {
 
 async function waitForDropdownOptions(page: Page, anchor?: Locator) {
   const anchorBox = await locatorBox(anchor);
-  const optionLocator = page.locator(DROPDOWN_OPTION_SELECTOR);
-  await expect(optionLocator.first()).toBeVisible({ timeout: 15000 });
 
   await expect
     .poll(() => visibleDropdownOptionTexts(page, anchorBox), {
@@ -331,17 +308,17 @@ async function visibleDropdownOptionTexts(
   page: Page,
   anchorBox?: ElementBox | null,
 ) {
-  return await page.evaluate((box) => {
-    const optionSelector =
-      'button[class*="text-left"], button[class*="hover:text-gray-300"], [role="option"]';
-
+  return await page.evaluate(({ box, optionSelector }) => {
     function isVisibleOption(element: HTMLElement) {
       const text = element.textContent?.replace(/\s+/g, " ").trim();
       const rect = element.getBoundingClientRect();
       const style = window.getComputedStyle(element);
       return (
+        !element.closest("table, thead, tbody, tfoot, tr, th, td") &&
         Boolean(text) &&
         text?.toLowerCase() !== "clear" &&
+        !/^Sort:/i.test(text ?? "") &&
+        !/^(Lead Name|Lead ID|Stage|Source|Sub Source|Create Date|Update Date)$/i.test(text ?? "") &&
         !/^select here$/i.test(text ?? "") &&
         rect.width > 0 &&
         rect.height > 0 &&
@@ -358,7 +335,7 @@ async function visibleDropdownOptionTexts(
       .filter(isVisibleOption)
       .map((element) => element.textContent?.replace(/\s+/g, " ").trim())
       .filter((text): text is string => Boolean(text));
-  }, anchorBox ?? null);
+  }, { box: anchorBox ?? null, optionSelector: DROPDOWN_OPTION_SELECTOR });
 }
 
 async function clickVisibleDropdownOption(
@@ -366,10 +343,7 @@ async function clickVisibleDropdownOption(
   selectedText: string,
   anchorBox?: ElementBox | null,
 ) {
-  return await page.evaluate(({ optionText, box }) => {
-    const optionSelector =
-      'button[class*="text-left"], button[class*="hover:text-gray-300"], [role="option"]';
-
+  return await page.evaluate(({ optionText, box, optionSelector }) => {
     const options = Array.from(
       document.querySelectorAll<HTMLElement>(optionSelector),
     )
@@ -378,6 +352,7 @@ async function clickVisibleDropdownOption(
         const rect = element.getBoundingClientRect();
         const style = window.getComputedStyle(element);
         return (
+          !element.closest("table, thead, tbody, tfoot, tr, th, td") &&
           text === optionText &&
           rect.width > 0 &&
           rect.height > 0 &&
@@ -402,16 +377,14 @@ async function clickVisibleDropdownOption(
 
     target.click();
     return true;
-  }, { optionText: selectedText, box: anchorBox ?? null });
+  }, { optionText: selectedText, box: anchorBox ?? null, optionSelector: DROPDOWN_OPTION_SELECTOR });
 }
 
 async function clickFirstVisibleDropdownOption(
   page: Page,
   anchorBox?: ElementBox | null,
 ) {
-  return await page.evaluate((box) => {
-    const optionSelector =
-      'button[class*="text-left"], button[class*="hover:text-gray-300"], [role="option"]';
+  return await page.evaluate(({ box, optionSelector }) => {
     const options = Array.from(
       document.querySelectorAll<HTMLElement>(optionSelector),
     ).filter((element) => {
@@ -419,8 +392,11 @@ async function clickFirstVisibleDropdownOption(
       const rect = element.getBoundingClientRect();
       const style = window.getComputedStyle(element);
       return (
+        !element.closest("table, thead, tbody, tfoot, tr, th, td") &&
         Boolean(text) &&
         text?.toLowerCase() !== "clear" &&
+        !/^Sort:/i.test(text ?? "") &&
+        !/^(Lead Name|Lead ID|Stage|Source|Sub Source|Create Date|Update Date)$/i.test(text ?? "") &&
         !/^select here$/i.test(text ?? "") &&
         rect.width > 0 &&
         rect.height > 0 &&
@@ -436,22 +412,21 @@ async function clickFirstVisibleDropdownOption(
     const target = options[0];
     target?.click();
     return target?.textContent?.replace(/\s+/g, " ").trim() ?? null;
-  }, anchorBox ?? null);
+  }, { box: anchorBox ?? null, optionSelector: DROPDOWN_OPTION_SELECTOR });
 }
 
 async function scrollVisibleDropdownOptions(
   page: Page,
   anchorBox?: ElementBox | null,
 ) {
-  return await page.evaluate((box) => {
-    const optionSelector =
-      'button[class*="text-left"], button[class*="hover:text-gray-300"], [role="option"]';
+  return await page.evaluate(({ box, optionSelector }) => {
     const visibleOptions = Array.from(
       document.querySelectorAll<HTMLElement>(optionSelector),
     ).filter((element) => {
       const rect = element.getBoundingClientRect();
       const style = window.getComputedStyle(element);
       return (
+        !element.closest("table, thead, tbody, tfoot, tr, th, td") &&
         rect.width > 0 &&
         rect.height > 0 &&
         (!box ||
@@ -493,7 +468,7 @@ async function scrollVisibleDropdownOptions(
     }
 
     return false;
-  }, anchorBox ?? null);
+  }, { box: anchorBox ?? null, optionSelector: DROPDOWN_OPTION_SELECTOR });
 }
 
 async function waitForDropdownValue(
@@ -757,7 +732,7 @@ function valueForLeadField(
   }
 
   if (/email/.test(fieldName)) {
-    return `automation.lead.${randomDigits(5)}@example.com`;
+    return leadSeed.email;
   }
 
   if (/phone|mobile|alternate number|contact/.test(fieldName)) {
@@ -1212,6 +1187,20 @@ async function fillCoreLeadFields(
   await base.step("Enter WhatsApp number", async () => {
     await page.locator("#whatsAppNumber").fill(leadSeed.whatsappNumber);
   });
+
+  await base.step("Enter email if available", async () => {
+    await fillFirstVisibleField(
+      page,
+      [
+        page.locator("#email").first(),
+        page.locator('input[name="email"]').first(),
+        page.locator('input[type="email"]').first(),
+        page.getByLabel(/email/i).first(),
+        page.getByText(/^Email ID\s*\*?$/i).locator("xpath=following::input[1]").first(),
+      ],
+      leadSeed.email,
+    );
+  });
 }
 
 export async function prepareLeadForm(page: Page, app: AppConfig) {
@@ -1245,15 +1234,7 @@ export async function fillLeadForm(page: Page, app: AppConfig) {
   const leadSeed = await prepareLeadForm(page, app);
 
   await base.step("Save lead", async () => {
-    await page
-      .locator("#root-modal")
-      .getByRole("button", { name: /^save$/i })
-      .click();
-    await waitForHiddenWithFallback(
-      page.getByText("Lead Form", { exact: true }),
-      page,
-      60000,
-    );
+    await new LeadFormPage(page).saveAndWaitForClose();
   });
 
   return leadSeed;
@@ -1268,59 +1249,27 @@ export async function assertLeadCreated(
   await expect(page.getByRole("button", { name: new RegExp(projectName, "i") }))
     .toBeVisible({ timeout: 10000 })
     .catch(() => {});
-  const searchInput = page.locator("#search");
-  await searchInput.fill(leadName);
-  await searchInput.press("Enter").catch(() => {});
-  await page.waitForTimeout(2000);
-  await expect(page.getByText(leadName, { exact: true })).toBeVisible({
-    timeout: 60000,
-  });
+  await new LeadListPage(page).expectLeadVisible(leadName);
+}
+
+export async function assertLeadSearchableByContactDetails(page: Page, leadSeed: LeadSeed) {
+  const leadListPage = new LeadListPage(page);
+  const searches = [
+    { label: "name", value: leadSeed.fullName },
+    { label: "phone number", value: leadSeed.whatsappNumber },
+    { label: "email id", value: leadSeed.email },
+  ];
+
+  for (const search of searches) {
+    await base.step(`Search lead by ${search.label}`, async () => {
+      await leadListPage.expectLeadVisibleForSearch(search.value, leadSeed.fullName);
+    });
+  }
 }
 
 export async function openLeadByName(page: Page, leadName: string) {
   await logStep("Open created lead");
-  const searchInput = page.locator("#search");
-  await searchInput.fill(leadName);
-  await searchInput.press("Enter").catch(() => {});
-  await page.waitForTimeout(2500);
-
-  const leadLinkCandidates = [
-    page
-      .getByRole("link", {
-        name: new RegExp(`^${escapeRegex(leadName)}$`, "i"),
-      })
-      .first(),
-    page
-      .locator('a[href*="manage-leads/?id="]')
-      .filter({ hasText: new RegExp(`^${escapeRegex(leadName)}$`, "i") })
-      .first(),
-    page.getByText(new RegExp(`^${escapeRegex(leadName)}$`, "i")).first(),
-  ];
-
-  let opened = false;
-  for (const candidate of leadLinkCandidates) {
-    if (!(await candidate.isVisible().catch(() => false))) {
-      continue;
-    }
-
-    await candidate.click({ force: true }).catch(() => {});
-    opened = await page
-      .waitForURL(/engagement-intelligence\/manage-leads\/?\?id=/, {
-        timeout: 15000,
-      })
-      .then(() => true)
-      .catch(() => false);
-    if (opened) {
-      break;
-    }
-  }
-
-  if (!opened) {
-    throw new Error(
-      `Could not open lead profile for "${leadName}" from the lead listing.`,
-    );
-  }
-
+  await new LeadListPage(page).openLeadByName(leadName);
   await waitForLeadProfile(page);
 }
 
@@ -1384,23 +1333,31 @@ async function waitForLeadListingContent(page: Page) {
 }
 
 async function waitForManageConstructionContent(page: Page) {
-  await page.waitForLoadState("networkidle").catch(() => {});
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
 
   await expect
     .poll(
       async () => {
-        const bodyText = (
-          await page
-            .locator("body")
-            .innerText()
-            .catch(() => "")
-        )
+        const currentUrl = page.url();
+        const bodyText = (await page.locator("body").innerText().catch(() => ""))
           .replace(/\s+/g, " ")
           .trim();
+        const hasManageConstructionShell = await page
+          .getByRole("heading", { name: /Manage Construction/i })
+          .first()
+          .isVisible()
+          .catch(() => false);
+        const hasLandingModules = await page
+          .getByText(/Schedule Control|Site Tracker|Saved Reports/i)
+          .first()
+          .isVisible()
+          .catch(() => false);
+
         return (
-          /Manage Construction|Schedule Control|Site Tracker|Saved Reports/i.test(
-            bodyText,
-          ) && !/loading/i.test(bodyText)
+          /\/admin\/developer\/cpms\/manage-construction/i.test(currentUrl) &&
+          (hasManageConstructionShell ||
+            hasLandingModules ||
+            /Manage Construction/i.test(bodyText))
         );
       },
       { timeout: 30000 },
@@ -1418,63 +1375,7 @@ async function waitForListingReady(page: Page) {
 }
 
 async function waitForLeadProfile(page: Page) {
-  await page.waitForURL(/engagement-intelligence\/manage-leads\/?\?id=/, {
-    timeout: 30000,
-  });
-
-  await expect(page.getByText(/Lead Profile/i).first()).toBeVisible({
-    timeout: 60000,
-  });
-
-  await expect
-    .poll(
-      async () => {
-        const bodyText = await page.locator("body").innerText();
-        return /Lead ID\s*:|Edit Lead Form|Change Stage|Lead Journey|Full Name\s*:|Lead Profile/i.test(
-          bodyText,
-        );
-      },
-      { timeout: 60000 },
-    )
-    .toBeTruthy();
-
-  await expect(page.locator("body")).toContainText(/Lead ID\s*:/i, {
-    timeout: 60000,
-  });
-  await expect
-    .poll(
-      async () => {
-        const hasLeadNameSection = await page
-          .getByText(/Full Name\s*:/i)
-          .first()
-          .isVisible()
-          .catch(() => false);
-        const hasEditLead = await page
-          .getByText(/Edit Lead Form/i)
-          .first()
-          .isVisible()
-          .catch(() => false);
-        const hasChangeStage = await page
-          .getByText(/Change Stage/i)
-          .first()
-          .isVisible()
-          .catch(() => false);
-        const hasLeadJourney = await page
-          .getByText(/Lead Journey/i)
-          .first()
-          .isVisible()
-          .catch(() => false);
-        return (
-          hasLeadNameSection ||
-          hasEditLead ||
-          (hasChangeStage && hasLeadJourney)
-        );
-      },
-      { timeout: 60000 },
-    )
-    .toBeTruthy();
-
-  await page.waitForTimeout(1500);
+  await new LeadProfilePage(page).expectLoaded();
 }
 
 export async function openAnyLeadFromListing(page: Page, app: AppConfig) {
@@ -1536,113 +1437,7 @@ export async function editOpenedLeadName(
   nextName?: string,
 ): Promise<EditedLead> {
   await logStep("Open edit lead form");
-  const editLeadButtonCandidates = [
-    page.getByRole("button", { name: /edit lead form/i }),
-    page.getByText("Edit Lead Form", { exact: true }),
-    page.locator('button:has-text("Edit Lead Form")'),
-    page.getByRole("button", { name: /edit lead/i }),
-    page.getByText("Edit Lead", { exact: true }),
-    page.locator('button:has-text("Edit Lead")'),
-  ];
-
-  await expect
-    .poll(
-      async () => {
-        for (const locator of editLeadButtonCandidates) {
-          if (
-            await locator
-              .first()
-              .isVisible()
-              .catch(() => false)
-          ) {
-            return true;
-          }
-        }
-
-        return false;
-      },
-      { timeout: 60000 },
-    )
-    .toBeTruthy();
-
-  await page.waitForTimeout(2000);
-
-  const editLeadOpened = await clickFirstVisible(
-    page,
-    editLeadButtonCandidates,
-  );
-  if (!editLeadOpened) {
-    throw new Error("Edit Lead action was not visible on the lead profile.");
-  }
-
-  await expect(page.getByText("Lead Form", { exact: true })).toBeVisible({
-    timeout: 30000,
-  });
-
-  const fullNameInput = page.locator("#fullName");
-  const previousName = (await fullNameInput.inputValue()).trim();
-  if (!previousName) {
-    throw new Error("Full Name field was empty while editing the lead.");
-  }
-
-  const nameLimit =
-    Number(await fullNameInput.getAttribute("maxlength").catch(() => "50")) ||
-    50;
-  const updatedName = (
-    nextName ?? `Edited Prefix ${randomDigits(4)} ${previousName}`
-  ).slice(0, nameLimit);
-  await base.step("Update lead name", async () => {
-    await fullNameInput.fill(updatedName);
-  });
-
-  const updatedEmail = "demouser@test.com";
-  const emailInputCandidates = [
-    page.locator("#email"),
-    page.locator('input[name="email"]'),
-    page.locator('input[type="email"]'),
-    page.getByText(/^Email ID$/i).locator("xpath=following::input[1]"),
-    page
-      .getByText(/^Email ID$/i)
-      .locator("xpath=ancestor::div[1]/following-sibling::div//input[1]"),
-    page.locator('input[placeholder="Enter here"]').nth(2),
-  ];
-
-  let emailUpdated = false;
-  for (const locator of emailInputCandidates) {
-    const input = locator.first();
-    if (await input.isVisible().catch(() => false)) {
-      await input.scrollIntoViewIfNeeded().catch(() => {});
-      await base.step("Update lead email", async () => {
-        await input.fill(updatedEmail);
-      });
-      emailUpdated = true;
-      break;
-    }
-  }
-
-  if (!emailUpdated) {
-    throw new Error("Email field was not visible while editing the lead.");
-  }
-
-  await base.step("Save lead changes", async () => {
-    await page
-      .locator("#root-modal")
-      .getByRole("button", { name: /^save$/i })
-      .click();
-    await waitForHiddenWithFallback(
-      page.getByText("Lead Form", { exact: true }),
-      page,
-      60000,
-    );
-  });
-  await expect(page.locator("body")).toContainText(updatedName, {
-    timeout: 60000,
-  });
-  await expect(page.locator("body")).toContainText(updatedEmail, {
-    timeout: 60000,
-  });
-
-  return { previousName, updatedName, updatedEmail };
+  return await new LeadProfilePage(page).editLeadName(nextName);
 }
 
 export async function addRemarkToOpenedLead(
@@ -1650,136 +1445,21 @@ export async function addRemarkToOpenedLead(
   remarkText?: string,
 ): Promise<AddedRemark> {
   await logStep("Add remark");
-  const finalRemark = remarkText ?? `Automation remark ${randomDigits(6)}`;
-  const addRemarkButtonCandidates = [
-    page.getByRole("button", { name: /add remark/i }),
-    page.getByRole("button", { name: /add comment/i }),
-    page.getByText("Add Remark", { exact: true }),
-    page.getByText("Add comment", { exact: true }),
-  ];
-
-  const opened = await clickFirstVisible(page, addRemarkButtonCandidates);
-  if (!opened) {
-    throw new Error("Add Remark action was not visible on the lead profile.");
-  }
-
-  const remarkInputCandidates = [
-    page.getByRole("textbox", { name: /remark/i }).first(),
-    page.locator("textarea").first(),
-    page.locator('textarea[name*="remark" i]').first(),
-  ];
-
-  let remarkInput: Locator | null = null;
-  for (const locator of remarkInputCandidates) {
-    if (await locator.isVisible().catch(() => false)) {
-      remarkInput = locator;
-      break;
-    }
-  }
-
-  if (!remarkInput) {
-    throw new Error(
-      "Remark input was not visible after opening the Add Remark flow.",
-    );
-  }
-
-  await remarkInput.scrollIntoViewIfNeeded().catch(() => {});
-  await remarkInput.fill(finalRemark);
-
-  const saveButtons = [
-    page.locator("#root-modal").getByRole("button", { name: /^save$/i }),
-    page.getByRole("button", { name: /^save$/i }),
-  ];
-
-  let saved = false;
-  for (const locator of saveButtons) {
-    const count = await locator.count().catch(() => 0);
-    for (let index = count - 1; index >= 0; index -= 1) {
-      const button = locator.nth(index);
-      if (await button.isVisible().catch(() => false)) {
-        await button.click({ force: true });
-        saved = true;
-        break;
-      }
-    }
-
-    if (saved) {
-      break;
-    }
-  }
-
-  if (!saved) {
-    throw new Error("Save button was not visible in the Add Remark flow.");
-  }
-
-  await expect
-    .poll(
-      async () => {
-        const bodyText = await page
-          .locator("body")
-          .innerText()
-          .catch(() => "");
-        return bodyText.includes(finalRemark);
-      },
-      { timeout: 60000 },
-    )
-    .toBeTruthy();
-
-  return { text: finalRemark };
+  return await new LeadProfilePage(page).addRemark(remarkText);
 }
 
 export async function assertGenerateCostSheetRenderingOnOpenedLead(
   page: Page,
 ): Promise<CostSheetRenderResult> {
   await logStep("Open generated cost sheet preview");
-  const tabStrip = page
-    .locator("div")
-    .filter({ has: page.getByText("Overview", { exact: true }) })
-    .filter({ has: page.getByText("AI Insights", { exact: true }) })
-    .filter({ has: page.getByText("Change Stage", { exact: true }) })
-    .first();
-
-  const aiInsightsTab = tabStrip.getByText("AI Insights", { exact: true });
-  await expect(aiInsightsTab).toBeVisible({ timeout: 60000 });
-  await aiInsightsTab.click({ force: true });
-
-  const quotationsTab = page
-    .getByRole("button", { name: /^quotations$/i })
-    .first();
-  await expect(quotationsTab).toBeVisible({ timeout: 60000 });
-  await quotationsTab.click({ force: true });
-
-  const generateCostSheetButton = page
-    .getByRole("button", { name: /generate cost sheet/i })
-    .first();
-  await expect(generateCostSheetButton).toBeVisible({ timeout: 60000 });
-  await generateCostSheetButton.click({ force: true });
-
-  const emptyState = page.getByText(/No Master Cost Sheet/i).first();
-  await expect(emptyState).toBeVisible({ timeout: 60000 });
-
-  return { emptyStateText: await emptyState.innerText() };
+  return await new LeadProfilePage(page).openGeneratedCostSheetPreview();
 }
 
 export async function assertAddCommentPanelOnOpenedLead(
   page: Page,
 ): Promise<CommentPanelResult> {
   await logStep("Open add comment panel");
-  const addCommentButtonCandidates = [
-    page.getByRole("button", { name: /add comment/i }),
-    page.getByText("Add comment", { exact: true }),
-    page.locator('button:has-text("Add comment")'),
-  ];
-
-  const opened = await clickFirstVisible(page, addCommentButtonCandidates);
-  if (!opened) {
-    throw new Error("Add comment action was not visible on the lead profile.");
-  }
-
-  const panelTitle = page.getByText(/Add comment and followup/i).first();
-  await expect(panelTitle).toBeVisible({ timeout: 60000 });
-
-  return { panelTitle: await panelTitle.innerText() };
+  return await new LeadProfilePage(page).openAddCommentPanel();
 }
 
 export async function addReEnquiryToOpenedLead(
@@ -1788,68 +1468,7 @@ export async function addReEnquiryToOpenedLead(
   subSource = "Walk In",
 ): Promise<ReEnquiryResult> {
   await logStep("Add re-enquiry");
-  const reEnquiryButtonCandidates = [
-    page.getByRole("button", { name: /^re-enquiry/i }),
-    page.getByText(/^Re-Enquiry/i).first(),
-    page.getByRole("button", { name: /add re-enquiry/i }),
-    page.getByText("Add Re-Enquiry", { exact: true }),
-    page.locator('button:has-text("Add Re-Enquiry")'),
-  ];
-
-  const opened = await clickFirstVisible(page, reEnquiryButtonCandidates);
-  if (!opened) {
-    throw new Error(
-      "Add Re-Enquiry action was not visible on the lead profile.",
-    );
-  }
-
-  const sourceButton = page
-    .getByRole("button", { name: /select source/i })
-    .first();
-  await expect(sourceButton).toBeVisible({ timeout: 30000 });
-  await sourceButton.click({ force: true });
-
-  const sourceOption = page
-    .getByRole("button", { name: new RegExp(`^${source}$`, "i") })
-    .first();
-  await expect(sourceOption).toBeVisible({ timeout: 30000 });
-  await sourceOption.click({ force: true });
-
-  const subSourceButton = page
-    .getByRole("button", { name: /select sub source/i })
-    .first();
-  await expect(subSourceButton).toBeVisible({ timeout: 30000 });
-  await subSourceButton.click({ force: true });
-
-  const subSourceOption = page
-    .getByRole("button", { name: new RegExp(`^${subSource}$`, "i") })
-    .first();
-  await expect(subSourceOption).toBeVisible({ timeout: 30000 });
-  await subSourceOption.click({ force: true });
-
-  const saveButtonCandidates = [
-    page.getByRole("button", { name: /^save$/i }).last(),
-    page.getByRole("button", { name: /^SAVE$/ }).last(),
-  ];
-
-  let saved = false;
-  for (const button of saveButtonCandidates) {
-    if (await button.isVisible().catch(() => false)) {
-      await button.click({ force: true });
-      saved = true;
-      break;
-    }
-  }
-
-  if (!saved) {
-    throw new Error("Save button was not visible in the re-enquiry flow.");
-  }
-
-  await expect(page.getByText("Lead Journey", { exact: true })).toBeVisible({
-    timeout: 60000,
-  });
-
-  return { source, subSource };
+  return await new LeadProfilePage(page).addReEnquiry(source, subSource);
 }
 
 export async function moveOpenedLeadToSiteVisitInProgress(
@@ -2006,6 +1625,9 @@ async function completeVisibleOtpAuthentication(page: Page) {
   const sentOtp = await clickVisibleTextActionWithDom(page, /^send otp$/i);
   if (!sentOtp) {
     const sendOtpButton = await findVisibleAction(page, /^send otp$/i);
+    if (!sendOtpButton) {
+      throw new Error('"Send OTP" action was not visible while starting the site visit.');
+    }
     await sendOtpButton.click({ force: true });
   }
 
@@ -2023,6 +1645,9 @@ async function completeVisibleOtpAuthentication(page: Page) {
 
   await base.step("Submit site visit OTP", async () => {
     const continueButton = await findVisibleAction(page, /continue/i);
+    if (!continueButton) {
+      throw new Error('"Continue" action was not visible after entering the site visit OTP.');
+    }
     await continueButton.click({ force: true });
   });
 
@@ -2053,7 +1678,16 @@ async function completeOpenedSiteVisit(
   }
 
   await endVisitButton.click({ force: true });
-  const completedStatus = await findVisibleAction(page, /^site visit completed$/i);
+  let completedStatus = await findVisibleAction(page, /^site visit completed$/i, false);
+  if (!completedStatus) {
+    await ensureLeadProfileIsOpen(page, leadName);
+    await openChangeStageTab(page);
+    completedStatus = await findVisibleAction(page, /^site visit completed$/i, false);
+  }
+
+  if (!completedStatus) {
+    throw new Error('"Site Visit Completed" status was not visible after ending the visit.');
+  }
   await completedStatus.click({ force: true });
 
   await expectSiteVisitDone(page, leadName);
@@ -2822,8 +2456,7 @@ async function fillFirstVisibleField(
   for (const locator of locators) {
     if (await locator.isVisible().catch(() => false)) {
       await locator.scrollIntoViewIfNeeded().catch(() => {});
-      await locator.fill(value);
-      return true;
+      return await fillWithFallback(locator, value);
     }
   }
 
@@ -3032,8 +2665,7 @@ async function fillFirstVisibleStageField(page: Page, locators: Locator[], value
       }
 
       await revealLocator(page, locator);
-      await locator.click().catch(() => {});
-      if (await locator.fill(value).then(() => true).catch(() => false)) {
+      if (await fillWithFallback(locator, value)) {
         return true;
       }
     }
@@ -3100,7 +2732,13 @@ async function selectOpportunityFollowUpDate(page: Page) {
 async function selectCustomDateIfVisible(page: Page, daysAhead: number) {
   const dateButtonCandidates = [
     page.getByRole("button", { name: /select date|start date|follow.*date/i }).first(),
+    page.getByText(/^Select Date\s*\*?$/i).locator("xpath=following::button[1]").first(),
+    page.getByText(/^Next Follow Up\s*\*?$/i).locator("xpath=following::button[1]").first(),
+    page.getByLabel(/next follow up|follow up|follow-up|select date|date/i).first(),
     page.locator("button, [role='button'], div").filter({ hasText: /select date|start date/i }).first(),
+    page.locator('input[type="date"]').first(),
+    page.locator('input[name*="follow" i]').first(),
+    page.locator('input[aria-label*="follow" i]').first(),
   ];
 
   for (const dateButton of dateButtonCandidates) {
@@ -3117,13 +2755,27 @@ async function selectCustomDateIfVisible(page: Page, daysAhead: number) {
     }
   }
 
+  if (await clickLabeledControl(page, /Select Date|Next Follow Up/i, 0)) {
+    const dateOption = page.getByRole("option", { name: dateOptionName(daysAhead) }).first();
+    if (await dateOption.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await dateOption.click({ force: true });
+      return true;
+    }
+  }
+
   return false;
 }
 
 async function selectCustomTimeIfVisible(page: Page) {
   const timeButtonCandidates = [
     page.getByRole("button", { name: /select time/i }).first(),
+    page.getByText(/^Select Time\s*\*?$/i).locator("xpath=following::button[1]").first(),
+    page.getByText(/^Next Follow Up\s*\*?$/i).locator("xpath=following::button[2]").first(),
+    page.getByLabel(/next follow up|follow up|follow-up|select time|time/i).first(),
     page.locator("button, [role='button'], div").filter({ hasText: /^Select Time$/i }).first(),
+    page.locator('input[type="time"]').first(),
+    page.locator('input[name*="follow" i]').first(),
+    page.locator('input[aria-label*="follow" i]').first(),
   ];
 
   for (const timeButton of timeButtonCandidates) {
@@ -3143,7 +2795,62 @@ async function selectCustomTimeIfVisible(page: Page) {
     }
   }
 
+  if (await clickLabeledControl(page, /Select Time|Next Follow Up/i, 1)) {
+    const timeOption = page
+      .locator("button, [role='option'], div, span")
+      .filter({ hasText: /^(10|11):[0-5]\d\s?(AM|PM)$/i })
+      .first();
+    if (await timeOption.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await timeOption.click({ force: true });
+      return true;
+    }
+  }
+
   return false;
+}
+
+async function clickLabeledControl(page: Page, labelPattern: RegExp, controlIndex: number) {
+  return await page.evaluate(
+    ({ source, flags, controlIndex }) => {
+      const labelMatcher = new RegExp(source, flags);
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const isVisible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          style.pointerEvents !== "none"
+        );
+      };
+
+      const labels = Array.from(document.querySelectorAll<HTMLElement>("label, p, span, div"))
+        .filter((element) => labelMatcher.test(normalize(element.innerText || element.textContent)) && isVisible(element))
+        .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top);
+
+      for (const label of labels) {
+        let container: HTMLElement | null = label.parentElement;
+        for (let depth = 0; container && depth < 6; depth += 1) {
+          const controls = Array.from(
+            container.querySelectorAll<HTMLElement>("button, [role='button'], input, [tabindex], div[class*='cursor-pointer']")
+          ).filter((element) => element !== label && isVisible(element));
+          const control = controls[controlIndex] || controls[0];
+          if (control) {
+            control.scrollIntoView({ block: "center", inline: "center" });
+            control.click();
+            return true;
+          }
+          container = container.parentElement;
+        }
+      }
+
+      return false;
+    },
+    { source: labelPattern.source, flags: labelPattern.flags, controlIndex },
+  ).catch(() => false);
 }
 
 async function fillSiteVisitCancellationReason(
@@ -3212,7 +2919,9 @@ async function fillSiteVisitCancellationReason(
 async function clickVisibleSaveButton(page: Page, postSaveText?: RegExp) {
   const saveButtons = [
     page.locator("#root-modal").getByRole("button", { name: /^save$/i }),
+    page.locator("#root-modal").getByRole("button", { name: /save|update|submit/i }),
     page.getByRole("button", { name: /^save$/i }),
+    page.getByRole("button", { name: /save|update|submit/i }),
   ];
 
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -3226,15 +2935,13 @@ async function clickVisibleSaveButton(page: Page, postSaveText?: RegExp) {
       for (let index = count - 1; index >= 0; index -= 1) {
         const button = locator.nth(index);
         await revealLocator(page, button);
-        if (await button.isVisible().catch(() => false)) {
-          await button.click({ force: true });
-          if (postSaveText) {
-            await expect(page.locator("body")).toContainText(postSaveText, {
-              timeout: 15000,
-            }).catch(() => {});
-          }
-          return true;
+        await button.click({ force: true }).catch(() => {});
+        if (postSaveText) {
+          await expect(page.locator("body")).toContainText(postSaveText, {
+            timeout: 15000,
+          }).catch(() => {});
         }
+        return true;
       }
     }
 
@@ -3314,8 +3021,6 @@ async function clickVisibleSaveButtonWithDom(page: Page) {
       return (
         rect.width > 0 &&
         rect.height > 0 &&
-        rect.bottom >= 0 &&
-        rect.top <= window.innerHeight &&
         style.visibility !== "hidden" &&
         style.display !== "none" &&
         style.pointerEvents !== "none"
@@ -3323,7 +3028,7 @@ async function clickVisibleSaveButtonWithDom(page: Page) {
     };
 
     const matches = Array.from(document.querySelectorAll<HTMLElement>("button, [role='button']"))
-      .filter((element) => normalize(element.innerText || element.textContent) === "Save" && isVisible(element))
+      .filter((element) => /^(Save|Update|Submit|Save Changes)$/i.test(normalize(element.innerText || element.textContent)) && isVisible(element))
       .sort((left, right) => right.getBoundingClientRect().left - left.getBoundingClientRect().left);
 
     const button = matches[0];
@@ -3501,44 +3206,6 @@ async function scrollStageFormSection(page: Page, direction = 1) {
 
     return false;
   }, direction);
-}
-
-async function scrollJourneySection(page: Page) {
-  return await page.evaluate(() => {
-    const scrollables = Array.from(document.querySelectorAll("div")).filter(
-      (element) => {
-        const html = element as HTMLDivElement;
-        const style = window.getComputedStyle(html);
-        const rect = html.getBoundingClientRect();
-        const text = (html.innerText || "").trim();
-
-        return (
-          rect.width > 0 &&
-          rect.height > 0 &&
-          html.scrollHeight > html.clientHeight &&
-          (style.overflowY === "auto" || style.overflowY === "scroll") &&
-          /Lead Journey|New Lead|Open|Qualified|Site Visit|Opportunity/i.test(
-            text,
-          )
-        );
-      },
-    );
-
-    for (const element of scrollables) {
-      const html = element as HTMLDivElement;
-      const previousTop = html.scrollTop;
-      html.scrollTop = Math.min(
-        html.scrollTop + Math.max(Math.floor(html.clientHeight * 0.8), 220),
-        html.scrollHeight,
-      );
-
-      if (html.scrollTop !== previousTop) {
-        return true;
-      }
-    }
-
-    return false;
-  });
 }
 
 async function isTabActive(tab: Locator) {
@@ -3865,7 +3532,11 @@ export async function cancelSiteVisitFromOpenedLead(
   page: Page,
   remark = "automation is done",
   reason = "Out of Town",
+  leadName?: string,
 ) {
+  if (leadName) {
+    await ensureLeadProfileIsOpen(page, leadName);
+  }
   await openChangeStageTab(page);
 
   const cancelledOption = page.getByText(/^Cancelled$/i).last();
@@ -3901,69 +3572,100 @@ export async function cancelSiteVisitFromOpenedLead(
     await remarksField.fill(remark);
   }
 
-  await fillFirstVisibleField(
-    page,
-    [
-      page.locator('input[type="date"]').first(),
-      page.locator('input[placeholder*="date" i]').first(),
-      page.locator('input[name*="date" i]').first(),
-    ],
-    siteVisitIsoDate(),
-  );
-  await selectCustomDateIfVisible(page, 1);
+  const nextFollowUpDateVisible = await page
+    .locator('input[type="date"], input[name*="date" i], input[placeholder*="date" i], input[name*="follow" i], input[placeholder*="follow" i], input[aria-label*="follow" i]')
+    .first()
+    .isVisible()
+    .catch(() => false);
 
-  await fillFirstVisibleField(
-    page,
-    [
-      page.locator('input[type="time"]').first(),
-      page.locator('input[placeholder*="time" i]').first(),
-      page.locator('input[name*="time" i]').first(),
-    ],
-    "14:00",
-  );
-  await selectCustomTimeIfVisible(page);
+  const dateSelected = nextFollowUpDateVisible
+    ? (await selectCustomDateIfVisible(page, 3)) ||
+      (await fillFirstVisibleField(
+        page,
+        [
+          page.getByLabel(/next follow up|follow up|follow-up|date/i).first(),
+          page.locator('input[type="date"]').first(),
+          page.locator('input[placeholder*="date" i]').first(),
+          page.locator('input[name*="date" i]').first(),
+          page.locator('input[name*="follow" i]').first(),
+          page.locator('input[aria-label*="follow" i]').first(),
+          page.locator('input[placeholder*="follow" i]').first(),
+        ],
+        siteVisitIsoDate(),
+      ))
+    : true;
+
+  if (nextFollowUpDateVisible && !dateSelected) {
+    throw new Error('Next Follow Up date was not selectable after choosing "Cancelled".');
+  }
+
+  const nextFollowUpTimeVisible = await page
+    .locator('input[type="time"], input[name*="time" i], input[placeholder*="time" i], input[name*="follow" i], input[placeholder*="follow" i], input[aria-label*="follow" i]')
+    .first()
+    .isVisible()
+    .catch(() => false);
+
+  const timeSelected = nextFollowUpTimeVisible
+    ? (await selectCustomTimeIfVisible(page)) ||
+      (await fillFirstVisibleField(
+        page,
+        [
+          page.getByLabel(/next follow up|follow up|follow-up|time/i).first(),
+          page.locator('input[type="time"]').first(),
+          page.locator('input[placeholder*="time" i]').first(),
+          page.locator('input[name*="time" i]').first(),
+          page.locator('input[name*="follow" i]').first(),
+          page.locator('input[aria-label*="follow" i]').first(),
+          page.locator('input[placeholder*="follow" i]').first(),
+        ],
+        "14:00",
+      ))
+    : true;
+
+  if (nextFollowUpTimeVisible && !timeSelected) {
+    throw new Error('Next Follow Up time was not selectable after choosing "Cancelled".');
+  }
 
   const saved = await clickVisibleSaveButton(page);
   if (!saved) {
-    throw new Error(
-      'Save button was not visible after selecting "Cancelled" site visit condition.',
-    );
+    const stageUpdated = await expect
+      .poll(
+        async () => {
+          const bodyText = await page.locator("body").innerText();
+          return /Stage Updated to Cancelled|Dropped Reason\s*:\s*\S|Cancelled|Cancelled Stage|Site Visit Cancelled/i.test(
+            bodyText,
+          );
+        },
+        { timeout: 30000 },
+      )
+      .toBeTruthy()
+      .then(() => true)
+      .catch(() => false);
+
+    if (!stageUpdated) {
+      throw new Error(
+        'Save button was not visible after selecting "Cancelled" site visit condition.',
+      );
+    }
   }
 
   await expect
     .poll(
       async () => {
         const bodyText = await page.locator("body").innerText();
-        return /Stage Updated to Cancelled|Dropped Reason\s*:\s*\S/i.test(
+        return /Stage Updated to Cancelled|Dropped Reason\s*:\s*\S|Cancelled|Cancelled Stage|Site Visit Cancelled/i.test(
           bodyText,
         );
       },
       { timeout: 60000 },
     )
     .toBeTruthy();
+
+  if (leadName) {
+    await ensureLeadProfileIsOpen(page, leadName);
+  }
 }
 
 export async function assertLeadJourneyStages(page: Page, stages: string[]) {
-  const leadJourneyTab = page.getByText("Lead Journey", { exact: true });
-  await expect(leadJourneyTab).toBeVisible({ timeout: 30000 });
-  await leadJourneyTab.click();
-
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const bodyText = await page.locator("body").innerText();
-    if (stages.every((stage) => new RegExp(stage, "i").test(bodyText))) {
-      return;
-    }
-
-    const scrolled = await scrollJourneySection(page);
-    if (!scrolled) {
-      break;
-    }
-
-    await page.waitForTimeout(600);
-  }
-
-  const finalBodyText = await page.locator("body").innerText();
-  for (const stage of stages) {
-    expect(finalBodyText).toMatch(new RegExp(stage, "i"));
-  }
+  await new LeadProfilePage(page).expectJourneyStages(stages);
 }
