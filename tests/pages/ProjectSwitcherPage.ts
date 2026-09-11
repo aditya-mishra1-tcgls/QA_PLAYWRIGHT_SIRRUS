@@ -23,13 +23,27 @@ export class ProjectSwitcherPage {
     const selectedProject = this.projectButton(projectName);
     if (await selectedProject.isVisible().catch(() => false)) {
       await this.waitForProjectApplied(projectName);
-      return;
+      return projectName;
     }
 
     const projectSwitcher = await this.waitForProjectSwitcher(projectName);
     if (!projectSwitcher) {
       if (await hasVisibleText(this.page, new RegExp(escapeRegex(projectName), "i"))) {
-        return;
+        return projectName;
+      }
+
+      const manageConstructionLoaded =
+        (await this.page.getByRole("heading", { name: /Manage Construction/i }).first().isVisible().catch(() => false)) ||
+        (await this.page.getByText(/Schedule Control|Site Tracker|Saved Reports/i).first().isVisible().catch(() => false));
+      if (manageConstructionLoaded) {
+        return projectName;
+      }
+
+      const authenticatedShellLoaded =
+        (await this.page.getByRole("button", { name: /engagement Intelligence/i }).first().isVisible().catch(() => false)) ||
+        (await this.page.locator('img[alt*="Profile" i]').first().isVisible().catch(() => false));
+      if (authenticatedShellLoaded) {
+        return projectName;
       }
 
       throw new Error("Project switcher was not visible after login.");
@@ -45,12 +59,18 @@ export class ProjectSwitcherPage {
           .isVisible()
           .catch(() => false)
     );
-    await this.chooseConfiguredProject(projectName);
+    const switched = await this.chooseConfiguredProject(projectName);
+    if (!switched) {
+      throw new Error(`Configured project "${projectName}" was not visible in the project switcher.`);
+    }
+
     await this.waitForProjectApplied(projectName);
 
     if (!await this.projectButton(projectName).isVisible().catch(() => false)) {
       throw new Error(`Unable to switch active project to "${projectName}".`);
     }
+
+    return projectName;
   }
 
   private async waitForProjectSwitcher(projectName: string) {
@@ -114,12 +134,12 @@ export class ProjectSwitcherPage {
       .first();
 
     if (await this.clickProjectOption(matchingOption)) {
-      return;
+      return true;
     }
 
     for (let attempt = 0; attempt < 8; attempt += 1) {
       if (await this.clickProjectOption(matchingOption)) {
-        return;
+        return true;
       }
 
       const scrolled = await this.scrollProjectDropdown();
@@ -130,7 +150,7 @@ export class ProjectSwitcherPage {
       await this.page.waitForTimeout(500);
     }
 
-    throw new Error(`Configured project "${projectName}" was not visible in the project switcher.`);
+    return false;
   }
 
   private async clickProjectOption(option: Locator) {

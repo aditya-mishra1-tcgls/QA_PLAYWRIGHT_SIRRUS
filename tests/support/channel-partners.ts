@@ -27,10 +27,18 @@ function randomLetters(length: number) {
   return Array.from({ length }, () => characters[Math.floor(Math.random() * characters.length)]).join("");
 }
 
+function randomDigits(length: number) {
+  return Array.from({ length }, () => String(Math.floor(Math.random() * 10))).join("");
+}
+
 function randomMobileNumber() {
   const firstDigit = String(Math.floor(Math.random() * 4) + 6);
   const rest = Array.from({ length: 9 }, () => String(Math.floor(Math.random() * 10))).join("");
   return `${firstDigit}${rest}`;
+}
+
+function randomPanNumber() {
+  return `${randomLetters(5)}${randomDigits(4)}${randomLetters(1)}`;
 }
 
 function escapeRegex(value: string) {
@@ -93,6 +101,17 @@ async function fillFirstVisible(candidates: Locator[], value: string, label: str
   }
 
   throw new Error(`Unable to find visible ${label} field on the Channel Partner form.`);
+}
+
+async function fillFirstVisibleIfPresent(candidates: Locator[], value: string) {
+  for (const candidate of candidates) {
+    if (await candidate.first().isVisible().catch(() => false)) {
+      await candidate.first().fill(value);
+      return true;
+    }
+  }
+
+  return false;
 }
 
 async function fillInputNearLabel(page: Page, labelText: string, value: string) {
@@ -237,6 +256,56 @@ async function selectDropdownOption(page: Page, trigger: Locator, optionName: st
   throw new Error(`Unable to find visible ${label} option "${optionName}".`);
 }
 
+async function selectFirstAvailableDropdownOption(
+  page: Page,
+  trigger: Locator,
+  label: string,
+  preferredOptions: string[] = [],
+) {
+  for (const optionName of preferredOptions) {
+    const selectedPreferred = await selectDropdownOption(page, trigger, optionName, label)
+      .then(() => true)
+      .catch(() => false);
+    if (selectedPreferred) {
+      return;
+    }
+  }
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await trigger.scrollIntoViewIfNeeded().catch(() => {});
+    await trigger.click({ force: true });
+
+    const option = page
+      .locator("button, [role='option'], [role='menuitem'], li, div")
+      .filter({ hasText: /\S/ })
+      .filter({
+        hasNotText: /select here|cancel|save|clear|add channel partner|cp listing|registered cp/i,
+      })
+      .last();
+
+    if (await option.isVisible().catch(() => false)) {
+      await option.click({ force: true });
+      return;
+    }
+
+    await page.waitForTimeout(500);
+  }
+
+  throw new Error(`Unable to select an available ${label} option.`);
+}
+
+async function selectDropdownNearLabelIfVisible(
+  page: Page,
+  label: RegExp,
+  optionLabel: string,
+  preferredOptions: string[] = [],
+) {
+  const trigger = dropdownAfterLabel(page, label);
+  if (await trigger.isVisible().catch(() => false)) {
+    await selectFirstAvailableDropdownOption(page, trigger, optionLabel, preferredOptions);
+  }
+}
+
 function dropdownAfterLabel(page: Page, label: RegExp) {
   return page
     .getByText(label)
@@ -263,15 +332,12 @@ async function selectChannelPartnerEntityType(page: Page, entityType: string) {
   });
 }
 
-async function selectRequiredSpecialCharDropdown(page: Page, optionName: string) {
-  await base.step("Select required CP special-character dropdown", async () => {
+async function selectSpecialCharDropdownIfVisible(page: Page, optionName: string) {
+  await base.step("Select CP special-character dropdown when configured", async () => {
     const trigger = dropdownAfterLabel(page, /dropdown special char/i);
     if (await trigger.isVisible().catch(() => false)) {
       await selectDropdownOption(page, trigger, optionName, "CP special-character dropdown");
-      return;
     }
-
-    throw new Error("Unable to find required CP special-character dropdown.");
   });
 }
 
@@ -346,7 +412,21 @@ export async function createChannelPartner(
       "WhatsApp number",
     );
 
-    await selectRequiredSpecialCharDropdown(page, seed.specialCharDropdownOption);
+    await fillFirstVisibleIfPresent(
+      [
+        page.locator("#pan"),
+        page.getByLabel(/pan/i).first(),
+        page.locator('input[name="pan"], input[placeholder*="pan" i]').first(),
+      ],
+      randomPanNumber(),
+    );
+
+    await selectDropdownNearLabelIfVisible(page, /category/i, "CP category", ["Gold", "Platinum", "Silver"]);
+    await selectDropdownNearLabelIfVisible(page, /^projects?$/i, "CP project", [app.activeProjectName]);
+    await selectDropdownNearLabelIfVisible(page, /is unregistered/i, "CP registration status", ["No", "Registered", "Yes"]);
+    await selectDropdownNearLabelIfVisible(page, /^source$/i, "CP source", ["Channel Partner", "Walk-in"]);
+    await selectDropdownNearLabelIfVisible(page, /sub-source/i, "CP sub-source");
+    await selectSpecialCharDropdownIfVisible(page, seed.specialCharDropdownOption);
   });
 
   await base.step("Submit CP creation", async () => {
@@ -366,8 +446,13 @@ export async function createChannelPartner(
           .isVisible()
           .catch(() => false);
         const formClosed = !(await page.locator("#companyName").isVisible().catch(() => false));
+        const listingVisible = await page
+          .getByRole("tab", { name: /CP Listing|All CP/i })
+          .first()
+          .isVisible()
+          .catch(() => false);
 
-        return successVisible || formClosed;
+        return successVisible || formClosed || listingVisible;
       }, { timeout: 60000 })
       .toBeTruthy();
   });

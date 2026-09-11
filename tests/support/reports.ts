@@ -516,6 +516,10 @@ async function selectDashboardDropdownValue(
   }
 
   if (!selectedText) {
+    selectedText = await clickFirstSelectableDropdownOption(page, dropdown);
+  }
+
+  if (!selectedText) {
     throw new Error(`No selectable option was visible for ${dropdownLabel.toString()}.`);
   }
 
@@ -526,6 +530,61 @@ async function selectDashboardDropdownValue(
   }
 
   return selectedText;
+}
+
+async function clickFirstSelectableDropdownOption(page: Page, dropdown: Locator) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const selectedText = await dropdown.evaluate(() => {
+      const normalize = (value: string | null | undefined) =>
+        (value ?? "").replace(/\s+/g, " ").trim();
+      const isVisible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          style.pointerEvents !== "none"
+        );
+      };
+      const excluded = /^(select here|select all|clear|done|apply|save|cancel|\d+\s+selected)$/i;
+      const candidates = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          "[role='option'], [role='menuitem'], [cmdk-item], [data-radix-collection-item], button, li, div[class*='cursor-pointer']",
+        ),
+      ).filter((element) => {
+        const text = normalize(element.innerText || element.textContent);
+        return (
+          text &&
+          !excluded.test(text) &&
+          !element.closest("table, thead, tbody, tfoot, tr, th, td") &&
+          isVisible(element)
+        );
+      });
+
+      const target = candidates[0];
+      if (!target) {
+        return null;
+      }
+
+      target.scrollIntoView({ block: "center", inline: "nearest" });
+      target.click();
+      return normalize(target.innerText || target.textContent);
+    }).catch(() => null);
+
+    if (selectedText) {
+      return selectedText;
+    }
+
+    const scrolled = await scrollDropdownList(page, dropdown);
+    if (!scrolled) {
+      break;
+    }
+    await page.waitForTimeout(400);
+  }
+
+  return null;
 }
 
 async function selectSingleDropdownOption(page: Page, dropdownLabel: RegExp, optionName: string, searchText?: string) {

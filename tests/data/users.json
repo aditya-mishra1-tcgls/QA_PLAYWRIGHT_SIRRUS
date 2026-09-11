@@ -1,8 +1,8 @@
 {
   "qa": {
     "defaultUser": {
-      "mobileNumber": "confirm-qa-mobile-number",
-      "otp": "confirm-qa-otp"
+      "mobileNumber": "8655433491",
+      "otp": "1234"
     }
   },
   "uat": {

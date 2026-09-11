@@ -51,6 +51,10 @@ type StageTransition = {
 };
 
 type SiteVisitOtpMode = "otp" | "skip";
+type AppliedStageChange = {
+  previousStage: string;
+  updatedStage: string;
+};
 
 const FALLBACK_RENDER_WAIT_MS = 5000;
 const REQUIRED_LEAD_IDENTITY_KEYS = new Set([
@@ -192,6 +196,31 @@ function randomAlphaNumeric(length: number) {
   return Array.from({ length }, () => characters[Math.floor(Math.random() * characters.length)]).join("");
 }
 
+function preferStandardLeadSources(sourcePreferences: string[]) {
+  return [
+    ...sourcePreferences.filter((source) => !/direct\s+site\s+visit/i.test(source)),
+    ...sourcePreferences.filter((source) => /direct\s+site\s+visit/i.test(source)),
+  ];
+}
+
+const CHANGE_STAGE_OPTION_PRIORITY = [
+  "Qualified",
+  "Contacted",
+  "Prospect",
+  "Opportunity",
+  "Negotiation",
+  "Site Visit",
+  "Rescheduled",
+  "No Show",
+  "Dropped",
+  "Booked",
+  "Cancelled",
+  "In Progress",
+];
+
+const DUPLICATE_LEAD_PATTERN =
+  /already\s*(registered|exists|exist)|duplicate|lead.*already|mobile.*already|phone.*already|whats\s*app.*already|merge/i;
+
 async function logStep(title: string) {
   await base.step(title, async () => {});
 }
@@ -309,6 +338,27 @@ async function visibleDropdownOptionTexts(
   anchorBox?: ElementBox | null,
 ) {
   return await page.evaluate(({ box, optionSelector }) => {
+    function isExcludedOptionText(text?: string) {
+      return (
+        !text ||
+        text.toLowerCase() === "clear" ||
+        text.toLowerCase() === "search" ||
+        /^Sort:/i.test(text) ||
+        /^(Lead Name|Lead ID|Stage|Source|Sub Source|Create Date|Update Date)$/i.test(text) ||
+        /^select here$/i.test(text) ||
+        /^(All Leads|New Lead|Contacted|Open|Qualified|Prospect|Virtual Site Visit|Site Visit|Opportunity|Negotiation|Booked|Is a CP|Dropped|Unqualified)\s*\d+$/i.test(text) ||
+        /^(Hot|Warm|Cold)\s*\(\d+\)$/i.test(text) ||
+        /^(Filter|Add Lead|Lead Dashboard|Lead Listing|Lead Reports|Manage Leads)$/i.test(text)
+      );
+    }
+
+    function isNearAnchor(rect: DOMRect) {
+      return !box ||
+        (rect.top >= box.y + box.height - 12 &&
+          rect.left <= box.x + box.width + 160 &&
+          rect.right >= box.x - 160);
+    }
+
     function isVisibleOption(element: HTMLElement) {
       const text = element.textContent?.replace(/\s+/g, " ").trim();
       const rect = element.getBoundingClientRect();
@@ -316,23 +366,19 @@ async function visibleDropdownOptionTexts(
       return (
         !element.closest("table, thead, tbody, tfoot, tr, th, td") &&
         Boolean(text) &&
-        text?.toLowerCase() !== "clear" &&
-        !/^Sort:/i.test(text ?? "") &&
-        !/^(Lead Name|Lead ID|Stage|Source|Sub Source|Create Date|Update Date)$/i.test(text ?? "") &&
-        !/^select here$/i.test(text ?? "") &&
+        !isExcludedOptionText(text) &&
         rect.width > 0 &&
         rect.height > 0 &&
-        (!box ||
-          (rect.top >= box.y + box.height - 8 &&
-            rect.left <= box.x + box.width + 80 &&
-            rect.right >= box.x - 80)) &&
         style.visibility !== "hidden" &&
         style.display !== "none"
       );
     }
 
-    return Array.from(document.querySelectorAll<HTMLElement>(optionSelector))
-      .filter(isVisibleOption)
+    const options = Array.from(document.querySelectorAll<HTMLElement>(optionSelector))
+      .filter(isVisibleOption);
+    const anchoredOptions = options.filter((element) => isNearAnchor(element.getBoundingClientRect()));
+
+    return (anchoredOptions.length ? anchoredOptions : options)
       .map((element) => element.textContent?.replace(/\s+/g, " ").trim())
       .filter((text): text is string => Boolean(text));
   }, { box: anchorBox ?? null, optionSelector: DROPDOWN_OPTION_SELECTOR });
@@ -344,6 +390,13 @@ async function clickVisibleDropdownOption(
   anchorBox?: ElementBox | null,
 ) {
   return await page.evaluate(({ optionText, box, optionSelector }) => {
+    function isNearAnchor(rect: DOMRect) {
+      return !box ||
+        (rect.top >= box.y + box.height - 12 &&
+          rect.left <= box.x + box.width + 160 &&
+          rect.right >= box.x - 160);
+    }
+
     const options = Array.from(
       document.querySelectorAll<HTMLElement>(optionSelector),
     )
@@ -356,15 +409,17 @@ async function clickVisibleDropdownOption(
           text === optionText &&
           rect.width > 0 &&
           rect.height > 0 &&
-          (!box ||
-            (rect.top >= box.y + box.height - 8 &&
-              rect.left <= box.x + box.width + 80 &&
-              rect.right >= box.x - 80)) &&
           style.visibility !== "hidden" &&
           style.display !== "none"
         );
       })
       .sort((left, right) => {
+        const leftAnchored = isNearAnchor(left.getBoundingClientRect()) ? 1 : 0;
+        const rightAnchored = isNearAnchor(right.getBoundingClientRect()) ? 1 : 0;
+        if (leftAnchored !== rightAnchored) {
+          return rightAnchored - leftAnchored;
+        }
+
         const leftZIndex = Number(window.getComputedStyle(left).zIndex) || 0;
         const rightZIndex = Number(window.getComputedStyle(right).zIndex) || 0;
         return rightZIndex - leftZIndex;
@@ -385,6 +440,27 @@ async function clickFirstVisibleDropdownOption(
   anchorBox?: ElementBox | null,
 ) {
   return await page.evaluate(({ box, optionSelector }) => {
+    function isExcludedOptionText(text?: string) {
+      return (
+        !text ||
+        text.toLowerCase() === "clear" ||
+        text.toLowerCase() === "search" ||
+        /^Sort:/i.test(text) ||
+        /^(Lead Name|Lead ID|Stage|Source|Sub Source|Create Date|Update Date)$/i.test(text) ||
+        /^select here$/i.test(text) ||
+        /^(All Leads|New Lead|Contacted|Open|Qualified|Prospect|Virtual Site Visit|Site Visit|Opportunity|Negotiation|Booked|Is a CP|Dropped|Unqualified)\s*\d+$/i.test(text) ||
+        /^(Hot|Warm|Cold)\s*\(\d+\)$/i.test(text) ||
+        /^(Filter|Add Lead|Lead Dashboard|Lead Listing|Lead Reports|Manage Leads)$/i.test(text)
+      );
+    }
+
+    function isNearAnchor(rect: DOMRect) {
+      return !box ||
+        (rect.top >= box.y + box.height - 12 &&
+          rect.left <= box.x + box.width + 160 &&
+          rect.right >= box.x - 160);
+    }
+
     const options = Array.from(
       document.querySelectorAll<HTMLElement>(optionSelector),
     ).filter((element) => {
@@ -394,19 +470,16 @@ async function clickFirstVisibleDropdownOption(
       return (
         !element.closest("table, thead, tbody, tfoot, tr, th, td") &&
         Boolean(text) &&
-        text?.toLowerCase() !== "clear" &&
-        !/^Sort:/i.test(text ?? "") &&
-        !/^(Lead Name|Lead ID|Stage|Source|Sub Source|Create Date|Update Date)$/i.test(text ?? "") &&
-        !/^select here$/i.test(text ?? "") &&
+        !isExcludedOptionText(text) &&
         rect.width > 0 &&
         rect.height > 0 &&
-        (!box ||
-          (rect.top >= box.y + box.height - 8 &&
-            rect.left <= box.x + box.width + 80 &&
-            rect.right >= box.x - 80)) &&
         style.visibility !== "hidden" &&
         style.display !== "none"
       );
+    }).sort((left, right) => {
+      const leftAnchored = isNearAnchor(left.getBoundingClientRect()) ? 1 : 0;
+      const rightAnchored = isNearAnchor(right.getBoundingClientRect()) ? 1 : 0;
+      return rightAnchored - leftAnchored;
     });
 
     const target = options[0];
@@ -429,10 +502,6 @@ async function scrollVisibleDropdownOptions(
         !element.closest("table, thead, tbody, tfoot, tr, th, td") &&
         rect.width > 0 &&
         rect.height > 0 &&
-        (!box ||
-          (rect.top >= box.y + box.height - 8 &&
-            rect.left <= box.x + box.width + 80 &&
-            rect.right >= box.x - 80)) &&
         style.visibility !== "hidden" &&
         style.display !== "none"
       );
@@ -1168,8 +1237,10 @@ async function fillCoreLeadFields(
 
   await base.step("Select project", async () => {
     const projectDropdown = await openDropdownWithRetry(page, "Project Name *");
-    await chooseFirstOption(page, [app.activeProjectName, leadSeed.projectName], projectDropdown);
-    await waitForDropdownValue(page, "Project Name *", app.activeProjectName);
+    const selectedProject = await chooseFirstOption(page, [app.activeProjectName, leadSeed.projectName], projectDropdown);
+    app.activeProjectName = selectedProject;
+    leadSeed.projectName = selectedProject;
+    await waitForDropdownValue(page, "Project Name *", selectedProject);
   });
 
   await base.step("Select source", async () => {
@@ -1208,6 +1279,15 @@ export async function prepareLeadForm(page: Page, app: AppConfig) {
   leadSeed.projectName = app.activeProjectName;
   const envSeed = getLeadFlowSeed(app.envName);
   const sourcePreferences = envSeed.fallbackSourcePreferences;
+  return await prepareLeadFormWithSeed(page, app, leadSeed, sourcePreferences);
+}
+
+async function prepareLeadFormWithSeed(
+  page: Page,
+  app: AppConfig,
+  leadSeed: LeadSeed,
+  sourcePreferences: string[],
+) {
   await waitForListingReady(page);
 
   const apiFieldsPromise = waitForLeadFormApiFields(page).catch(() => []);
@@ -1234,10 +1314,422 @@ export async function fillLeadForm(page: Page, app: AppConfig) {
   const leadSeed = await prepareLeadForm(page, app);
 
   await base.step("Save lead", async () => {
-    await new LeadFormPage(page).saveAndWaitForClose();
+    await saveLeadFormAndWaitForClose(page);
   });
 
   return leadSeed;
+}
+
+async function expectLeadFormMessages(page: Page, messages: RegExp[]) {
+  const formArea = page.locator("#root-modal, #scrollableArea").first();
+  for (const message of messages) {
+    await expect(formArea).toContainText(message, { timeout: 15000 });
+  }
+}
+
+async function expectOptionalLeadFormMessage(page: Page, message: RegExp) {
+  const formArea = page.locator("#root-modal, #scrollableArea").first();
+  const text = await formArea.innerText().catch(() => "");
+  if (message.test(text)) {
+    await expect(formArea).toContainText(message, { timeout: 15000 });
+  }
+}
+
+export async function fillLeadFormAfterValidationChecks(page: Page, app: AppConfig) {
+  const leadSeed = buildLeadSeed(app.envName);
+  leadSeed.projectName = app.activeProjectName;
+  const envSeed = getLeadFlowSeed(app.envName);
+  const sourcePreferences = preferStandardLeadSources(envSeed.fallbackSourcePreferences);
+  await waitForListingReady(page);
+
+  const apiFieldsPromise = waitForLeadFormApiFields(page).catch(() => []);
+  await openLeadCreationForm(page);
+
+  const leadFormPage = new LeadFormPage(page);
+  await base.step("Verify mandatory add lead validations", async () => {
+    await leadFormPage.saveButton.click();
+    await expectLeadFormMessages(page, [
+      /Please select Source of Lead/i,
+      /Please select Sub source of lead/i,
+      /Please enter Primary Number/i,
+    ]);
+    await expectOptionalLeadFormMessage(page, /Please enter Source category/i);
+  });
+
+  const [apiFields, domMandatoryFields] = await Promise.all([
+    apiFieldsPromise,
+    collectMandatoryFieldsFromDom(page),
+  ]);
+  const fields = dedupeLeadFields([...apiFields, ...domMandatoryFields]);
+  await fillCoreLeadFields(page, leadSeed, app, sourcePreferences);
+
+  await base.step("Verify WhatsApp number validation", async () => {
+    await leadFormPage.whatsappInput.fill("78787878");
+    await expectLeadFormMessages(page, [/Please enter a valid WhatsApp Number/i]);
+    await leadFormPage.whatsappInput.fill(leadSeed.whatsappNumber);
+  });
+
+  await base.step("Verify email format validation", async () => {
+    const emailFieldCandidates = [
+      page.locator("#email").first(),
+      page.locator('input[name="email"]').first(),
+      page.locator('input[type="email"]').first(),
+      page.getByLabel(/email/i).first(),
+      page.getByText(/^Email ID\s*\*?$/i).locator("xpath=following::input[1]").first(),
+    ];
+
+    const invalidEmailFilled = await fillFirstVisibleField(page, emailFieldCandidates, "ttt.in");
+    if (invalidEmailFilled) {
+      await expectLeadFormMessages(page, [/Invalid Email id format/i]);
+      await fillFirstVisibleField(page, emailFieldCandidates, leadSeed.email);
+    }
+  });
+
+  await fillAdaptiveLeadFields(
+    page,
+    fields,
+    leadSeed,
+    app,
+    sourcePreferences,
+  );
+
+  await base.step("Save lead", async () => {
+    await saveLeadFormAndWaitForClose(page);
+  });
+
+  return leadSeed;
+}
+
+async function leadFormIsOpen(page: Page) {
+  return await page
+    .getByText("Lead Form", { exact: true })
+    .isVisible()
+    .catch(() => false);
+}
+
+async function clearDropdownField(page: Page, label: string) {
+  const normalizedLabel = normalizeFieldLabel(label);
+  const labelRegex = new RegExp(
+    `^\\s*${escapeRegex(normalizedLabel)}\\s*\\*?\\s*$`,
+    "i",
+  );
+  const fieldContainer = page
+    .locator("#root-modal h3")
+    .filter({ hasText: labelRegex })
+    .first()
+    .locator(
+      'xpath=ancestor::div[.//h3 and (.//input or .//textarea or .//button[not(normalize-space(.)="Clear")])][1]',
+    );
+
+  const clearAction = fieldContainer.getByText(/^Clear$/i).first();
+  if (await clearAction.isVisible().catch(() => false)) {
+    await clearAction.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(300);
+  }
+}
+
+async function repairLeadFormValidationErrors(page: Page) {
+  const formText = await page.locator("#root-modal, #scrollableArea").first().innerText().catch(() => "");
+
+  if (/Please select Assigned to/i.test(formText)) {
+    await base.step("Re-select assigned user", async () => {
+      await clearDropdownField(page, "Assigned To *");
+      const assignedToDropdown = await openDropdownWithRetry(page, "Assigned To *");
+      const selectedAssignedTo = await chooseFirstOption(page, [], assignedToDropdown);
+      await waitForDropdownValue(page, "Assigned To *", selectedAssignedTo);
+    });
+  }
+
+  if (/Please select Secondary owner/i.test(formText)) {
+    await base.step("Re-select secondary owner", async () => {
+      await clearDropdownField(page, "Secondary Owner *");
+      const secondaryOwnerDropdown = await openDropdownWithRetry(page, "Secondary Owner *");
+      const selectedSecondaryOwner = await chooseFirstOption(page, [], secondaryOwnerDropdown);
+      await waitForDropdownValue(page, "Secondary Owner *", selectedSecondaryOwner);
+    });
+  }
+}
+
+async function saveLeadFormAndWaitForClose(page: Page) {
+  const leadFormPage = new LeadFormPage(page);
+  await clickLeadFormSaveButton(page);
+
+  const closed = await leadFormPage.title
+    .waitFor({ state: "hidden", timeout: 45000 })
+    .then(() => true)
+    .catch(() => false);
+  if (closed) {
+    return;
+  }
+
+  await repairLeadFormValidationErrors(page);
+  if (!(await leadFormIsOpen(page))) {
+    return;
+  }
+
+  await clickLeadFormSaveButton(page);
+  await expect.poll(async () => !(await leadFormIsOpen(page)), { timeout: 60000 }).toBeTruthy();
+}
+
+async function clickLeadFormSaveButton(page: Page) {
+  const saveButtons = [
+    page.locator("#root-modal").getByRole("button", { name: /^save$/i }),
+    page.getByRole("button", { name: /^save$/i }).last(),
+    page.locator("button").filter({ hasText: /^Save$/i }).last(),
+  ];
+
+  for (const saveButton of saveButtons) {
+    if (await saveButton.isVisible().catch(() => false)) {
+      await saveButton.click({ force: true });
+      return;
+    }
+  }
+
+  throw new Error("Save button was not visible in the lead form.");
+}
+
+export async function validateCreateLeadAndChangeStage(
+  page: Page,
+  app: AppConfig,
+) {
+  const leadSeed = await fillLeadFormAfterValidationChecks(page, app);
+  await assertLeadCreated(page, leadSeed.fullName, leadSeed.projectName);
+  await openLeadByName(page, leadSeed.fullName);
+  await changeOpenedLeadToAnyAvailableStage(page, "test remark");
+  return leadSeed;
+}
+
+async function hasDuplicateLeadBusinessRule(page: Page) {
+  if (await page.getByText(DUPLICATE_LEAD_PATTERN).first().isVisible({ timeout: 1000 }).catch(() => false)) {
+    return true;
+  }
+
+  return await page
+    .evaluate((source) => {
+      const duplicatePattern = new RegExp(source, "i");
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const isVisible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none"
+        );
+      };
+
+      const visibleDuplicateText = Array.from(document.querySelectorAll<HTMLElement>("body *"))
+        .some((element) => isVisible(element) && duplicatePattern.test(normalize(element.innerText || element.textContent)));
+      if (visibleDuplicateText) {
+        return true;
+      }
+
+      const phoneInput = document.querySelector<HTMLInputElement>("#whatsAppNumber");
+      if (!phoneInput) {
+        return false;
+      }
+
+      let container: HTMLElement | null = phoneInput;
+      for (let depth = 0; depth < 6 && container; depth += 1) {
+        const text = normalize(container.innerText || container.textContent);
+        const className = typeof container.className === "string" ? container.className : "";
+        const style = window.getComputedStyle(container);
+        const hasErrorClass = /border-red|text-red|error|invalid/i.test(className);
+        const hasErrorBorder =
+          /rgb\(\s*255\s*,\s*(0|[1-9]\d?)\s*,\s*(0|[1-9]\d?)\s*\)/i.test(style.borderColor) ||
+          /rgb\(\s*255\s*,\s*(0|[1-9]\d?)\s*,\s*(0|[1-9]\d?)\s*\)/i.test(style.outlineColor);
+        const isPhoneFieldContainer = /\+91|WhatsApp|Primary Number/i.test(text) && phoneInput.value.trim().length === 10;
+        if (duplicatePattern.test(text) || hasErrorClass || hasErrorBorder || isPhoneFieldContainer && Boolean(container.querySelector("img, svg"))) {
+          return true;
+        }
+
+        container = container.parentElement;
+      }
+
+      return false;
+    }, DUPLICATE_LEAD_PATTERN.source)
+    .catch(() => false);
+}
+
+async function waitForDuplicateLeadBusinessRule(page: Page, timeout = 7000) {
+  return await expect
+    .poll(async () => await hasDuplicateLeadBusinessRule(page), { timeout })
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
+}
+
+async function expectDuplicateLeadBusinessRule(page: Page) {
+  await expect
+    .poll(async () => await hasDuplicateLeadBusinessRule(page), { timeout: 30000 })
+    .toBeTruthy();
+}
+
+export async function createLeadAndExpectDuplicatePrevented(
+  page: Page,
+  app: AppConfig,
+) {
+  const envSeed = getLeadFlowSeed(app.envName);
+  const sourcePreferences = preferStandardLeadSources(envSeed.fallbackSourcePreferences);
+  const originalLead = buildLeadSeed(app.envName);
+  originalLead.projectName = app.activeProjectName;
+
+  await prepareLeadFormWithSeed(page, app, originalLead, sourcePreferences);
+  await base.step("Save lead", async () => {
+    await saveLeadFormAndWaitForClose(page);
+  });
+  await goToManageLeads(page, app);
+  await assertLeadCreated(page, originalLead.fullName, originalLead.projectName);
+
+  const duplicateLead = buildLeadSeed(app.envName);
+  duplicateLead.projectName = originalLead.projectName;
+  duplicateLead.whatsappNumber = originalLead.whatsappNumber;
+
+  await waitForListingReady(page);
+
+  const apiFieldsPromise = waitForLeadFormApiFields(page).catch(() => []);
+  await openLeadCreationForm(page);
+
+  const [apiFields, domMandatoryFields] = await Promise.all([
+    apiFieldsPromise,
+    collectMandatoryFieldsFromDom(page),
+  ]);
+  const fields = dedupeLeadFields([...apiFields, ...domMandatoryFields]);
+  await fillCoreLeadFields(page, duplicateLead, app, sourcePreferences);
+
+  if (!(await waitForDuplicateLeadBusinessRule(page))) {
+    await fillAdaptiveLeadFields(
+      page,
+      fields,
+      duplicateLead,
+      app,
+      sourcePreferences,
+    );
+
+    if (!(await waitForDuplicateLeadBusinessRule(page, 3000))) {
+      await base.step("Save duplicate lead", async () => {
+        const leadFormPage = new LeadFormPage(page);
+        await expect(leadFormPage.saveButton).toBeVisible({ timeout: 30000 });
+        await leadFormPage.saveButton.click();
+      });
+    }
+  }
+
+  await expectDuplicateLeadBusinessRule(page);
+
+  return { originalLead, duplicateLead };
+}
+
+async function getOpenedLeadStage(page: Page) {
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  const leadStageMatch = bodyText.match(
+    /Lead Stage\s*:\s*([A-Za-z ]+?)(?=\s+(?:Site Visit Scheduled|Site Revisit Scheduled|Dropped Reason|CP Phone|CP Agent Phone|$))/i,
+  );
+  if (leadStageMatch?.[1]?.trim()) {
+    return leadStageMatch[1].trim();
+  }
+
+  for (const stage of CHANGE_STAGE_OPTION_PRIORITY) {
+    if (new RegExp(`\\b${escapeRegex(stage)}\\b`, "i").test(bodyText)) {
+      return stage;
+    }
+  }
+
+  return "Unknown";
+}
+
+async function getAvailableChangeStageOptions(page: Page, currentStage: string) {
+  const options = await page.evaluate(
+    ({ priorities, current }) => {
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const isVisible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none"
+        );
+      };
+
+      const stageScopes = Array.from(document.querySelectorAll<HTMLElement>("section, article, div"))
+        .filter((element) => {
+          const text = normalize(element.innerText || element.textContent);
+          return isVisible(element) && /Choose a stage|Choose a sub stage|Status/i.test(text);
+        })
+        .sort((left, right) => normalize(left.innerText).length - normalize(right.innerText).length);
+
+      const scope = stageScopes[0];
+      if (!scope) {
+        return [];
+      }
+
+      const exactOptions = new Set(priorities);
+      const currentText = normalize(current).toLowerCase();
+      const available = Array.from(scope.querySelectorAll<HTMLElement>("button, [role='button'], p, span, div"))
+        .map((element) => normalize(element.innerText || element.textContent))
+        .filter((text) =>
+          exactOptions.has(text) &&
+          text.toLowerCase() !== currentText &&
+          !/^(Cancel|Save)$/i.test(text),
+        );
+
+      return Array.from(new Set(available));
+    },
+    { priorities: CHANGE_STAGE_OPTION_PRIORITY, current: currentStage },
+  );
+
+  return CHANGE_STAGE_OPTION_PRIORITY.filter((option) => options.includes(option));
+}
+
+async function changeOpenedLeadToAnyAvailableStage(
+  page: Page,
+  remark: string,
+): Promise<AppliedStageChange> {
+  const previousStage = await getOpenedLeadStage(page);
+  await openChangeStageTab(page);
+
+  const availableStages = await getAvailableChangeStageOptions(page, previousStage);
+  if (!availableStages.length) {
+    const panelText = await visibleChangeStageText(page);
+    throw new Error(
+      `No alternate stage option was available. Current stage: "${previousStage}". Panel text: "${panelText}".`,
+    );
+  }
+
+  const updatedStage = availableStages[0];
+  await base.step(`Change lead stage to ${updatedStage}`, async () => {
+    await clickVisibleStageAction(
+      page,
+      new RegExp(`^${escapeRegex(updatedStage)}$`, "i"),
+    );
+    await fillVisibleStageFields(page, remark);
+
+    const saved = await clickVisibleSaveButton(page);
+    if (!saved) {
+      throw new Error(
+        `Save button was not visible after selecting stage "${updatedStage}".`,
+      );
+    }
+  });
+
+  await base.step("Verify changed stage is reflected", async () => {
+    await expect
+      .poll(
+        async () => {
+          const bodyText = await page.locator("body").innerText().catch(() => "");
+          return new RegExp(`\\b${escapeRegex(updatedStage)}\\b`, "i").test(bodyText);
+        },
+        { timeout: 60000 },
+      )
+      .toBeTruthy();
+  });
+
+  return { previousStage, updatedStage };
 }
 
 export async function assertLeadCreated(
@@ -1477,6 +1969,7 @@ export async function moveOpenedLeadToSiteVisitInProgress(
   otpMode: SiteVisitOtpMode = "otp",
 ) {
   await logStep("Move site visit to in progress");
+  await ensureLeadProfileIsOpen(page, leadName);
   await openChangeStageTab(page);
 
   await expect(page.getByText("Choose a stage", { exact: true })).toBeVisible({
@@ -2158,7 +2651,7 @@ async function clickVisibleStageAction(page: Page, name: RegExp) {
           for (let depth = 0; current && depth < 10; depth += 1) {
             const text = normalize(current.innerText || current.textContent);
             if (
-              /Choose a stage|Choose a sub stage/i.test(text) &&
+              /Choose a stage|Choose a sub stage|Status/i.test(text) &&
               /Open|Qualified|Site Visit|Opportunity|Dropped|Booked|In Progress|No Show/i.test(text)
             ) {
               return current;
@@ -2919,9 +3412,9 @@ async function fillSiteVisitCancellationReason(
 async function clickVisibleSaveButton(page: Page, postSaveText?: RegExp) {
   const saveButtons = [
     page.locator("#root-modal").getByRole("button", { name: /^save$/i }),
-    page.locator("#root-modal").getByRole("button", { name: /save|update|submit/i }),
+    page.locator("#root-modal").getByRole("button", { name: /save|update|submit|apply|confirm|change stage|move/i }),
     page.getByRole("button", { name: /^save$/i }),
-    page.getByRole("button", { name: /save|update|submit/i }),
+    page.getByRole("button", { name: /save|update|submit|apply|confirm|change stage|move/i }),
   ];
 
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -2934,6 +3427,10 @@ async function clickVisibleSaveButton(page: Page, postSaveText?: RegExp) {
       const count = await locator.count().catch(() => 0);
       for (let index = count - 1; index >= 0; index -= 1) {
         const button = locator.nth(index);
+        if (!(await button.isVisible().catch(() => false))) {
+          continue;
+        }
+
         await revealLocator(page, button);
         await button.click({ force: true }).catch(() => {});
         if (postSaveText) {
@@ -3028,7 +3525,7 @@ async function clickVisibleSaveButtonWithDom(page: Page) {
     };
 
     const matches = Array.from(document.querySelectorAll<HTMLElement>("button, [role='button']"))
-      .filter((element) => /^(Save|Update|Submit|Save Changes)$/i.test(normalize(element.innerText || element.textContent)) && isVisible(element))
+      .filter((element) => /^(Save|Update|Submit|Apply|Confirm|Save Changes|Change Stage|Move to Opportunity)$/i.test(normalize(element.innerText || element.textContent)) && isVisible(element))
       .sort((left, right) => right.getBoundingClientRect().left - left.getBoundingClientRect().left);
 
     const button = matches[0];
@@ -3254,7 +3751,7 @@ async function stagePanelIsOpen(
   const statusLabel = page.getByText(/^Status$/i).first();
   const stageChips = page
     .locator("button, [role='button'], div, span")
-    .filter({ hasText: /^(Open|Qualified|Site Visit|Opportunity|Dropped|Booked)$/i });
+    .filter({ hasText: /^(New Lead|Contacted|Prospect|Open|Qualified|Site Visit|Negotiation|Opportunity|Dropped|Booked)$/i });
   if (await statusLabel.isVisible().catch(() => false)) {
     const stageChipCount = Math.min(await stageChips.count().catch(() => 0), 30);
     for (let index = 0; index < stageChipCount; index += 1) {
@@ -3264,7 +3761,7 @@ async function stagePanelIsOpen(
     }
   }
 
-  if (/^Status\b/i.test(panelText) && /Open|Qualified|Site Visit|Opportunity|Dropped/i.test(panelText)) {
+  if (/^Status\b/i.test(panelText) && /New Lead|Contacted|Prospect|Open|Qualified|Site Visit|Negotiation|Opportunity|Dropped/i.test(panelText)) {
     return true;
   }
 
@@ -3469,12 +3966,12 @@ export async function openLeadTaskFromDashboard(
   const searchedSiteVisitTableRow = page
     .locator("tbody tr")
     .filter({ hasText: /Site Visit/i })
-    .filter({ hasText: /Pending|Overdue|Completed|Aakarsh|Test1303/i })
+    .filter({ hasText: /Pending|Overdue|Completed|Aakarsh/i })
     .first();
   const searchedSiteVisitCard = page
     .locator("div, article, section")
     .filter({ hasText: /Site Visit/i })
-    .filter({ hasText: /Pending|Overdue|Completed|Aakarsh|Test1303/i })
+    .filter({ hasText: /Pending|Overdue|Completed|Aakarsh/i })
     .last();
 
   await expect

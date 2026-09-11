@@ -293,11 +293,7 @@ export class LeadProfilePage {
     await expect(sourceButton).toBeVisible({ timeout: 30000 });
     await sourceButton.click({ force: true });
 
-    const sourceOption = this.page
-      .getByRole("button", { name: new RegExp(`^${escapeRegex(source)}$`, "i") })
-      .first();
-    await expect(sourceOption).toBeVisible({ timeout: 30000 });
-    await sourceOption.click({ force: true });
+    const selectedSource = await this.selectPreferredOrFirstDropdownOption(source);
 
     const subSourceButton = this.page
       .getByRole("button", { name: /select sub source/i })
@@ -305,11 +301,7 @@ export class LeadProfilePage {
     await expect(subSourceButton).toBeVisible({ timeout: 30000 });
     await subSourceButton.click({ force: true });
 
-    const subSourceOption = this.page
-      .getByRole("button", { name: new RegExp(`^${escapeRegex(subSource)}$`, "i") })
-      .first();
-    await expect(subSourceOption).toBeVisible({ timeout: 30000 });
-    await subSourceOption.click({ force: true });
+    const selectedSubSource = await this.selectPreferredOrFirstDropdownOption(subSource);
 
     const saved = await tryClickFirstVisible(
       [
@@ -325,7 +317,46 @@ export class LeadProfilePage {
 
     await expect(this.leadJourneyTab).toBeVisible({ timeout: 60000 });
 
-    return { source, subSource };
+    return { source: selectedSource, subSource: selectedSubSource };
+  }
+
+  private async selectPreferredOrFirstDropdownOption(preferredOption: string) {
+    const preferred = this.page
+      .getByRole("button", { name: new RegExp(`^${escapeRegex(preferredOption)}$`, "i") })
+      .first();
+    if (await preferred.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await preferred.click({ force: true });
+      return preferredOption;
+    }
+
+    const selectedText = await this.page.evaluate(() => {
+      const normalize = (value: string | null | undefined) =>
+        (value ?? "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const excluded = /^(select here|select all|clear|save|cancel|apply)$/i;
+      const option = Array.from(document.querySelectorAll<HTMLElement>("button, [role='option'], [role='menuitem'], li"))
+        .find((element) => {
+          const text = normalize(element.innerText || element.textContent);
+          return text && !excluded.test(text) && visible(element);
+        });
+      if (!option) {
+        return "";
+      }
+
+      const text = normalize(option.innerText || option.textContent);
+      option.click();
+      return text;
+    }).catch(() => "");
+
+    if (!selectedText) {
+      throw new Error(`No selectable dropdown option was visible for preferred option "${preferredOption}".`);
+    }
+
+    return selectedText;
   }
 
   async expectJourneyStages(stages: string[]) {

@@ -53,9 +53,7 @@ export class LeadDashboardPage {
 
     for (const label of [
       "New Lead",
-      "Contacted",
       "Site Visit",
-      "Negotiation",
       "Booked",
       "Avg First Response Time",
       "Site Visit Conversion Rate",

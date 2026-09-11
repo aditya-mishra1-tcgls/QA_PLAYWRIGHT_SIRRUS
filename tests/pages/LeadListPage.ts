@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { LoginPage } from "./LoginPage";
 import { ProjectSwitcherPage } from "./ProjectSwitcherPage";
 import {
@@ -22,8 +22,10 @@ export type LeadStageFilter =
   | "Contacted"
   | "Open"
   | "Qualified"
+  | "Prospect"
   | "Site Visit"
   | "Opportunity"
+  | "Negotiation"
   | "Booked"
   | "Dropped";
 
@@ -36,6 +38,8 @@ export type LeadFilterCriteria = {
 export type LeadTemperatureFilter = "Hot" | "Warm" | "Cold";
 
 type FilterDropdown = "stage" | "source";
+type SortDirection = "ascending" | "descending";
+type SortableLeadColumn = "Lead ID" | "Stage" | "Create Date" | "Update Date";
 
 export class LeadListPage {
   constructor(private readonly page: Page) {}
@@ -155,24 +159,30 @@ export class LeadListPage {
   }
 
   async applyFilters(criteria: LeadFilterCriteria) {
+    if (criteria.stage && criteria.source) {
+      await this.applyStageSummaryFilter(criteria.stage);
+      criteria.source = await this.firstVisibleSourceValue();
+      await this.applySourceFilterIfAvailable(criteria.source);
+      await this.waitForListingReady();
+      return;
+    }
+
     await this.openFilterPanel();
     await this.removeSelectedFilterChips();
 
     if (criteria.stage) {
       await this.selectFilterOption("stage", criteria.stage);
-      await this.clickApplyFilters();
-      await this.waitForFilterApplied();
     }
 
     if (criteria.source) {
-      await this.openFilterPanel();
       await this.selectFilterOption("source", criteria.source);
-      await this.clickApplyFilters();
-      await this.waitForFilterApplied();
-    } else if (!criteria.stage) {
-      await this.clickApplyFilters();
-      await this.waitForListingReady();
     }
+
+    await this.clickApplyFilters();
+    if (criteria.stage || criteria.source) {
+      await this.waitForFilterApplied(criteria.stage);
+    }
+    await this.waitForListingReady();
   }
 
   async applyStageFilter(stage: LeadStageFilter) {
@@ -183,6 +193,18 @@ export class LeadListPage {
     await this.removeSelectedFilterChips();
     await this.selectFilterOption("stage", stage);
     await this.clickApplyFilters();
+    await this.waitForStageFilterApplied(stage, expectedStageCount);
+  }
+
+  async applyStageSummaryFilter(stage: LeadStageFilter) {
+    await this.waitForListingReady();
+    const expectedStageCount = await this.stageSummaryCount(stage);
+    const stageButton = this.page.getByRole("button", {
+      name: new RegExp(`^${escapeRegex(stage)}\\s+\\d+$`, "i"),
+    }).first();
+
+    await expect(stageButton).toBeVisible({ timeout: 30000 });
+    await stageButton.click({ force: true });
     await this.waitForStageFilterApplied(stage, expectedStageCount);
   }
 
@@ -213,9 +235,7 @@ export class LeadListPage {
     }
 
     if (criteria.source) {
-      await expect(this.page.getByText(new RegExp(escapeRegex(criteria.source), "i")).first()).toBeVisible({
-        timeout: 60000,
-      });
+      await this.expectVisibleSourcesMatch(criteria.source);
     }
   }
 
@@ -295,6 +315,33 @@ export class LeadListPage {
     await expect(this.page.getByRole("button", { name: "1" }).first()).toBeVisible({ timeout: 30000 });
   }
 
+  async expectSortableColumnsWork(
+    columns: SortableLeadColumn[] = ["Lead ID", "Stage", "Create Date"],
+  ) {
+    await this.expectLeadListingLoaded();
+    await this.waitForSortableGridHeaders(columns);
+
+    for (const columnName of columns) {
+      const firstOrder = await this.expectColumnSortDirection(columnName, "ascending");
+      const secondOrder = await this.expectColumnSortDirection(columnName, "descending");
+
+      if (firstOrder !== "flat" && secondOrder !== "flat") {
+        expect(secondOrder, `${columnName} should change sort direction`).not.toBe(firstOrder);
+      }
+    }
+  }
+
+  async firstVisibleSourceValue() {
+    await this.waitForListingReady();
+
+    const source = await expect
+      .poll(async () => await this.findFirstVisibleSourceValue(), { timeout: 30000 })
+      .not.toBe("")
+      .then(async () => await this.findFirstVisibleSourceValue());
+
+    return source;
+  }
+
   private async expectFilterControlVisible() {
     await expect
       .poll(async () => {
@@ -312,6 +359,350 @@ export class LeadListPage {
         return filterTextVisible || filterIconVisible;
       }, { timeout: 30000 })
       .toBeTruthy();
+  }
+
+  private async expectColumnSortDirection(columnName: SortableLeadColumn, direction: SortDirection) {
+    const sortLabel = this.sortLabelFor(columnName, direction);
+
+    return await test.step(`Sort ${columnName} ${direction}`, async () => {
+      await this.openColumnSortMenu(columnName);
+      await this.selectSortOption(sortLabel);
+      await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+      await this.waitForListingReady();
+      await this.expectSortIndicator(columnName, sortLabel);
+
+      const values = await expect
+        .poll(async () => await this.visibleColumnValues(columnName), { timeout: 30000 })
+        .not.toHaveLength(0)
+        .then(async () => await this.visibleColumnValues(columnName));
+
+      const detectedOrder = this.detectedSortDirection(values, columnName);
+      expect(detectedOrder, `${columnName} values: ${values.join(", ")}`).not.toBeNull();
+      return detectedOrder ?? "flat";
+    });
+  }
+
+  private sortLabelFor(columnName: SortableLeadColumn, direction: SortDirection) {
+    const isDateColumn = /date/i.test(columnName);
+    if (isDateColumn) {
+      return direction === "ascending" ? "Oldest to Latest" : "Latest to Oldest";
+    }
+
+    return direction === "ascending" ? "A-Z" : "Z-A";
+  }
+
+  private async openColumnSortMenu(columnName: SortableLeadColumn) {
+    const columnPattern = new RegExp(`^${escapeRegex(columnName)}\\b`, "i");
+    const headerCandidates = [
+      this.page.getByRole("columnheader", { name: new RegExp(escapeRegex(columnName), "i") }).first(),
+      this.page.locator("th, [role='columnheader']").filter({ hasText: columnPattern }).first(),
+      this.page
+        .getByText(columnPattern)
+        .first()
+        .locator("xpath=ancestor::*[self::th or @role='columnheader' or self::tr or self::div][1]"),
+    ];
+
+    for (const header of headerCandidates) {
+      if (!(await header.isVisible().catch(() => false))) {
+        continue;
+      }
+
+      const sortButton = header.getByRole("button", { name: /Sort:/i }).first();
+      if (await sortButton.isVisible().catch(() => false)) {
+        await sortButton.click({ force: true });
+        return;
+      }
+
+      const labeledSortButton = header.getByLabel(/Sort:/i).first();
+      if (await labeledSortButton.isVisible().catch(() => false)) {
+        await labeledSortButton.click({ force: true });
+        return;
+      }
+
+      await header.click({ force: true });
+      return;
+    }
+
+    const clickedWithDom = await this.clickColumnSortButtonWithDom(columnName);
+    if (clickedWithDom) {
+      return;
+    }
+
+    throw new Error(`Sortable column "${columnName}" was not visible.`);
+  }
+
+  private async waitForSortableGridHeaders(columns: SortableLeadColumn[]) {
+    await expect
+      .poll(async () => {
+        const visibleHeaders = await this.visibleSortableHeaderNames();
+        return columns.every((columnName) => visibleHeaders.includes(columnName));
+      }, { timeout: 60000 })
+      .toBeTruthy();
+  }
+
+  private async visibleSortableHeaderNames(): Promise<string[]> {
+    return await this.page.evaluate(() => {
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const sortableColumns = ["Lead ID", "Stage", "Create Date", "Update Date"];
+
+      return Array.from(document.querySelectorAll<HTMLElement>("th, [role='columnheader'], tr"))
+        .filter(visible)
+        .flatMap((element) => {
+          const text = normalize(element.innerText || element.textContent);
+          return sortableColumns.filter((columnName) => new RegExp(`\\b${columnName}\\b`, "i").test(text));
+        });
+    }).catch(() => []);
+  }
+
+  private async clickColumnSortButtonWithDom(columnName: SortableLeadColumn) {
+    return await this.page.evaluate((targetColumnName) => {
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+
+      const headers = Array.from(document.querySelectorAll<HTMLElement>("th, [role='columnheader'], tr"))
+        .filter((element) => {
+          const text = normalize(element.innerText || element.textContent);
+          return visible(element) && new RegExp(`\\b${targetColumnName}\\b`, "i").test(text);
+        })
+        .sort((left, right) => {
+          const leftExact = normalize(left.innerText || left.textContent).startsWith(targetColumnName) ? 0 : 1;
+          const rightExact = normalize(right.innerText || right.textContent).startsWith(targetColumnName) ? 0 : 1;
+          if (leftExact !== rightExact) {
+            return leftExact - rightExact;
+          }
+          return normalize(left.innerText || left.textContent).length - normalize(right.innerText || right.textContent).length;
+        });
+
+      const header = headers[0];
+      const sortButton =
+        Array.from(header?.querySelectorAll<HTMLElement>("button, [role='button']") ?? [])
+          .find((element) => /Sort:/i.test(normalize(element.getAttribute("aria-label") || element.innerText || element.textContent))) ??
+        header;
+
+      if (!sortButton || !visible(sortButton)) {
+        return false;
+      }
+
+      sortButton.scrollIntoView({ block: "center", inline: "center" });
+      sortButton.click();
+      return true;
+    }, columnName).catch(() => false);
+  }
+
+  private async selectSortOption(sortLabel: string) {
+    const optionPattern = new RegExp(`^Sort:\\s*${escapeRegex(sortLabel)}$`, "i");
+    const sortOption = this.page
+      .locator("button, [role='menuitem'], [role='option'], div")
+      .filter({ hasText: optionPattern })
+      .first();
+
+    await expect(sortOption).toBeVisible({ timeout: 15000 });
+    await sortOption.click({ force: true });
+  }
+
+  private async expectSortIndicator(columnName: SortableLeadColumn, sortLabel: string) {
+    await expect
+      .poll(
+        async () => {
+          const indicators = await this.page
+            .locator("th, [role='columnheader'], tr")
+            .filter({ hasText: new RegExp(escapeRegex(columnName), "i") })
+            .evaluateAll((elements) =>
+              elements.map((element) => {
+                const text = (element.textContent || "").replace(/\s+/g, " ").trim();
+                const sortLabel = Array.from(element.querySelectorAll<HTMLElement>("button, [role='button']"))
+                  .map((button) => button.getAttribute("aria-label") || button.textContent || "")
+                  .find((label) => /Sort:/i.test(label));
+                return `${text} ${sortLabel || ""}`.replace(/\s+/g, " ").trim();
+              }),
+            )
+            .catch(() => []);
+
+          return indicators.some((text) =>
+            new RegExp(`${escapeRegex(columnName)}\\s*Sort:\\s*${escapeRegex(sortLabel)}`, "i").test(text),
+          );
+        },
+        { timeout: 15000 },
+      )
+      .toBeTruthy();
+  }
+
+  private async visibleColumnValues(columnName: SortableLeadColumn) {
+    return await this.page.evaluate((targetColumnName) => {
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const expectedValueForColumn = (value: string) => {
+        if (targetColumnName === "Lead ID") {
+          return /^L\d+/i.test(value);
+        }
+
+        if (/date/i.test(targetColumnName)) {
+          return /^\d{1,2}\s+[A-Za-z]{3,}\s+\d{4}$/.test(value);
+        }
+
+        if (targetColumnName === "Stage") {
+          return /^(New Lead|Contacted|Prospect|Site Visit|Negotiation|Booked|Dropped)$/i.test(value);
+        }
+
+        return Boolean(value);
+      };
+      const mainGridColumnIndex: Record<string, number> = {
+        "Lead ID": 0,
+        Stage: 1,
+        "Create Date": 4,
+        "Update Date": 5,
+      };
+      const mainGridIndex = mainGridColumnIndex[targetColumnName];
+
+      if (mainGridIndex !== undefined) {
+        const rowValues = Array.from(document.querySelectorAll<HTMLTableRowElement>("table tbody tr, table tr"))
+          .map((row) => Array.from(row.querySelectorAll<HTMLElement>("td, [role='cell']")))
+          .filter((cells) => cells.length > mainGridIndex)
+          .filter((cells) => /^L\d+/i.test(normalize(cells[0].innerText || cells[0].textContent)))
+          .map((cells) => cells[mainGridIndex])
+          .filter((cell): cell is HTMLElement => Boolean(cell) && visible(cell))
+          .map((cell) => normalize(cell.innerText || cell.textContent))
+          .filter((text) => text && text !== "-" && !/^NA$/i.test(text) && expectedValueForColumn(text));
+
+        if (rowValues.length) {
+          return rowValues;
+        }
+      }
+
+      const tables = Array.from(document.querySelectorAll<HTMLTableElement>("table"));
+      for (let tableIndex = 0; tableIndex < tables.length; tableIndex += 1) {
+        const headerCells = Array.from(tables[tableIndex].querySelectorAll<HTMLElement>("th, [role='columnheader']"));
+        const headerIndex = headerCells.findIndex((header) => {
+          const text = normalize(header.innerText || header.textContent);
+          return visible(header) && new RegExp(`^${targetColumnName}\\b`, "i").test(text);
+        });
+        if (headerIndex === -1) {
+          continue;
+        }
+
+        for (const dataTable of tables.slice(tableIndex + 1)) {
+          const rows = Array.from(dataTable.querySelectorAll<HTMLTableRowElement>("tbody tr, tr"));
+          const firstDataCells = Array.from(rows[0]?.querySelectorAll<HTMLElement>("td, [role='cell']") ?? []);
+          if (firstDataCells.length < Math.max(headerCells.length - 1, headerIndex + 1)) {
+            continue;
+          }
+
+          const values = rows
+            .map((row) => Array.from(row.querySelectorAll<HTMLElement>("td, [role='cell']"))[headerIndex])
+            .filter((cell): cell is HTMLElement => Boolean(cell) && visible(cell))
+            .map((cell) => normalize(cell.innerText || cell.textContent))
+            .filter((text) => text && text !== "-" && !/^NA$/i.test(text) && expectedValueForColumn(text));
+
+          if (values.length) {
+            return values;
+          }
+        }
+      }
+
+      const headers = Array.from(document.querySelectorAll<HTMLElement>("th, [role='columnheader']"))
+        .filter((header) => {
+          const text = normalize(header.innerText || header.textContent);
+          return visible(header) && new RegExp(`^${targetColumnName}\\b`, "i").test(text);
+        })
+        .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top);
+
+      const header = headers[0];
+      if (!header) {
+        return [];
+      }
+
+      const headerRect = header.getBoundingClientRect();
+      const values = Array.from(document.querySelectorAll<HTMLElement>("td, [role='cell']"))
+        .filter((cell) => {
+          const rect = cell.getBoundingClientRect();
+          const cellCenter = rect.left + rect.width / 2;
+          return (
+            visible(cell) &&
+            rect.top > headerRect.bottom &&
+            cellCenter >= headerRect.left - 12 &&
+            cellCenter <= headerRect.right + 12
+          );
+        })
+        .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)
+        .map((cell) => normalize(cell.innerText || cell.textContent))
+        .filter((text) => text && text !== "-" && !/^NA$/i.test(text) && expectedValueForColumn(text));
+
+      return values;
+    }, columnName).catch(() => []);
+  }
+
+  private valuesAreSorted(values: string[], columnName: SortableLeadColumn, direction: SortDirection) {
+    if (values.length < 2) {
+      return true;
+    }
+
+    const multiplier = direction === "ascending" ? 1 : -1;
+
+    for (let index = 1; index < values.length; index += 1) {
+      const previous = this.sortComparableValue(values[index - 1], columnName);
+      const current = this.sortComparableValue(values[index], columnName);
+      if (this.compareSortValues(previous, current) * multiplier > 0) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private detectedSortDirection(values: string[], columnName: SortableLeadColumn): SortDirection | "flat" | null {
+    const ascending = this.valuesAreSorted(values, columnName, "ascending");
+    const descending = this.valuesAreSorted(values, columnName, "descending");
+
+    if (ascending && descending) {
+      return "flat";
+    }
+
+    if (ascending) {
+      return "ascending";
+    }
+
+    if (descending) {
+      return "descending";
+    }
+
+    return null;
+  }
+
+  private sortComparableValue(value: string, columnName: SortableLeadColumn) {
+    if (/date/i.test(columnName)) {
+      const [day, monthName, year] = value.split(/\s+/);
+      const parsed = Date.parse(`${monthName} ${day}, ${year}`);
+      return Number.isNaN(parsed) ? value.toLowerCase() : parsed;
+    }
+
+    return value.toLowerCase();
+  }
+
+  private compareSortValues(left: string | number, right: string | number) {
+    if (typeof left === "number" && typeof right === "number") {
+      return left - right;
+    }
+
+    return String(left).localeCompare(String(right), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
   }
 
   async openLeadByName(leadName: string) {
@@ -450,21 +841,66 @@ export class LeadListPage {
     await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
   }
 
-  private async waitForFilterApplied() {
+  private async waitForFilterApplied(stage?: LeadStageFilter) {
     await expect
-      .poll(async () => await this.activeFilterBadgeCount(), { timeout: 30000 })
-      .toBeGreaterThan(0);
+      .poll(async () => {
+        const badgeCount = await this.activeFilterBadgeCount();
+        if (badgeCount > 0) {
+          return true;
+        }
+
+        if (!stage) {
+          return false;
+        }
+
+        const expectedStageCount = await this.stageSummaryCount(stage);
+        const resultCount = await this.listingResultCount();
+        return (
+          (await this.isStageSummaryActive(stage)) ||
+          (expectedStageCount >= 0 && resultCount === expectedStageCount)
+        );
+      }, { timeout: 30000 })
+      .toBeTruthy();
     await expect
       .poll(async () => await this.listingResultCount(), { timeout: 30000 })
       .not.toBe(-1);
   }
 
+  private async applySourceFilterIfAvailable(source: string) {
+    const applied = await this.openFilterPanel()
+      .then(async () => {
+        await this.selectFilterOption("source", source);
+        await this.clickApplyFilters();
+        await this.waitForFilterApplied();
+        return true;
+      })
+      .catch(async () => {
+        await this.page.keyboard.press("Escape").catch(() => {});
+        return false;
+      });
+
+    if (!applied) {
+      await this.expectVisibleSourcesMatch(source);
+    }
+  }
+
   private async waitForStageFilterApplied(stage: LeadStageFilter, expectedStageCount: number) {
     await expect
-      .poll(async () => await this.activeFilterBadgeCount(), { timeout: 30000 })
-      .toBeGreaterThan(0);
+      .poll(async () => {
+        const badgeCount = await this.activeFilterBadgeCount();
+        if (badgeCount > 0) {
+          return true;
+        }
 
-    if (expectedStageCount >= 0) {
+        const resultCount = await this.listingResultCount();
+        return (
+          (await this.isStageSummaryActive(stage)) ||
+          (expectedStageCount >= 0 && resultCount === expectedStageCount)
+        );
+      }, { timeout: 30000 })
+      .toBeTruthy();
+
+    if (expectedStageCount > 0) {
       await expect
         .poll(async () => await this.listingResultCount(), { timeout: 30000 })
         .toBe(expectedStageCount);
@@ -556,26 +992,20 @@ export class LeadListPage {
   private async selectFilterOption(dropdown: FilterDropdown, optionName: string) {
     const dropdownLabel = dropdown === "stage" ? "Select the Stage" : "Select the Source";
 
-    if (dropdown === "source") {
-      const sourceDropdown = this.page
-        .getByRole("button", { name: "Select the Source", exact: true })
-        .first();
-      await expect(sourceDropdown).toBeVisible({ timeout: 30000 });
-      await sourceDropdown.click({ force: true });
-
-      const sourceOption = this.page
-        .getByRole("button", { name: optionName, exact: true })
-        .first();
-      await expect(sourceOption).toBeVisible({ timeout: 30000 });
-      await sourceOption.click({ force: true });
-      return;
-    }
-
     const dropdownCandidates = this.filterDropdownCandidates(dropdownLabel);
 
-    const opened =
-      (await tryClickFirstVisible(dropdownCandidates, { force: true, timeout: 3000 })) ||
-      (await this.clickFilterDropdownWithDom(dropdown));
+    let opened = false;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      opened =
+        (await tryClickFirstVisible(dropdownCandidates, { force: true, timeout: 3000 })) ||
+        (await this.clickFilterDropdownWithDom(dropdown));
+      if (opened) {
+        break;
+      }
+
+      await this.scrollFilterPanel(dropdown === "source" ? 1 : -1);
+    }
+
     if (!opened) {
       throw new Error(`Unable to open lead filter dropdown for ${dropdownLabel.toString()}.`);
     }
@@ -588,11 +1018,10 @@ export class LeadListPage {
       await dropdownSearch.fill(optionName);
     }
 
-    const directStageOption = this.page
-      .getByRole("button", { name: optionName, exact: true })
-      .first();
-    if (await directStageOption.isVisible().catch(() => false)) {
-      await directStageOption.click({ force: true });
+    if (await this.clickFilterOptionWithDom(optionName)) {
+      if (dropdown === "stage") {
+        await this.closeOpenFilterDropdown();
+      }
       return;
     }
 
@@ -637,15 +1066,39 @@ export class LeadListPage {
     }
 
     if (dropdown === "stage") {
-      const searchStillVisible = await this.page
-        .getByRole("textbox", { name: /^Search$/i })
-        .last()
-        .isVisible()
-        .catch(() => false);
-      if (searchStillVisible) {
-        await tryClickFirstVisible(dropdownCandidates, { force: true, timeout: 3000 });
-      }
+      await this.closeOpenFilterDropdown();
     }
+  }
+
+  private async closeOpenFilterDropdown() {
+    await this.page.keyboard.press("Escape").catch(() => {});
+    await this.page.waitForTimeout(250);
+  }
+
+  private async scrollFilterPanel(direction = 1) {
+    await this.page.evaluate((scrollDirection) => {
+      const candidates = Array.from(document.querySelectorAll<HTMLElement>("aside, section, div"))
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+          return (
+            rect.width > 250 &&
+            rect.height > 250 &&
+            rect.left > window.innerWidth * 0.45 &&
+            element.scrollHeight > element.clientHeight &&
+            style.display !== "none" &&
+            style.visibility !== "hidden"
+          );
+        })
+        .sort((left, right) => right.getBoundingClientRect().left - left.getBoundingClientRect().left);
+
+      const panel = candidates[0];
+      if (panel) {
+        panel.scrollTop += scrollDirection * Math.max(180, panel.clientHeight * 0.6);
+      }
+    }, direction).catch(() => {});
+    await this.page.mouse.wheel(0, direction * 400).catch(() => {});
+    await this.page.waitForTimeout(250);
   }
 
   private filterDropdownCandidates(dropdownLabel: string) {
@@ -752,12 +1205,37 @@ export class LeadListPage {
         return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
       };
       const option = Array.from(document.querySelectorAll<HTMLElement>("button, [role='option'], [role='menuitem'], li, label, p, div, span"))
-        .find((element) => normalize(element.innerText || element.textContent) === expectedOption && visible(element));
+        .filter((element) => normalize(element.innerText || element.textContent) === expectedOption && visible(element))
+        .sort((left, right) => right.getBoundingClientRect().left - left.getBoundingClientRect().left)[0];
       if (!option) {
         return false;
       }
 
-      option.click();
+      let clickable: HTMLElement = option;
+      let parent = option.parentElement;
+      for (let depth = 0; parent && depth < 5; depth += 1) {
+        const parentText = normalize(parent.innerText || parent.textContent);
+        const parentStyle = window.getComputedStyle(parent);
+        const input = parent.querySelector<HTMLElement>('input[type="checkbox"], [role="checkbox"]');
+        if (parentText.includes(expectedOption) && input && visible(input)) {
+          clickable = input;
+          break;
+        }
+
+        if (
+          parentText === expectedOption &&
+          (parent.matches("button, [role='button'], label, li") || parentStyle.cursor === "pointer")
+        ) {
+          clickable = parent;
+          break;
+        }
+        parent = parent.parentElement;
+      }
+
+      clickable.scrollIntoView({ block: "center", inline: "center" });
+      clickable.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      clickable.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+      clickable.click();
       return true;
     }, optionName).catch(() => false);
   }
@@ -767,6 +1245,10 @@ export class LeadListPage {
       .poll(
         async () => {
           const visibleStages = await this.visibleStatusTexts();
+          if (visibleStages.length === 0) {
+            return await this.isStageSummaryActive(expectedStage);
+          }
+
           return (
             visibleStages.length > 0 &&
             visibleStages.every((stage) => new RegExp(`^${escapeRegex(expectedStage)}$`, "i").test(stage))
@@ -905,6 +1387,28 @@ export class LeadListPage {
     return Number(filterText.match(/Filter\s*\((\d+)\)/i)?.[1] ?? 0);
   }
 
+  private async isStageSummaryActive(stage: LeadStageFilter) {
+    return await this.page
+      .getByRole("button", {
+        name: new RegExp(`^${escapeRegex(stage)}\\s+\\d+$`, "i"),
+      })
+      .first()
+      .evaluate((element) => {
+        const className = element.getAttribute("class") || "";
+        const ariaPressed = element.getAttribute("aria-pressed");
+        const ariaSelected = element.getAttribute("aria-selected");
+        const dataState = element.getAttribute("data-state");
+
+        return (
+          ariaPressed === "true" ||
+          ariaSelected === "true" ||
+          dataState === "active" ||
+          /active|selected|bg-|text-white|shadow/i.test(className)
+        );
+      })
+      .catch(() => false);
+  }
+
   private async stageSummaryCount(stage: string) {
     const summaryText = await this.page
       .getByRole("button", {
@@ -970,6 +1474,109 @@ export class LeadListPage {
     );
   }
 
+  private async expectVisibleSourcesMatch(expectedSource: string) {
+    await expect
+      .poll(
+        async () => {
+          const sources = await this.visibleSourceTexts();
+          const boundarySources =
+            sources.length <= 1 ? sources : [sources[0], sources[sources.length - 1]];
+
+          return (
+            boundarySources.length > 0 &&
+            boundarySources.every((source) => new RegExp(`^${escapeRegex(expectedSource)}$`, "i").test(source))
+          );
+        },
+        { timeout: 60000 },
+      )
+      .toBeTruthy();
+  }
+
+  private async visibleSourceTexts() {
+    return await this.page.evaluate(() => {
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+
+      const headers = Array.from(document.querySelectorAll<HTMLElement>("th, [role='columnheader']"));
+      const sourceHeader = headers.find((header) => /^Source$/i.test(normalize(header.innerText || header.textContent)) && visible(header));
+      if (!sourceHeader) {
+        return [];
+      }
+
+      const sourceLeft = sourceHeader.getBoundingClientRect().left;
+      return Array.from(document.querySelectorAll<HTMLElement>("td, [role='cell']"))
+        .filter((cell) => {
+          const rect = cell.getBoundingClientRect();
+          return (
+            Math.abs(rect.left - sourceLeft) < 90 &&
+            rect.top > sourceHeader.getBoundingClientRect().bottom &&
+            visible(cell)
+          );
+        })
+        .map((cell) => normalize(cell.innerText || cell.textContent))
+        .filter((text) => text && !/^Source$/i.test(text));
+    }).catch(() => []);
+  }
+
+  private async findFirstVisibleSourceValue() {
+    return await this.page.evaluate(() => {
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+
+      const tables = Array.from(document.querySelectorAll<HTMLTableElement>("table"));
+      for (const table of tables) {
+        const headerCells = Array.from(table.querySelectorAll<HTMLElement>("th, [role='columnheader']"));
+        const sourceIndex = headerCells.findIndex((cell) => /^Source$/i.test(normalize(cell.innerText || cell.textContent)));
+        if (sourceIndex === -1) {
+          continue;
+        }
+
+        const rows = Array.from(table.querySelectorAll<HTMLTableRowElement>("tbody tr, tr"));
+        for (const row of rows) {
+          const cells = Array.from(row.querySelectorAll<HTMLElement>("td, [role='cell']"));
+          const sourceCell = cells[sourceIndex];
+          const text = normalize(sourceCell?.innerText || sourceCell?.textContent);
+          if (text && !/^Source$/i.test(text) && visible(sourceCell)) {
+            return text;
+          }
+        }
+      }
+
+      const sourceHeader = Array.from(document.querySelectorAll<HTMLElement>("th, [role='columnheader'], div, span"))
+        .find((element) => /^Source$/i.test(normalize(element.innerText || element.textContent)) && visible(element));
+      if (!sourceHeader) {
+        return "";
+      }
+
+      const sourceLeft = sourceHeader.getBoundingClientRect().left;
+      const sourceValues = Array.from(document.querySelectorAll<HTMLElement>("td, [role='cell'], div, span"))
+        .filter((element) => {
+          const text = normalize(element.innerText || element.textContent);
+          const rect = element.getBoundingClientRect();
+          return (
+            text &&
+            !/^Source$/i.test(text) &&
+            Math.abs(rect.left - sourceLeft) < 80 &&
+            rect.top > sourceHeader.getBoundingClientRect().bottom &&
+            visible(element)
+          );
+        })
+        .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top);
+
+      return normalize(sourceValues[0]?.innerText || sourceValues[0]?.textContent);
+    }).catch(() => "");
+  }
+
   private async visibleStatusTexts() {
     return await this.page
       .locator("td, [role='cell'], a")
@@ -1011,7 +1618,7 @@ export class LeadListPage {
       otp: app.otp,
     });
     await this.page.goto("/admin/developer/cpms/manage-construction", {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
   }
 }

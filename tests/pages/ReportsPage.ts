@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import { ProjectSwitcherPage } from "./ProjectSwitcherPage";
+import { ensureAuthenticatedSession } from "../support/session";
 import {
   clickWithFallback,
   hasVisibleHeading,
@@ -8,7 +9,10 @@ import {
 } from "../support/ui-actions";
 
 export type ReportsAppConfig = {
+  baseUrl?: string;
   activeProjectName: string;
+  mobileNumber?: string;
+  otp?: string;
 };
 
 export class ReportsPage {
@@ -24,8 +28,9 @@ export class ReportsPage {
   }
 
   async open(app: ReportsAppConfig) {
-    await this.page.goto("/admin/developer/cpms/manage-construction", { waitUntil: "networkidle" });
-    await new ProjectSwitcherPage(this.page).ensureActiveProject(app.activeProjectName);
+    await this.page.goto("/admin/developer/cpms/manage-construction", { waitUntil: "domcontentloaded" });
+    await ensureAuthenticatedSession(this.page, app, "/admin/developer/cpms/manage-construction");
+    app.activeProjectName = await new ProjectSwitcherPage(this.page).ensureActiveProject(app.activeProjectName);
 
     let opened = false;
     for (const candidate of this.reportsDashboardButtonCandidates) {

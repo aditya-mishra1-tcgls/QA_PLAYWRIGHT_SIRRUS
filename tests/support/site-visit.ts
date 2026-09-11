@@ -5,6 +5,9 @@ import { SiteVisitPage } from "../pages";
 
 type AppConfig = {
   envName: string;
+  baseUrl?: string;
+  mobileNumber?: string;
+  otp?: string;
 };
 
 async function logStep(title: string) {

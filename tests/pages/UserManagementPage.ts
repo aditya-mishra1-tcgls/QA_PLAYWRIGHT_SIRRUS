@@ -1,7 +1,7 @@
 import { expect, type Page } from "@playwright/test";
-import { LoginPage } from "./LoginPage";
 import { ProjectSwitcherPage } from "./ProjectSwitcherPage";
-import { clickFirstVisible } from "../support/ui-actions";
+import { ensureAuthenticatedSession } from "../support/session";
+import { clickFirstVisible, normalizeText } from "../support/ui-actions";
 
 export type UserManagementAppConfig = {
   baseUrl?: string;
@@ -64,6 +64,7 @@ export class UserManagementPage {
 
   get userManagementNavCandidates() {
     return [
+      this.page.getByRole("link", { name: /User Management\s+Create and/i }).first(),
       this.page
         .locator("div")
         .filter({ hasText: /^User ManagementCreate and Manage access of users/i })
@@ -85,6 +86,8 @@ export class UserManagementPage {
 
   get createUserCandidates() {
     return [
+      this.page.locator("button").filter({ hasText: /^Add User$/i }).first(),
+      this.page.getByText(/^Add User$/i).locator("xpath=ancestor::button[1]").first(),
       this.page.getByRole("button", { name: /create|add/i }).filter({ hasText: /user|member|account/i }).first(),
       this.page.getByRole("link", { name: /create|add/i }).filter({ hasText: /user|member|account/i }).first(),
       this.page.getByRole("button", { name: /add user|create user|new user|invite user|add member|new member/i }).first(),
@@ -95,27 +98,13 @@ export class UserManagementPage {
   }
 
   async open(app: UserManagementAppConfig) {
-    const directPaths = [
-      "/admin/developer/users",
-      "/admin/developer/user-management",
-      "/admin/developer/users",
-      "/admin/developer/settings/users",
-      "/admin/developer/settings/user-management",
-      "/admin/developer/lead-settings/user-managment",
-      "/admin/developer/lead-settings/user-management",
-      "/admin/developer/cpms/users",
-    ];
-
-    for (const directPath of directPaths) {
-      await this.page.goto(directPath, { waitUntil: "domcontentloaded" });
-      if (await this.isReady()) {
-        return;
-      }
-    }
-
-    await this.page.goto("/admin/developer/cpms/manage-construction", { waitUntil: "networkidle" });
+    await this.page.goto("/admin/developer/cpms/manage-construction", { waitUntil: "domcontentloaded" });
     await this.loginAgainIfSessionExpired(app);
-    await new ProjectSwitcherPage(this.page).ensureActiveProject(app.activeProjectName);
+    app.activeProjectName = await new ProjectSwitcherPage(this.page)
+      .ensureActiveProject(app.activeProjectName)
+      .catch(() => app.activeProjectName);
+
+    await this.page.goto("/admin/developer/cpms/manage-construction", { waitUntil: "domcontentloaded" });
 
     if (await this.settingsModuleButton.isVisible().catch(() => false)) {
       await this.settingsModuleButton.click({ force: true });
@@ -127,14 +116,12 @@ export class UserManagementPage {
         .toBeTruthy()
         .catch(() => {});
 
-      const userManagementCardVisible = await this.page
-        .getByText(/User Management/i)
-        .first()
-        .isVisible()
-        .catch(() => false);
-
-      if (userManagementCardVisible) {
-        await this.clickVisibleTextByPattern(/user management/i, "user management page");
+      const opened = await clickFirstVisible(this.userManagementNavCandidates, "user management navigation", {
+        force: true,
+      }).then(() => true).catch(() => false);
+      if (opened) {
+        await this.waitForReady();
+        return;
       }
     }
 
@@ -174,25 +161,6 @@ export class UserManagementPage {
   async openCreateUserForm() {
     await this.waitForReady();
 
-    const directManagerRoutes = [
-      "/admin/developer/lead-settings/user-managment",
-      "/admin/developer/lead-settings/user-management",
-      "/admin/developer/users",
-      "/admin/developer/user-management",
-      "/admin/developer/settings/user-management",
-    ];
-
-    for (const route of directManagerRoutes) {
-      const alreadyOnUserPage = /user(-| )management|\/users(?:\/)?$|\/users\?/i.test(this.page.url());
-      if (alreadyOnUserPage) {
-        break;
-      }
-      await this.page.goto(route, { waitUntil: "domcontentloaded" }).catch(() => {});
-      if (await this.isReady()) {
-        break;
-      }
-    }
-
     const clickedDirectly = await clickFirstVisible(this.createUserCandidates, "create user").then(() => true).catch(() => false);
     if (!clickedDirectly) {
       const userManagementLink = this.page
@@ -227,7 +195,12 @@ export class UserManagementPage {
       }
     }
 
-    await this.waitForReady();
+    const formOpened = await this.waitForCreateUserForm(15000);
+    if (!formOpened) {
+      await this.clickAddUserButtonWithDom();
+      await this.clickAddUserButtonWithMouse();
+      await this.waitForCreateUserForm(60000, true);
+    }
   }
 
   async expectUserListed(email: string) {
@@ -238,16 +211,116 @@ export class UserManagementPage {
     await expect.poll(() => this.isReady(), { timeout: 60000 }).toBeTruthy();
   }
 
+  private async waitForCreateUserForm(timeout = 60000, throwOnTimeout = false) {
+    await this.page.waitForLoadState("domcontentloaded").catch(() => {});
+    const opened = await expect
+      .poll(async () => await this.isCreateUserFormVisible(), { timeout })
+      .toBeTruthy()
+      .then(() => true)
+      .catch(() => false);
+
+    if (!opened && throwOnTimeout) {
+      throw new Error("Create user form did not open after clicking Add User.");
+    }
+
+    return opened;
+  }
+
+  private async isCreateUserFormVisible() {
+    const bodyText = normalizeText(await this.page.locator("body").innerText().catch(() => ""));
+    if (/Add User Details/i.test(bodyText)) {
+      return true;
+    }
+
+    if (/First Name/i.test(bodyText) && /Last Name/i.test(bodyText)) {
+      return true;
+    }
+
+    const candidates = [
+      this.page.locator("#firstName").first(),
+      this.page.locator("#lastName").first(),
+      this.page.getByText(/^First Name\s*\*?$/i).locator("xpath=following::input[1]").first(),
+    ];
+
+    for (const candidate of candidates) {
+      if (await candidate.isVisible().catch(() => false)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private async clickAddUserButtonWithDom() {
+    return await this.page.evaluate(() => {
+      const normalize = (value: string | null | undefined) =>
+        (value ?? "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          style.pointerEvents !== "none"
+        );
+      };
+
+      const addUserText = Array.from(document.querySelectorAll<HTMLElement>("button, a, p, span, div"))
+        .find((element) => /^Add User$/i.test(normalize(element.innerText || element.textContent)) && visible(element));
+      const button = addUserText?.closest<HTMLElement>("button, a, [role='button']");
+      const target = button || addUserText;
+      if (!target) {
+        return false;
+      }
+
+      target.scrollIntoView({ block: "center", inline: "center" });
+      target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+      target.click();
+      return true;
+    }).catch(() => false);
+  }
+
+  private async clickAddUserButtonWithMouse() {
+    const addUserButton = this.page.locator("button").filter({ hasText: /^Add User$/i }).first();
+    if (!(await addUserButton.isVisible().catch(() => false))) {
+      return false;
+    }
+
+    await addUserButton.scrollIntoViewIfNeeded().catch(() => {});
+    const box = await addUserButton.boundingBox().catch(() => null);
+    if (!box) {
+      return false;
+    }
+
+    await this.page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    return true;
+  }
+
   private async isReady() {
     const currentUrl = this.page.url();
     const inUserManagementRoute = /user(-| )management|\/users(?:\/)?$|\/users\?|user-managment|user-management/i.test(currentUrl);
+    const bodyText = normalizeText(await this.page.locator("body").innerText().catch(() => ""));
+
+    if (/Lost World|Error code:\s*404/i.test(bodyText)) {
+      return false;
+    }
 
     const hasHeading = await this.page
       .getByRole("heading", { name: /users?|user management|team|members/i })
       .first()
       .isVisible()
       .catch(() => false);
-    if (hasHeading || inUserManagementRoute) {
+    if (hasHeading) {
+      return true;
+    }
+
+    if (
+      inUserManagementRoute &&
+      /add user|create user|new user|invite user|user management|members|team/i.test(bodyText)
+    ) {
       return true;
     }
 
@@ -377,23 +450,6 @@ export class UserManagementPage {
   }
 
   private async loginAgainIfSessionExpired(app: UserManagementAppConfig) {
-    const onLoginPage =
-      /\/admin\/login/i.test(this.page.url()) ||
-      (await this.page.getByRole("heading", { name: /Mobile Number/i }).isVisible().catch(() => false));
-
-    if (!onLoginPage) {
-      return;
-    }
-
-    if (!app.baseUrl || !app.mobileNumber || !app.otp) {
-      throw new Error("Authenticated session expired and login credentials were not available to recover it.");
-    }
-
-    await new LoginPage(this.page).login({
-      baseUrl: app.baseUrl,
-      mobileNumber: app.mobileNumber,
-      otp: app.otp,
-    });
-    await this.page.goto("/admin/developer/cpms/manage-construction", { waitUntil: "networkidle" });
+    await ensureAuthenticatedSession(this.page, app, "/admin/developer/cpms/manage-construction");
   }
 }

@@ -26,7 +26,7 @@ export function getAuthStatePath(envName: string) {
 }
 
 export async function ensureActiveProject(page: Page, projectName: string) {
-  await new ProjectSwitcherPage(page).ensureActiveProject(projectName);
+  return await new ProjectSwitcherPage(page).ensureActiveProject(projectName);
 }
 
 export async function loginToPlatform(page: Page, app: AppConfig) {
@@ -41,7 +41,7 @@ export async function loginToPlatform(page: Page, app: AppConfig) {
   });
 
   await base.step("Request OTP", async () => {
-    await new LoginPage(page).requestOtp();
+    await new LoginPage(page).requestOtp(app.mobileNumber);
   });
 
   await base.step("Enter OTP", async () => {
@@ -53,7 +53,7 @@ export async function loginToPlatform(page: Page, app: AppConfig) {
   });
 
   await base.step("Select active project", async () => {
-    await ensureActiveProject(page, app.activeProjectName);
+    app.activeProjectName = await ensureActiveProject(page, app.activeProjectName);
   });
 }
 

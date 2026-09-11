@@ -90,13 +90,17 @@ export function loadEnv(): EnvConfig {
 
   const selectedMobileNumber = process.env.APP_TEST_MOBILE_NUMBER || process.env.APP_TEST_LOGIN_ID || selectedAccount.mobileNumber;
   const selectedOtp = process.env.APP_TEST_OTP || process.env.APP_TEST_PASSWORD || selectedAccount.otp;
+  const selectedProjectName =
+    process.env.APP_TEST_PROJECT_NAME ||
+    process.env.ACTIVE_PROJECT_NAME ||
+    availableEnv.activeProjectName;
   ensureConfiguredCredential(selectedEnv, "mobileNumber", selectedMobileNumber);
   ensureConfiguredCredential(selectedEnv, "otp", selectedOtp);
 
   return {
     envName: selectedEnv,
     baseUrl: availableEnv.baseUrl,
-    activeProjectName: availableEnv.activeProjectName,
+    activeProjectName: selectedProjectName,
     mobileNumber: selectedMobileNumber,
     otp: selectedOtp,
     adminUser: selectedAccount.adminUser,

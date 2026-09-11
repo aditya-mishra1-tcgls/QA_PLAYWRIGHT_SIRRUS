@@ -47,7 +47,7 @@ test.describe("Lead search flow", () => {
 
     const criteria = {
       stage: "New Lead" as LeadStageFilter,
-      source: "Digital Marketing",
+      source: await leadListPage.firstVisibleSourceValue(),
       projectName: "All Projects",
     };
 
@@ -99,8 +99,15 @@ test.describe("Lead search flow", () => {
     const leadListPage = new LeadListPage(page);
     await leadListPage.selectAllProjects();
 
-    await leadListPage.applyStageFilter("Contacted");
+    await leadListPage.applyStageFilter("Open");
     await leadListPage.clearFilters();
     await leadListPage.expectAllStageDataLoaded();
+  });
+
+  test("Verify column sorting ascending and descending on Lead listing page", async ({ page, app }) => {
+    await goToManageLeads(page, app);
+
+    const leadListPage = new LeadListPage(page);
+    await leadListPage.expectSortableColumnsWork();
   });
 });
