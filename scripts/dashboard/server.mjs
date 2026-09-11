@@ -666,6 +666,11 @@ function temporaryRunPath(runPath) {
   return `${runPath}.${suffix}.tmp`;
 }
 
+async function writeFileEnsuringParent(filePath, content) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, content);
+}
+
 function extractLastCompleteRunJson(content) {
   let depth = 0;
   let start = -1;
@@ -716,7 +721,10 @@ async function recoverRunFile(runPath, runId) {
   const backupPath = `${runPath}.corrupt-backup`;
   if (!existsSync(backupPath)) await copyFile(runPath, backupPath);
   const temporaryPath = temporaryRunPath(runPath);
-  await writeFile(temporaryPath, `${JSON.stringify(recovered, null, 2)}\n`);
+  await writeFileEnsuringParent(
+    temporaryPath,
+    `${JSON.stringify(recovered, null, 2)}\n`,
+  );
   await rename(temporaryPath, runPath);
   console.warn(
     `Recovered local run ${runId}; saved its original file as ${path.basename(backupPath)}.`,
@@ -996,7 +1004,10 @@ async function writeRunSnapshot(run) {
 
   const runPath = path.join(getRunDir(run.id), "run.json");
   const temporaryPath = temporaryRunPath(runPath);
-  await writeFile(temporaryPath, `${JSON.stringify(persistedRun)}\n`);
+  await writeFileEnsuringParent(
+    temporaryPath,
+    `${JSON.stringify(persistedRun)}\n`,
+  );
   await rename(temporaryPath, runPath);
 
   try {
