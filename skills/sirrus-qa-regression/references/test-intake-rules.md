@@ -29,6 +29,7 @@ Then ask for the module inside that domain.
 
 - `engagement -> lead-management`
 - `engagement -> lead-report`
+- `engagement -> dashboard-report`
 - `engagement -> site-visit`
 - `martech -> campaign-report`
 - `post-sales -> handover`

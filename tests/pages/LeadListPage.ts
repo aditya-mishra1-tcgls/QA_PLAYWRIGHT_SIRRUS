@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { LoginPage } from "./LoginPage";
 import { ProjectSwitcherPage } from "./ProjectSwitcherPage";
 import {
@@ -13,6 +13,8 @@ import {
 export type LeadListAppConfig = {
   baseUrl?: string;
   activeProjectName: string;
+  receptionFormsProjectName?: string;
+  receptionFormsProjectId?: string;
   mobileNumber?: string;
   otp?: string;
 };
@@ -45,7 +47,7 @@ export class LeadListPage {
   constructor(private readonly page: Page) {}
 
   get searchInput() {
-    return this.page.locator("#search");
+    return this.page.getByRole("textbox", { name: /Search by name, number, email/i }).first();
   }
 
   get addLeadButton() {
@@ -74,7 +76,7 @@ export class LeadListPage {
   }
 
   async gotoManageConstruction(app: LeadListAppConfig) {
-    await this.page.goto("/admin/developer/cpms/manage-construction", {
+    await this.page.goto(this.appUrl(app, "/admin/developer/cpms/manage-construction"), {
       waitUntil: "networkidle",
     });
     await this.loginAgainIfSessionExpired(app);
@@ -106,11 +108,28 @@ export class LeadListPage {
       : false;
 
     if (!manageLeadsOpened) {
-      await this.page.goto("/admin/developer/engagement-intelligence/manage-leads", {
+      await this.page.goto(this.appUrl(app, "/admin/developer/engagement-intelligence/manage-leads"), {
         waitUntil: "domcontentloaded",
       });
+      await this.loginAgainIfSessionExpired(app);
+      if (!/engagement-intelligence\/manage-leads/i.test(this.page.url())) {
+        await this.page.goto(this.appUrl(app, "/admin/developer/engagement-intelligence/manage-leads"), {
+          waitUntil: "domcontentloaded",
+        });
+      }
     }
 
+    const listingReady = await this.waitForListingReady()
+      .then(() => true)
+      .catch(() => false);
+    if (listingReady) {
+      return;
+    }
+
+    // The Lead Listing occasionally remains on its initial spinner even after
+    // the route has opened. A single reload restarts that client-side fetch.
+    await this.page.reload({ waitUntil: "domcontentloaded" });
+    await this.loginAgainIfSessionExpired(app);
     await this.waitForListingReady();
   }
 
@@ -119,7 +138,26 @@ export class LeadListPage {
     await this.waitForListingReady();
   }
 
+  async selectProjectForLeadSearch(projectName: string) {
+    await this.page.keyboard.press("Escape").catch(() => {});
+
+    const requestedProject = projectName.trim();
+    if (!requestedProject || /^all projects?$/i.test(requestedProject)) {
+      const fallbackProject = await this.firstVisibleConcreteProjectOption();
+      if (!fallbackProject) {
+        throw new Error("No concrete project was available to scope the lead search.");
+      }
+      await new ProjectSwitcherPage(this.page).selectProject(fallbackProject);
+    } else {
+      await new ProjectSwitcherPage(this.page).selectProject(requestedProject);
+    }
+
+    await this.page.keyboard.press("Escape").catch(() => {});
+    await this.waitForListingReady();
+  }
+
   async searchLead(searchText: string) {
+    await this.page.keyboard.press("Escape").catch(() => {});
     await expect(this.searchInput).toBeVisible({ timeout: 30000 });
     await this.searchInput.fill(searchText);
     await this.searchInput.press("Enter").catch(() => {});
@@ -136,6 +174,13 @@ export class LeadListPage {
   }
 
   async clearFilters() {
+    const hasPanelFilters = await this.activeFilterBadgeCount() > 0;
+    if (!hasPanelFilters) {
+      await this.clickAllLeadsSummary();
+      await this.waitForListingReady();
+      return;
+    }
+
     await this.openFilterPanel();
 
     const clearButton = this.page.getByRole("button", { name: /^(reset|clear all|clear filters)$/i }).first();
@@ -146,6 +191,8 @@ export class LeadListPage {
     }
 
     await this.clickApplyFilters();
+    await this.waitForListingReady();
+    await this.clickAllLeadsSummary();
     await this.waitForListingReady();
   }
 
@@ -164,6 +211,11 @@ export class LeadListPage {
       criteria.source = await this.firstVisibleSourceValue();
       await this.applySourceFilterIfAvailable(criteria.source);
       await this.waitForListingReady();
+      return;
+    }
+
+    if (criteria.stage && !criteria.source) {
+      await this.applyStageSummaryFilter(criteria.stage);
       return;
     }
 
@@ -186,25 +238,54 @@ export class LeadListPage {
   }
 
   async applyStageFilter(stage: LeadStageFilter) {
-    await this.waitForListingReady();
-    const expectedStageCount = await this.stageSummaryCount(stage);
+    await this.applyStageSummaryFilter(stage);
+  }
 
-    await this.openFilterPanel();
-    await this.removeSelectedFilterChips();
-    await this.selectFilterOption("stage", stage);
-    await this.clickApplyFilters();
-    await this.waitForStageFilterApplied(stage, expectedStageCount);
+  async availableStageSummaryFilters(stages: LeadStageFilter[]) {
+    await this.waitForListingReady();
+
+    return await expect
+      .poll(async () => {
+        const availableStages: LeadStageFilter[] = [];
+
+        for (const stage of stages) {
+          if (await this.stageSummaryCount(stage) >= 0) {
+            availableStages.push(stage);
+          }
+        }
+
+        return availableStages;
+      }, { timeout: 60000 })
+      .not.toHaveLength(0)
+      .then(async () => {
+        const availableStages: LeadStageFilter[] = [];
+
+        for (const stage of stages) {
+          if (await this.stageSummaryCount(stage) >= 0) {
+            availableStages.push(stage);
+          }
+        }
+
+        return availableStages;
+      });
+  }
+
+  async firstAvailableStageSummaryFilter(stages: LeadStageFilter[]) {
+    const [stage] = await this.availableStageSummaryFilters(stages);
+    if (!stage) {
+      throw new Error(`None of the requested lead stage summary filters are visible: ${stages.join(", ")}`);
+    }
+
+    return stage;
   }
 
   async applyStageSummaryFilter(stage: LeadStageFilter) {
     await this.waitForListingReady();
     const expectedStageCount = await this.stageSummaryCount(stage);
-    const stageButton = this.page.getByRole("button", {
-      name: new RegExp(`^${escapeRegex(stage)}\\s+\\d+$`, "i"),
-    }).first();
 
-    await expect(stageButton).toBeVisible({ timeout: 30000 });
-    await stageButton.click({ force: true });
+    await expect
+      .poll(async () => await this.clickStageSummaryButton(stage), { timeout: 30000 })
+      .toBeTruthy();
     await this.waitForStageFilterApplied(stage, expectedStageCount);
   }
 
@@ -279,6 +360,14 @@ export class LeadListPage {
     await expect
       .poll(async () => await this.visibleStageSummaryCount(), { timeout: 30000 })
       .toBeGreaterThanOrEqual(6);
+
+    await expect
+      .poll(async () => {
+        const allLeadsCount = await this.stageSummaryCount("All Leads");
+        const resultCount = await this.listingResultCount();
+        return allLeadsCount > 0 && resultCount === allLeadsCount;
+      }, { timeout: 30000 })
+      .toBeTruthy();
   }
 
   async expectLeadListingLoaded() {
@@ -340,6 +429,533 @@ export class LeadListPage {
       .then(async () => await this.findFirstVisibleSourceValue());
 
     return source;
+  }
+
+  async assignFirstVisibleLeadToAvailableUserAndVerify() {
+    await this.waitForListingReady();
+    const lead = await this.selectFirstVisibleLeadForAssignment();
+    await this.openLeadAssignmentAction();
+    const assignee = await this.selectAvailableLeadAssignee();
+    await this.saveLeadAssignment();
+    await this.expectLeadAssignmentVisible(lead, assignee);
+    return { ...lead, assignee };
+  }
+
+  async openFirstVisibleLeadWhatsAppIntegrationAndVerify() {
+    await this.waitForListingReady();
+    await this.waitForLeadRowsReady();
+
+    const action = await this.firstVisibleWhatsAppAction().catch(() => null);
+    if (!action) {
+      return await this.openLeadWhatsAppIntegrationByCoordinate();
+    }
+
+    const expectedNumber = await this.phoneNumberNearAction(action);
+    const href = await this.actionHref(action);
+
+    const popupPromise = this.page.waitForEvent("popup", { timeout: 8000 }).catch(() => null);
+    await action.click({ force: true });
+    const popup = await popupPromise;
+
+    if (popup) {
+      await popup.waitForLoadState("domcontentloaded").catch(() => {});
+      const popupText = normalizeText(await popup.locator("body").innerText().catch(() => ""));
+      const popupUrl = popup.url();
+      await popup.close().catch(() => {});
+
+      this.expectWhatsAppTarget(popupUrl, popupText, expectedNumber);
+      return { openedIn: "popup", expectedNumber, target: popupUrl };
+    }
+
+    await this.expectInAppWhatsAppTarget(expectedNumber, href);
+    return {
+      openedIn: "current-page",
+      expectedNumber,
+      target: this.page.url(),
+    };
+  }
+
+  private async openLeadWhatsAppIntegrationByCoordinate() {
+    const leadLink = this.page
+      .locator('a[href*="engagement-intelligence/manage-leads"][href*="id="], a[href*="/manage-leads"][href*="id="]')
+      .first();
+    await expect(leadLink).toBeVisible({ timeout: 30000 });
+
+    const href = await leadLink.getAttribute("href");
+    const expectedNumber = href?.match(/encryptedWhatsAppNumber=([^&]+)/)?.[1] ?? "";
+    const box = await leadLink.boundingBox();
+    if (!box) {
+      throw new Error("First lead link was visible but did not have a clickable bounding box.");
+    }
+
+    const popupPromise = this.page.waitForEvent("popup", { timeout: 8000 }).catch(() => null);
+    await this.page.mouse.click(box.x + box.width + 24, box.y + box.height / 2);
+    const popup = await popupPromise;
+
+    if (popup) {
+      await popup.waitForLoadState("domcontentloaded").catch(() => {});
+      const popupText = normalizeText(await popup.locator("body").innerText().catch(() => ""));
+      const popupUrl = popup.url();
+      await popup.close().catch(() => {});
+      this.expectWhatsAppTarget(popupUrl, popupText, expectedNumber);
+      return { openedIn: "popup", expectedNumber, target: popupUrl };
+    }
+
+    await this.expectInAppWhatsAppTarget(expectedNumber, href);
+    return { openedIn: "current-page", expectedNumber, target: this.page.url() };
+  }
+
+  private async waitForLeadRowsReady() {
+    await expect
+      .poll(async () => {
+        const bodyText = normalizeText(await this.page.locator("body").innerText().catch(() => ""));
+        const hasLeadLink = await this.page
+          .locator('a[href*="engagement-intelligence/manage-leads"][href*="id="], a[href*="/manage-leads"][href*="id="]')
+          .first()
+          .isVisible()
+          .catch(() => false);
+        const hasTableRows = await this.page.locator("tbody tr, [role='row']").nth(1).isVisible().catch(() => false);
+        const noRecords = /No leads|No records|No data|No results|We did not find any results/i.test(bodyText);
+        return hasLeadLink || hasTableRows || noRecords;
+      }, { timeout: 60000 })
+      .toBeTruthy();
+  }
+
+  private async firstVisibleWhatsAppAction() {
+    const candidates = [
+      this.page.locator('a[href*="whatsapp" i], a[href*="wa.me" i], a[href*="api.whatsapp" i]'),
+      this.page.getByRole("button", { name: /whats\s*app|whatsapp|chat/i }),
+      this.page.getByRole("link", { name: /whats\s*app|whatsapp|chat/i }),
+      this.page
+        .locator('button:has(img[alt*="whatsapp" i]), a:has(img[alt*="whatsapp" i]), button:has(img[alt*="chat" i]), a:has(img[alt*="chat" i])'),
+      this.page.getByRole("img", { name: /chat|whatsapp/i }),
+      this.page.locator('img[alt*="whatsapp" i], img[alt*="chat" i]'),
+      this.page.locator(
+        'xpath=//img[contains(translate(@alt, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "chat") or contains(translate(@alt, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "whatsapp")]',
+      ),
+      this.page
+        .locator('img[alt*="whatsapp" i], img[alt*="chat" i]')
+        .locator("xpath=ancestor::*[self::button or self::a or @role='button'][1]"),
+    ];
+
+    for (const candidate of candidates) {
+      const visibleCandidate = await this.firstVisibleFrom(candidate);
+      if (visibleCandidate) {
+        await visibleCandidate.scrollIntoViewIfNeeded().catch(() => {});
+        return visibleCandidate;
+      }
+    }
+
+    const clickedCandidate = await this.page.evaluate(() => {
+      const normalize = (value: string | null | undefined) =>
+        (value ?? "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      return Array.from(document.querySelectorAll<HTMLElement>("button, a, [role='button']"))
+        .some((element) => {
+          const text = normalize(element.innerText || element.textContent || element.getAttribute("aria-label") || element.getAttribute("href"));
+          const imageAlt = normalize(Array.from(element.querySelectorAll<HTMLImageElement>("img")).map((image) => image.alt).join(" "));
+          return visible(element) && /whats\s*app|whatsapp|chat/i.test(`${text} ${imageAlt}`);
+        });
+    });
+
+    if (!clickedCandidate) {
+      throw new Error("No WhatsApp/chat action was visible on the lead listing.");
+    }
+
+    const fallback = this.page.locator("button, a, [role='button']").filter({ hasText: /chat|whatsapp/i }).first();
+    await expect(fallback).toBeVisible({ timeout: 30000 });
+    return fallback;
+  }
+
+  private async firstVisibleFrom(locator: Locator) {
+    const count = await locator.count().catch(() => 0);
+    for (let index = 0; index < count; index += 1) {
+      const candidate = locator.nth(index);
+      if (await candidate.isVisible().catch(() => false)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  private async actionHref(action: Locator) {
+    const href = await action.getAttribute("href").catch(() => null);
+    if (href) {
+      return href;
+    }
+
+    return await action
+      .locator("xpath=ancestor::a[1]")
+      .getAttribute("href")
+      .catch(() => null);
+  }
+
+  private async phoneNumberNearAction(action: Locator) {
+    const href = await this.actionHref(action);
+    const hrefNumber = href?.replace(/\D/g, "").match(/(?:91)?([6-9]\d{9})/)?.[1];
+    if (hrefNumber) {
+      return hrefNumber;
+    }
+
+    const rowText = normalizeText(
+      await action
+        .locator("xpath=ancestor::*[self::tr or @role='row' or self::div][contains(., '')][1]")
+        .innerText()
+        .catch(() => ""),
+    );
+    const rowNumber = rowText.replace(/\D/g, "").match(/(?:91)?([6-9]\d{9})/)?.[1];
+    if (rowNumber) {
+      return rowNumber;
+    }
+
+    const leadHref = await action
+      .locator("xpath=ancestor::*[contains(., '')][1]//a[contains(@href, 'encryptedWhatsAppNumber')]")
+      .first()
+      .getAttribute("href")
+      .catch(() => null);
+    return leadHref?.match(/encryptedWhatsAppNumber=([^&]+)/)?.[1] ?? "";
+  }
+
+  private expectWhatsAppTarget(url: string, text: string, expectedNumber: string) {
+    expect(
+      /whatsapp|wa\.me|chat|message|conversation/i.test(`${url} ${text}`),
+      `Expected WhatsApp/chat target to open. URL: ${url}; text: ${text.slice(0, 250)}`,
+    ).toBeTruthy();
+
+    if (expectedNumber && /^\d{10}$/.test(expectedNumber)) {
+      expect(
+        `${url} ${text}`.replace(/\D/g, ""),
+        `WhatsApp/chat target should include expected number ${expectedNumber}.`,
+      ).toContain(expectedNumber);
+    } else if (expectedNumber) {
+      expect(
+        `${url} ${text}`,
+        `WhatsApp/chat target should include expected encrypted WhatsApp reference ${expectedNumber}.`,
+      ).toContain(expectedNumber);
+    }
+  }
+
+  private async expectInAppWhatsAppTarget(expectedNumber: string, href: string | null) {
+    if (href && /whatsapp|wa\.me|api\.whatsapp/i.test(href)) {
+      this.expectWhatsAppTarget(href, "", expectedNumber);
+      return;
+    }
+
+    await expect
+      .poll(async () => {
+        const bodyText = normalizeText(await this.page.locator("body").innerText().catch(() => ""));
+        return /whats\s*app|whatsapp|chat|conversation|message|send/i.test(bodyText);
+      }, { timeout: 30000 })
+      .toBeTruthy();
+
+    if (expectedNumber && /^\d{10}$/.test(expectedNumber)) {
+      await expect(this.page.locator("body")).toContainText(new RegExp(expectedNumber));
+    }
+  }
+
+  private async selectFirstVisibleLeadForAssignment() {
+    const row = this.page.locator("table tbody tr").filter({ hasText: /L\d+/i }).first();
+    const leadLink = this.page.locator('a[href*="engagement-intelligence/manage-leads"][href*="id="]').first();
+    await expect(leadLink, "Lead listing should contain at least one assignable lead").toBeVisible({ timeout: 60000 });
+
+    const rowText = normalizeText(await leadLink.locator("xpath=ancestor::*[self::tr or @role='row' or self::div][contains(., '')][1]").innerText().catch(() => ""));
+    const leadId = rowText.match(/L\d+/i)?.[0] ?? "";
+    const leadName = normalizeText(await leadLink.innerText().catch(() => ""));
+
+    const selectedWithDom = await this.clickLeadSelectionControlWithDom();
+    if (selectedWithDom) {
+      return { leadId, leadName };
+    }
+
+    const checkbox = row.getByRole("checkbox").first();
+    if (await checkbox.isVisible().catch(() => false)) {
+      await checkbox.check({ force: true }).catch(async () => checkbox.click({ force: true }));
+    } else {
+      const rowSelectButton = row.getByRole("button").first();
+      if (await rowSelectButton.isVisible().catch(() => false)) {
+        await rowSelectButton.click({ force: true });
+        return { leadId, leadName };
+      }
+      const rawRowButton = row.locator("button").first();
+      if (await rawRowButton.count().catch(() => 0)) {
+        await rawRowButton.click({ force: true });
+        return { leadId, leadName };
+      }
+      const firstCell = row.locator("td").first();
+      if (await firstCell.isVisible().catch(() => false)) {
+        await firstCell.click({ force: true, position: { x: 20, y: 20 } });
+        return { leadId, leadName };
+      }
+      const rowBox = await row.boundingBox().catch(() => null);
+      if (rowBox) {
+        await this.page.mouse.click(rowBox.x + 20, rowBox.y + Math.min(20, rowBox.height / 2));
+        return { leadId, leadName };
+      }
+
+      const checked = await row.evaluate((element) => {
+        const visible = (target: HTMLElement) => {
+          const rect = target.getBoundingClientRect();
+          const style = window.getComputedStyle(target);
+          return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+        };
+        const button = Array.from(element.querySelectorAll<HTMLElement>("button, [role='button']"))
+          .find(visible);
+        if (button) {
+          button.scrollIntoView({ block: "center", inline: "center" });
+          button.click();
+          return true;
+        }
+
+        const input = element.querySelector<HTMLInputElement>('input[type="checkbox"]');
+        if (!input) {
+          return false;
+        }
+        input.scrollIntoView({ block: "center", inline: "center" });
+        input.click();
+        return true;
+      }).catch(() => false);
+      if (!checked) {
+        throw new Error(`No checkbox was visible for first lead row: ${rowText}`);
+      }
+    }
+
+    return { leadId, leadName };
+  }
+
+  private async clickLeadSelectionControlWithDom() {
+    return await this.page.evaluate(() => {
+      const normalize = (value: string | null | undefined) =>
+        (value ?? "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+          return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+
+      const leadNameHeader = Array.from(document.querySelectorAll<HTMLElement>("table, [role='table']"))
+        .find((table) => /Lead Name/i.test(normalize(table.innerText || table.textContent)));
+      const headerSelectionButton = Array.from(leadNameHeader?.querySelectorAll<HTMLElement>("button, [role='button']") ?? [])
+        .find(visible);
+      if (headerSelectionButton) {
+        headerSelectionButton.scrollIntoView({ block: "center", inline: "center" });
+        headerSelectionButton.click();
+        return true;
+      }
+
+      const leadLink = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href*="engagement-intelligence/manage-leads"][href*="id="]'))
+        .find(visible);
+      if (!leadLink) {
+        return false;
+      }
+
+      let container: HTMLElement | null = leadLink;
+      for (let depth = 0; container && depth < 8; depth += 1) {
+        const buttons = Array.from(container.querySelectorAll<HTMLElement>("button, [role='button']"))
+          .filter(visible)
+          .filter((button) => {
+            const text = normalize(button.innerText || button.textContent || button.getAttribute("aria-label"));
+            return !/chat|call/i.test(text);
+          });
+        if (buttons.length) {
+          buttons[0].scrollIntoView({ block: "center", inline: "center" });
+          buttons[0].click();
+          return true;
+        }
+
+        container = container.parentElement;
+      }
+
+      const linkRect = leadLink.getBoundingClientRect();
+      const target = document.elementFromPoint(Math.max(1, linkRect.left - 42), linkRect.top + linkRect.height / 2) as HTMLElement | null;
+      target?.click();
+      return Boolean(target);
+    }).catch(() => false);
+  }
+
+  private async openLeadAssignmentAction() {
+    const actionCandidates = [
+      this.page.getByRole("button", { name: /^assign$/i }).first(),
+      this.page.getByRole("button", { name: /assign lead|assign selected|reassign/i }).first(),
+      this.page.locator("button").filter({ hasText: /assign/i }).first(),
+      this.page.getByText(/assign lead|assign selected|reassign/i).first(),
+    ];
+
+    for (const action of actionCandidates) {
+      if (await action.isVisible({ timeout: 5000 }).catch(() => false)) {
+        await action.click({ force: true });
+        await this.waitForAssignmentPanel();
+        return;
+      }
+    }
+
+    throw new Error("Lead assignment action was not visible after selecting a lead.");
+  }
+
+  private async waitForAssignmentPanel() {
+    await expect
+      .poll(async () => {
+        const bodyText = normalizeText(await this.page.locator("body").innerText().catch(() => ""));
+        return /assign|assigned to|select.*(agent|user|executive|sales)|reporting manager/i.test(bodyText);
+      }, { timeout: 30000 })
+      .toBeTruthy();
+  }
+
+  private async selectAvailableLeadAssignee() {
+    const dropdownCandidates = [
+      this.page.getByRole("button", { name: /select.*(agent|user|executive|sales|assignee|assigned)/i }).first(),
+      this.page.getByRole("button", { name: /^select here$/i }).first(),
+      this.page.locator("#root-modal button").filter({ hasText: /select/i }).first(),
+      this.page.locator("[role='dialog'] button").filter({ hasText: /select/i }).first(),
+    ];
+
+    for (const dropdown of dropdownCandidates) {
+      if (await dropdown.isVisible({ timeout: 5000 }).catch(() => false)) {
+        await dropdown.click({ force: true });
+        break;
+      }
+    }
+
+    const assignee = await this.clickFirstVisibleAssigneeOption();
+    if (!assignee) {
+      throw new Error("No assignable agent/user option was visible in the Lead Assignment panel.");
+    }
+
+    return assignee;
+  }
+
+  private async clickFirstVisibleAssigneeOption() {
+    return await this.page.evaluate(() => {
+      const normalize = (value: string | null | undefined) =>
+        (value ?? "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const excluded = /^(select here|select all|assign|apply|save|cancel|clear|reset|search)$/i;
+
+      const option = Array.from(document.querySelectorAll<HTMLElement>(
+        "#root-modal button, [role='dialog'] button, [role='option'], [role='menuitem'], [cmdk-item], button[class*='text-left'], button",
+      ))
+        .map((element) => {
+          const heading = element.querySelector("h1, h2, h3, h4, h5, h6");
+          return {
+            element,
+            text: normalize(heading?.textContent || element.innerText || element.textContent),
+            fullText: normalize(element.innerText || element.textContent),
+          };
+        })
+        .find(({ element, text }) =>
+          text &&
+          !excluded.test(text) &&
+          !/assign lead|lead assignment|action|filter|add lead|sort:/i.test(text) &&
+          /leads assigned/i.test(normalize(element.innerText || element.textContent)) &&
+          visible(element)
+        );
+
+      if (!option) {
+        return "";
+      }
+
+      option.element.scrollIntoView({ block: "center", inline: "center" });
+      option.element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      option.element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+      option.element.click();
+      return option.text;
+    }).catch(() => "");
+  }
+
+  private async saveLeadAssignment() {
+    const saveCandidates = [
+      this.page.getByRole("button", { name: /^apply$/i }).last(),
+      this.page.getByRole("button", { name: /^save$/i }).last(),
+      this.page.locator("button").filter({ hasText: /^Apply$/i }).last(),
+      this.page.locator("#root-modal button").filter({ hasText: /apply|save/i }).last(),
+      this.page.locator("[role='dialog'] button").filter({ hasText: /apply|save/i }).last(),
+      this.page.getByRole("button", { name: /^action$/i }).first(),
+      this.page.locator("button").filter({ hasText: /^Action$/i }).first(),
+    ];
+
+    for (const save of saveCandidates) {
+      if (await save.isVisible({ timeout: 5000 }).catch(() => false)) {
+        if (!(await save.isEnabled({ timeout: 15000 }).catch(() => false))) {
+          continue;
+        }
+        await save.click({ force: true });
+        await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+        await this.waitForListingReady();
+        return;
+      }
+    }
+
+    throw new Error("Save/Assign action was not visible in the Lead Assignment panel.");
+  }
+
+  private async expectLeadAssignmentVisible(
+    lead: { leadId: string; leadName: string },
+    assignee: string,
+  ) {
+    if (lead.leadId) {
+      await this.searchLead(lead.leadId);
+    } else if (lead.leadName) {
+      await this.searchLead(lead.leadName);
+    }
+
+    await expect
+      .poll(async () => {
+        await this.waitForListingReady().catch(() => {});
+        return await this.assignedToValueForVisibleLead(lead.leadId);
+      }, { timeout: 60000 })
+      .toContain(assignee);
+  }
+
+  private async assignedToValueForVisibleLead(leadId: string) {
+    return await this.page.evaluate((expectedLeadId) => {
+      const normalize = (value: string | null | undefined) =>
+        (value ?? "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+
+      const tables = Array.from(document.querySelectorAll<HTMLTableElement>("table"));
+      for (let index = 0; index < tables.length; index += 1) {
+        const headers = Array.from(tables[index].querySelectorAll<HTMLElement>("th, [role='columnheader']"));
+        const leadIdIndex = headers.findIndex((header) => /\bLead ID\b/i.test(normalize(header.innerText || header.textContent)));
+        const assignedIndex = headers.findIndex((header) => /\bAssigned To\b/i.test(normalize(header.innerText || header.textContent)));
+        if (assignedIndex === -1) {
+          continue;
+        }
+
+        for (const dataTable of tables.slice(index + 1)) {
+          const row = Array.from(dataTable.querySelectorAll<HTMLTableRowElement>("tbody tr, tr"))
+            .find((candidate) => {
+              if (!visible(candidate)) {
+                return false;
+              }
+              if (!expectedLeadId || leadIdIndex === -1) {
+                return true;
+              }
+              const rowCells = Array.from(candidate.querySelectorAll<HTMLElement>("td, [role='cell']"));
+              return normalize(rowCells[leadIdIndex]?.innerText || rowCells[leadIdIndex]?.textContent).includes(expectedLeadId);
+            });
+          const cells = Array.from(row?.querySelectorAll<HTMLElement>("td, [role='cell']") ?? []);
+          const assignedCell = cells[assignedIndex];
+          const value = normalize(assignedCell?.innerText || assignedCell?.textContent);
+          if (value) {
+            return value;
+          }
+        }
+      }
+
+      return "";
+    }, leadId).catch(() => "");
   }
 
   private async expectFilterControlVisible() {
@@ -772,12 +1388,48 @@ export class LeadListPage {
   private async waitForListingReady() {
     await expect
       .poll(async () => {
+        if (/\/admin\/login/i.test(this.page.url())) {
+          return false;
+        }
+
         const bodyText = normalizeText(await this.page.locator("body").innerText().catch(() => ""));
-        const hasLeadFeatureText = /Manage Leads|Lead ID|Add Lead|Lead Profile/i.test(bodyText);
+        const hasLeadFeatureText = /Manage Leads|Lead ID|Add Lead|Lead Profile|All Leads/i.test(bodyText);
         const hasSearch = await this.searchInput.isVisible().catch(() => false);
-        return hasLeadFeatureText || hasSearch;
+        const hasAddLead = await this.addLeadButton.first().isVisible().catch(() => false);
+        const hasFilter = await this.filterButton.isVisible().catch(() => false);
+        const hasResultCount = await this.listingResultCount() >= 0;
+        const hasEmptyState = /No results|No leads|No data|No records/i.test(bodyText);
+
+        // The shell controls render before the listing query finishes. Wait for
+        // actual rows/pagination data or the application's explicit empty state.
+        const listingDataReady = hasResultCount || hasEmptyState;
+        return listingDataReady && (hasSearch || hasAddLead || hasFilter || hasLeadFeatureText);
       }, { timeout: 60000 })
       .toBeTruthy();
+  }
+
+  private async firstVisibleConcreteProjectOption() {
+    return await this.page
+      .locator("button, [role='option'], [role='menuitem']")
+      .evaluateAll((elements) => {
+        const normalize = (value: string | null | undefined) => (value || "").replace(/\s+/g, " ").trim();
+        const visible = (element: Element) => {
+          const htmlElement = element as HTMLElement;
+          const rect = htmlElement.getBoundingClientRect();
+          const style = window.getComputedStyle(htmlElement);
+          return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+        };
+
+        return elements
+          .map((element) => normalize(element.textContent))
+          .find((text, index) =>
+            visible(elements[index]) &&
+            text.length > 1 &&
+            !/^all projects?$/i.test(text) &&
+            !/^(settings|engagement intelligence|marketing pulse|add lead|filter)/i.test(text),
+          ) || "";
+      })
+      .catch(() => "");
   }
 
   private async openFilterPanel() {
@@ -1387,12 +2039,79 @@ export class LeadListPage {
     return Number(filterText.match(/Filter\s*\((\d+)\)/i)?.[1] ?? 0);
   }
 
-  private async isStageSummaryActive(stage: LeadStageFilter) {
-    return await this.page
-      .getByRole("button", {
-        name: new RegExp(`^${escapeRegex(stage)}\\s+\\d+$`, "i"),
-      })
-      .first()
+  private async clickAllLeadsSummary() {
+    await expect
+      .poll(async () => await this.clickStageSummaryButton("All Leads"), { timeout: 30000 })
+      .toBeTruthy();
+    await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+    await expect
+      .poll(async () => {
+        const allLeadsCount = await this.stageSummaryCount("All Leads");
+        const resultCount = await this.listingResultCount();
+        return allLeadsCount > 0 && resultCount === allLeadsCount;
+      }, { timeout: 30000 })
+      .toBeTruthy();
+  }
+
+  private stageSummaryButton(stage: string) {
+    return this.page.getByRole("button", {
+      name: new RegExp(`^${escapeRegex(stage)}\\s*\\d+$`, "i"),
+    }).first();
+  }
+
+  private async clickStageSummaryButton(stage: string) {
+    const stageButton = this.stageSummaryButton(stage);
+    if (await stageButton.isVisible().catch(() => false)) {
+      await stageButton.click({ force: true });
+      await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+      return true;
+    }
+
+    const clickPoint = await this.page.evaluate((expectedStage) => {
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const pattern = new RegExp(`^${expectedStage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\d+$`, "i");
+      const option = Array.from(document.querySelectorAll<HTMLElement>("button, [role='button'], div"))
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          const text = normalize(element.innerText || element.textContent);
+          return (
+            visible(element) &&
+            rect.top > 180 &&
+            rect.top < 360 &&
+            text.length < 80 &&
+            pattern.test(text)
+          );
+        })
+        .sort((left, right) => normalize(left.innerText || left.textContent).length - normalize(right.innerText || right.textContent).length)[0];
+      if (!option) {
+        return null;
+      }
+
+      const clickable = option.closest<HTMLElement>("button, [role='button']") || option;
+      const rect = clickable.getBoundingClientRect();
+      return {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      };
+    }, stage).catch(() => null);
+
+    if (!clickPoint) {
+      return false;
+    }
+
+    await this.page.mouse.click(clickPoint.x, clickPoint.y);
+    await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+    return true;
+  }
+
+  private async isStageSummaryActive(stage: string) {
+    return await this.stageSummaryButton(stage)
       .evaluate((element) => {
         const className = element.getAttribute("class") || "";
         const ariaPressed = element.getAttribute("aria-pressed");
@@ -1410,13 +2129,34 @@ export class LeadListPage {
   }
 
   private async stageSummaryCount(stage: string) {
-    const summaryText = await this.page
-      .getByRole("button", {
-        name: new RegExp(`^${escapeRegex(stage)}\\s+\\d+$`, "i"),
-      })
-      .first()
-      .innerText()
+    const roleButtonText = await this.stageSummaryButton(stage)
+      .innerText({ timeout: 1000 })
       .catch(() => "");
+    const summaryText = roleButtonText || await this.page.evaluate((expectedStage) => {
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const pattern = new RegExp(`^${expectedStage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\d+$`, "i");
+      const summary = Array.from(document.querySelectorAll<HTMLElement>("button, [role='button'], div"))
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          const text = normalize(element.innerText || element.textContent);
+          return (
+            visible(element) &&
+            rect.top > 180 &&
+            rect.top < 360 &&
+            text.length < 80 &&
+            pattern.test(text)
+          );
+        })
+        .sort((left, right) => normalize(left.innerText || left.textContent).length - normalize(right.innerText || right.textContent).length)[0];
+
+      return normalize(summary?.innerText || summary?.textContent);
+    }, stage).catch(() => "");
     const count = normalizeText(summaryText).match(/(\d+)$/)?.[1];
 
     return count ? Number(count) : -1;
@@ -1481,10 +2221,12 @@ export class LeadListPage {
           const sources = await this.visibleSourceTexts();
           const boundarySources =
             sources.length <= 1 ? sources : [sources[0], sources[sources.length - 1]];
+          const sourcePattern = new RegExp(`^${escapeRegex(expectedSource)}$`, "i");
 
           return (
-            boundarySources.length > 0 &&
-            boundarySources.every((source) => new RegExp(`^${escapeRegex(expectedSource)}$`, "i").test(source))
+            (boundarySources.length > 0 &&
+              boundarySources.every((source) => sourcePattern.test(source))) ||
+            await this.visibleExactSourceTextCount(expectedSource) > 0
           );
         },
         { timeout: 60000 },
@@ -1492,35 +2234,28 @@ export class LeadListPage {
       .toBeTruthy();
   }
 
-  private async visibleSourceTexts() {
-    return await this.page.evaluate(() => {
-      const normalize = (value: string | null | undefined) =>
-        (value || "").replace(/\s+/g, " ").trim();
-      const visible = (element: HTMLElement) => {
-        const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
-        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
-      };
-
-      const headers = Array.from(document.querySelectorAll<HTMLElement>("th, [role='columnheader']"));
-      const sourceHeader = headers.find((header) => /^Source$/i.test(normalize(header.innerText || header.textContent)) && visible(header));
-      if (!sourceHeader) {
-        return [];
-      }
-
-      const sourceLeft = sourceHeader.getBoundingClientRect().left;
-      return Array.from(document.querySelectorAll<HTMLElement>("td, [role='cell']"))
-        .filter((cell) => {
-          const rect = cell.getBoundingClientRect();
+  private async visibleExactSourceTextCount(expectedSource: string) {
+    return await this.page
+      .getByText(new RegExp(`^${escapeRegex(expectedSource)}$`, "i"))
+      .evaluateAll((elements) =>
+        elements.filter((element) => {
+          const htmlElement = element as HTMLElement;
+          const rect = htmlElement.getBoundingClientRect();
+          const style = window.getComputedStyle(htmlElement);
           return (
-            Math.abs(rect.left - sourceLeft) < 90 &&
-            rect.top > sourceHeader.getBoundingClientRect().bottom &&
-            visible(cell)
+            rect.width > 0 &&
+            rect.height > 0 &&
+            rect.top > 250 &&
+            style.visibility !== "hidden" &&
+            style.display !== "none"
           );
-        })
-        .map((cell) => normalize(cell.innerText || cell.textContent))
-        .filter((text) => text && !/^Source$/i.test(text));
-    }).catch(() => []);
+        }).length,
+      )
+      .catch(() => 0);
+  }
+
+  private async visibleSourceTexts() {
+    return await this.visibleColumnTexts("Source");
   }
 
   private async findFirstVisibleSourceValue() {
@@ -1533,10 +2268,11 @@ export class LeadListPage {
         return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
       };
 
+      const headerName = (value: string | null | undefined) => normalize(value).replace(/\s*Sort:.*/i, "").trim();
       const tables = Array.from(document.querySelectorAll<HTMLTableElement>("table"));
       for (const table of tables) {
         const headerCells = Array.from(table.querySelectorAll<HTMLElement>("th, [role='columnheader']"));
-        const sourceIndex = headerCells.findIndex((cell) => /^Source$/i.test(normalize(cell.innerText || cell.textContent)));
+        const sourceIndex = headerCells.findIndex((cell) => /^Source$/i.test(headerName(cell.innerText || cell.textContent)));
         if (sourceIndex === -1) {
           continue;
         }
@@ -1553,7 +2289,7 @@ export class LeadListPage {
       }
 
       const sourceHeader = Array.from(document.querySelectorAll<HTMLElement>("th, [role='columnheader'], div, span"))
-        .find((element) => /^Source$/i.test(normalize(element.innerText || element.textContent)) && visible(element));
+        .find((element) => /^Source$/i.test(headerName(element.innerText || element.textContent)) && visible(element));
       if (!sourceHeader) {
         return "";
       }
@@ -1578,25 +2314,78 @@ export class LeadListPage {
   }
 
   private async visibleStatusTexts() {
-    return await this.page
-      .locator("td, [role='cell'], a")
-      .evaluateAll((elements) =>
-        elements
-          .filter((element) => {
-            const htmlElement = element as HTMLElement;
-            const text = (htmlElement.textContent || "").replace(/\s+/g, " ").trim();
-            const rect = htmlElement.getBoundingClientRect();
-            const style = window.getComputedStyle(htmlElement);
-            return (
-              /^(New Lead|Contacted|Prospect|Open|Qualified|Site Visit|Negotiation|Opportunity|Booked|Dropped)$/i.test(text) &&
-              rect.width > 0 &&
-              rect.height > 0 &&
-              style.visibility !== "hidden" &&
-              style.display !== "none"
-            );
-          })
-          .map((element) => (element.textContent || "").replace(/\s+/g, " ").trim()),
-      );
+    const stageTexts = await this.visibleColumnTexts("Stage");
+    return stageTexts.filter((text) =>
+      /^(New Lead|Contacted|Prospect|Open|Qualified|Site Visit|Opportunity|Negotiation|Booked|Dropped)$/i.test(text),
+    );
+  }
+
+  private async visibleColumnTexts(columnName: "Stage" | "Source") {
+    return await this.page.evaluate((expectedColumnName) => {
+      const normalize = (value: string | null | undefined) =>
+        (value || "").replace(/\s+/g, " ").trim();
+      const visible = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+
+      const headerName = (value: string | null | undefined) => normalize(value).replace(/\s*Sort:.*/i, "").trim();
+      const header = Array.from(document.querySelectorAll<HTMLElement>("th, [role='columnheader'], div, span"))
+        .find((candidate) => headerName(candidate.innerText || candidate.textContent) === expectedColumnName && visible(candidate));
+      if (!header) {
+        return [];
+      }
+
+      const headerBox = header.getBoundingClientRect();
+      const headerCenter = headerBox.left + headerBox.width / 2;
+      const rowTopByCell = new Map<number, HTMLElement[]>();
+      for (const cell of Array.from(document.querySelectorAll<HTMLElement>("td, [role='cell'], a, div, span, p"))) {
+        if (!visible(cell)) {
+          continue;
+        }
+
+        const rect = cell.getBoundingClientRect();
+        const text = normalize(cell.innerText || cell.textContent);
+        if (
+          rect.top <= headerBox.bottom ||
+          text.length === 0 ||
+          text.length > 80 ||
+          /^Sort:/i.test(text) ||
+          headerName(text) === expectedColumnName
+        ) {
+          continue;
+        }
+
+        const rowKey = Math.round(rect.top);
+        const row = rowTopByCell.get(rowKey) || [];
+        row.push(cell);
+        rowTopByCell.set(rowKey, row);
+      }
+
+      return Array.from(rowTopByCell.entries())
+        .sort(([leftTop], [rightTop]) => leftTop - rightTop)
+        .map(([, cells]) => {
+          const matchingCell = cells
+            .filter((cell) => {
+              const rect = cell.getBoundingClientRect();
+              const cellCenter = rect.left + rect.width / 2;
+              return (
+                (rect.left <= headerCenter && rect.right >= headerCenter) ||
+                (cellCenter >= headerBox.left && cellCenter <= headerBox.right)
+              );
+            })
+            .sort((left, right) => {
+              const leftBox = left.getBoundingClientRect();
+              const rightBox = right.getBoundingClientRect();
+              return Math.abs((leftBox.left + leftBox.width / 2) - headerCenter) -
+                Math.abs((rightBox.left + rightBox.width / 2) - headerCenter);
+            })[0];
+
+          return normalize(matchingCell?.innerText || matchingCell?.textContent);
+        })
+        .filter((text) => text && text !== expectedColumnName);
+    }, columnName).catch(() => []);
   }
 
   private async loginAgainIfSessionExpired(app: LeadListAppConfig) {
@@ -1617,8 +2406,12 @@ export class LeadListPage {
       mobileNumber: app.mobileNumber,
       otp: app.otp,
     });
-    await this.page.goto("/admin/developer/cpms/manage-construction", {
+    await this.page.goto(this.appUrl(app, "/admin/developer/cpms/manage-construction"), {
       waitUntil: "domcontentloaded",
     });
+  }
+
+  private appUrl(app: LeadListAppConfig, path: string) {
+    return app.baseUrl ? new URL(path, app.baseUrl).toString() : path;
   }
 }

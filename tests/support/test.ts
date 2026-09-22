@@ -1,10 +1,15 @@
 import { test as base, expect, type Page } from "@playwright/test";
 import { loadEnv } from "./env";
 
-type Fixtures = {
+type AppFixture = {
   app: {
     envName: string;
     baseUrl: string;
+    martechBaseUrl?: string;
+    organisationId: string;
+    receptionFormsOrgId?: string;
+    receptionFormsProjectName?: string;
+    receptionFormsProjectId?: string;
     activeProjectName: string;
     mobileNumber: string;
     otp: string;
@@ -18,10 +23,10 @@ type Fixtures = {
   };
 };
 
-export const test = base.extend<Fixtures>({
-  app: async ({}, use) => {
+export const test = base.extend<{}, AppFixture>({
+  app: [async ({}, use) => {
     await use(loadEnv());
-  }
+  }, { scope: "worker" }]
 });
 
 async function scrollFailureContext(page: Page, direction: "top" | "bottom") {

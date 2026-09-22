@@ -163,6 +163,7 @@ When adding a new test or changing behavior:
 Suggested intake examples:
 
 - `engagement -> lead-report`
+- `engagement -> dashboard-report`
 - `engagement -> lead-management`
 - `martech -> campaign-report`
 - `post-sales -> handover`

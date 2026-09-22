@@ -3,23 +3,34 @@
   "modules": {
     "engagement": {
       "label": "Engagement",
-      "description": "Current engagement automation suite.",
+      "description": "Engagement automation suite.",
       "flows": [
         "smoke",
         "auth",
         "channel-partner",
         "lead-management",
         "lead-report",
+        "dashboard-report",
+        "ReceptionForms",
         "site-visit"
       ],
       "specFilePrefixes": [
-        "tests/flows/"
+        "tests/flows/smoke/",
+        "tests/flows/auth/",
+        "tests/flows/channel-partner/",
+        "tests/flows/lead-management/",
+        "tests/flows/lead-report/",
+        "tests/flows/dashboard-report/",
+        "tests/flows/ReceptionForms/",
+        "tests/flows/site-visit/"
       ]
     },
     "martech": {
       "label": "Martech",
-      "description": "Future martech automation suite.",
-      "flows": [],
+      "description": "Martech automation suite.",
+      "flows": [
+        "martech"
+      ],
       "specFilePrefixes": [
         "tests/flows/martech/"
       ]

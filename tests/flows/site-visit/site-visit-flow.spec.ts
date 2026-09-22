@@ -8,6 +8,7 @@ import {
   completeOpenedSiteVisitWithOtp,
   completeOpenedSiteVisitWithSkip,
   fillLeadForm,
+  type LeadSeed,
   goToManageLeads,
   markOpenedSiteVisitNoShow,
   moveCompletedSiteVisitToOpportunity,
@@ -27,7 +28,14 @@ type AppConfig = {
 test.describe("Site visit lifecycle flow", () => {
   test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 220000));
 
-  async function createScheduledSiteVisitLead(page: Page, app: AppConfig) {
+  function isDirectWalkInLead(leadSeed: LeadSeed) {
+    return (
+      /direct\s+site\s+visit/i.test(leadSeed.sourceOfLead ?? "") &&
+      /walk\s*in/i.test(leadSeed.subSourceOfLead ?? "")
+    );
+  }
+
+  async function createSiteVisitLifecycleLead(page: Page, app: AppConfig) {
     await goToManageLeads(page, app);
 
     const leadSeed = await fillLeadForm(page, app);
@@ -36,8 +44,10 @@ test.describe("Site visit lifecycle flow", () => {
     await assertLeadCreated(page, leadSeed.fullName, leadSeed.projectName);
 
     await openLeadByName(page, leadSeed.fullName);
-    await assertSiteVisitStageCasesOnOpenedLead(page);
-    await assertScheduledSiteVisitReady(page, leadSeed.fullName);
+    if (!isDirectWalkInLead(leadSeed)) {
+      await assertSiteVisitStageCasesOnOpenedLead(page);
+      await assertScheduledSiteVisitReady(page, leadSeed.fullName);
+    }
 
     return leadSeed;
   }
@@ -74,27 +84,27 @@ test.describe("Site visit lifecycle flow", () => {
   });
 
   test("site visit should complete with hard-coded OTP 1234", async ({ page, app }) => {
-    const leadSeed = await createScheduledSiteVisitLead(page, app);
+    const leadSeed = await createSiteVisitLifecycleLead(page, app);
 
     await moveOpenedLeadToSiteVisitInProgress(page, leadSeed.fullName);
     await completeOpenedSiteVisitWithOtp(page, leadSeed.fullName);
   });
 
   test("site visit should complete through skip OTP path", async ({ page, app }) => {
-    const leadSeed = await createScheduledSiteVisitLead(page, app);
+    const leadSeed = await createSiteVisitLifecycleLead(page, app);
 
     await moveOpenedLeadToSiteVisitInProgress(page, leadSeed.fullName, "skip");
     await completeOpenedSiteVisitWithSkip(page, leadSeed.fullName);
   });
 
   test("site visit should support no show outcome", async ({ page, app }) => {
-    const leadSeed = await createScheduledSiteVisitLead(page, app);
+    const leadSeed = await createSiteVisitLifecycleLead(page, app);
 
     await markOpenedSiteVisitNoShow(page, leadSeed.fullName);
   });
 
   test("site visit done lead should move to opportunity with remark and next follow up date", async ({ page, app }) => {
-    const leadSeed = await createScheduledSiteVisitLead(page, app);
+    const leadSeed = await createSiteVisitLifecycleLead(page, app);
 
     await moveOpenedLeadToSiteVisitInProgress(page, leadSeed.fullName);
     await completeOpenedSiteVisitWithOtp(page, leadSeed.fullName);

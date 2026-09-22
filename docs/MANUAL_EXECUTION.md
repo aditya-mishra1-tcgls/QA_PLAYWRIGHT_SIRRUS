@@ -51,7 +51,7 @@ Modes are configured in `config/execution-profiles.json`.
 - `auth`: login and authentication only.
 - `lead`: smoke plus lead-management.
 - `site-visit`: smoke plus site-visit.
-- `regression`: smoke, auth, lead-management, and site-visit.
+- `regression`: every registered flow, including user-management, engagement, site-visit, and martech.
 
 To run exact flows without changing the profile file:
 

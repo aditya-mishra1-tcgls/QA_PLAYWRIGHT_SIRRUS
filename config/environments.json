@@ -3,10 +3,20 @@
   "environments": {
     "qa": {
       "baseUrl": "https://qa.sirrus.ai/",
+      "martechBaseUrl": "https://qa1.sirrus.ai/",
+      "organisationId": "4999c9f1-93d3-43c9-9958-53974df7ad31",
+      "receptionFormsOrgId": "26cfa077-6ea7-4e31-a541-e6fa33cb2860",
+      "receptionFormsProjectName": "Prasun Adara",
+      "receptionFormsProjectId": "7f8444be-f760-4be3-9695-59e762cde6b9",
       "activeProjectName": "Test123"
     },
     "uat": {
       "baseUrl": "https://uat.sirrus.ai/",
+      "martechBaseUrl": "https://uat1.sirrus.ai/",
+      "organisationId": "95785cc9-a523-4c70-b9be-e809b46be7c3",
+      "receptionFormsOrgId": "16cfa077-6ea7-4e31-a541-e6fa33cb2860",
+      "receptionFormsProjectName": "Prasun Adara",
+      "receptionFormsProjectId": "f177092b-3459-4ce0-a146-1c7b3e82e7ce",
       "activeProjectName": "Test1303"
     }
   }

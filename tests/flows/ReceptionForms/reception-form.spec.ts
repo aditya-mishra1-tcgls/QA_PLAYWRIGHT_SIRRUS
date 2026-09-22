@@ -1,9 +1,24 @@
 import { test } from "../../support/test";
 import { ReceptionFormsPage } from "../../pages";
 import { getReceptionFormNonAdminUser } from "../../support/non-admin-users";
+import {
+  switchSavedAuthStateOrganisation,
+  switchSavedAuthStateToReceptionFormsOrg,
+} from "../../support/organisation-switch";
 
 test.describe("Reception Forms flow", () => {
   test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 120000));
+  let originalOrganisationId = "";
+
+  test.beforeAll(async ({ app }) => {
+    originalOrganisationId = await switchSavedAuthStateToReceptionFormsOrg(app);
+  });
+
+  test.afterAll(async ({ app }) => {
+    if (originalOrganisationId) {
+      await switchSavedAuthStateOrganisation(app, originalOrganisationId);
+    }
+  });
 
   test("Verify the Reception Form is loading properly", async ({ page, app }) => {
     const receptionFormsPage = new ReceptionFormsPage(page);

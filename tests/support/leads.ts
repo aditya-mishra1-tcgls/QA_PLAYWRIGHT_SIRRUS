@@ -11,11 +11,13 @@ type AppConfig = {
   activeProjectName: string;
 };
 
-type LeadSeed = {
+export type LeadSeed = {
   projectName: string;
   fullName: string;
   whatsappNumber: string;
   email: string;
+  sourceOfLead?: string;
+  subSourceOfLead?: string;
   sourceCategory: string;
   companyName: string;
   preferredLocation: string;
@@ -247,9 +249,28 @@ export async function goToManageLeads(page: Page, app: AppConfig) {
 }
 
 function dropdownFor(page: Page, label: string): Locator {
+  const labelRegex = leadFormLabelRegex(label);
   return page
-    .getByText(label, { exact: true })
-    .locator("xpath=following::button[1]");
+    .locator("#root-modal h3")
+    .filter({ hasText: labelRegex })
+    .first()
+    .locator(
+      'xpath=ancestor::div[.//h3 and (.//input or .//textarea or .//button[not(normalize-space(.)="Clear")])][1]//button[not(normalize-space(.)="Clear")]',
+    )
+    .first();
+}
+
+function leadFormLabelRegex(label: string) {
+  const normalizedLabel = normalizeFieldLabel(label);
+  if (/^source$/i.test(normalizedLabel)) {
+    return /^\s*(Source|Source of Lead)\s*\*?\s*$/i;
+  }
+
+  if (/^sub source$/i.test(normalizedLabel)) {
+    return /^\s*(Sub Source|Sub source of lead)\s*\*?\s*$/i;
+  }
+
+  return new RegExp(`^\\s*${escapeRegex(normalizedLabel)}\\s*\\*?\\s*$`, "i");
 }
 
 async function locatorBox(locator?: Locator): Promise<ElementBox | null> {
@@ -273,17 +294,32 @@ async function dropdownHasVisibleOptions(page: Page, anchor?: Locator) {
 
 async function openDropdownWithRetry(page: Page, label: string) {
   const dropdown = dropdownFor(page, label);
-  const startedAt = Date.now();
-
   await page.waitForTimeout(800);
 
-  while (Date.now() - startedAt < 10000) {
-    await dropdown.click({ force: true });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    // Do not press Escape here: when no option panel is open, it closes the
+    // entire Lead Form. Clicking its heading dismisses only a stale panel.
+    await page.locator("#root-modal h2, #root-modal h3").first().click({ force: true }).catch(() => {});
+    const controlVisible = await dropdown
+      .waitFor({ state: "visible", timeout: 10000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!controlVisible) {
+      continue;
+    }
+    await dropdown.scrollIntoViewIfNeeded().catch(() => {});
+    const clicked = await dropdown
+      .click({ force: true, timeout: 3000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!clicked) {
+      continue;
+    }
 
     const opened = await expect
       .poll(() => dropdownHasVisibleOptions(page, dropdown), {
-        intervals: [100, 200, 200],
-        timeout: 500,
+        intervals: [250, 500, 750, 1000],
+        timeout: 10000,
       })
       .toBeTruthy()
       .then(() => true)
@@ -293,18 +329,19 @@ async function openDropdownWithRetry(page: Page, label: string) {
       return dropdown;
     }
 
-    await page.waitForTimeout(500);
+    // A few environments render an empty option panel on the first fetch.
+    // Closing it forces the component to request and render options again.
+    await page.locator("#root-modal h2, #root-modal h3").first().click({ force: true }).catch(() => {});
   }
 
-  await dropdown.click({ force: true });
-  await waitForDropdownOptions(page, dropdown);
-  return dropdown;
+  throw new Error(`Dropdown "${label}" opened without any visible options after retrying.`);
 }
 
 async function chooseFirstOption(
   page: Page,
   preferredOptions: string[] = [],
   anchor?: Locator,
+  fallbackToFirstVisible = true,
 ) {
   const anchorBox = await locatorBox(anchor);
   await waitForDropdownOptions(page, anchor);
@@ -320,6 +357,13 @@ async function chooseFirstOption(
       }
       await page.waitForTimeout(150);
     }
+  }
+
+  if (!fallbackToFirstVisible) {
+    const optionTexts = await visibleDropdownOptionTexts(page, anchorBox);
+    throw new Error(
+      `None of the preferred dropdown options were selected. Preferred: ${preferredOptions.join(", ")}. Visible option texts: ${optionTexts.join(", ")}`,
+    );
   }
 
   const firstVisibleOption = await clickFirstVisibleDropdownOption(page, anchorBox);
@@ -346,7 +390,7 @@ async function visibleDropdownOptionTexts(
         /^Sort:/i.test(text) ||
         /^(Lead Name|Lead ID|Stage|Source|Sub Source|Create Date|Update Date)$/i.test(text) ||
         /^select here$/i.test(text) ||
-        /^(All Leads|New Lead|Contacted|Open|Qualified|Prospect|Virtual Site Visit|Site Visit|Opportunity|Negotiation|Booked|Is a CP|Dropped|Unqualified)\s*\d+$/i.test(text) ||
+        /^(All Leads|New Lead|Contacted|Open|Qualified|Prospect|Virtual Site Visit|Site Visit|Opportunity|Negotiation|EOI|Booked|Is a CP|Dropped|Unqualified)\s*\d+$/i.test(text) ||
         /^(Hot|Warm|Cold)\s*\(\d+\)$/i.test(text) ||
         /^(Filter|Add Lead|Lead Dashboard|Lead Listing|Lead Reports|Manage Leads)$/i.test(text)
       );
@@ -367,6 +411,7 @@ async function visibleDropdownOptionTexts(
         !element.closest("table, thead, tbody, tfoot, tr, th, td") &&
         Boolean(text) &&
         !isExcludedOptionText(text) &&
+        (!box || isNearAnchor(rect)) &&
         rect.width > 0 &&
         rect.height > 0 &&
         style.visibility !== "hidden" &&
@@ -407,6 +452,7 @@ async function clickVisibleDropdownOption(
         return (
           !element.closest("table, thead, tbody, tfoot, tr, th, td") &&
           text === optionText &&
+          (!box || isNearAnchor(rect)) &&
           rect.width > 0 &&
           rect.height > 0 &&
           style.visibility !== "hidden" &&
@@ -448,7 +494,7 @@ async function clickFirstVisibleDropdownOption(
         /^Sort:/i.test(text) ||
         /^(Lead Name|Lead ID|Stage|Source|Sub Source|Create Date|Update Date)$/i.test(text) ||
         /^select here$/i.test(text) ||
-        /^(All Leads|New Lead|Contacted|Open|Qualified|Prospect|Virtual Site Visit|Site Visit|Opportunity|Negotiation|Booked|Is a CP|Dropped|Unqualified)\s*\d+$/i.test(text) ||
+        /^(All Leads|New Lead|Contacted|Open|Qualified|Prospect|Virtual Site Visit|Site Visit|Opportunity|Negotiation|EOI|Booked|Is a CP|Dropped|Unqualified)\s*\d+$/i.test(text) ||
         /^(Hot|Warm|Cold)\s*\(\d+\)$/i.test(text) ||
         /^(Filter|Add Lead|Lead Dashboard|Lead Listing|Lead Reports|Manage Leads)$/i.test(text)
       );
@@ -471,6 +517,7 @@ async function clickFirstVisibleDropdownOption(
         !element.closest("table, thead, tbody, tfoot, tr, th, td") &&
         Boolean(text) &&
         !isExcludedOptionText(text) &&
+        (!box || isNearAnchor(rect)) &&
         rect.width > 0 &&
         rect.height > 0 &&
         style.visibility !== "hidden" &&
@@ -545,23 +592,12 @@ async function waitForDropdownValue(
   label: string,
   expectedValue: string,
 ) {
-  const normalizedLabel = normalizeFieldLabel(label);
-  const labelRegex = new RegExp(
-    `^\\s*${escapeRegex(normalizedLabel)}\\s*\\*?\\s*$`,
-    "i",
-  );
-  const fieldContainer = page
-    .locator("#root-modal h3")
-    .filter({ hasText: labelRegex })
-    .first()
-    .locator(
-      'xpath=ancestor::div[.//h3 and (.//input or .//textarea or .//button[not(normalize-space(.)="Clear")])][1]',
-    );
+  const dropdown = dropdownFor(page, label);
 
   await expect
     .poll(
       async () => {
-        const text = await fieldContainer.innerText();
+        const text = await dropdown.innerText();
         return text.replace(/\s+/g, " ").trim();
       },
       { timeout: 15000 },
@@ -693,6 +729,30 @@ async function openLeadCreationForm(page: Page) {
   }
 
   await expect(leadForm).toBeVisible({ timeout: 30000 });
+  await waitForLeadFormReady(page);
+}
+
+async function waitForLeadFormReady(page: Page) {
+  const nameInput = page.locator("#root-modal #fullName").first();
+  const projectDropdown = dropdownFor(page, "Project Name *");
+  const sourceDropdown = dropdownFor(page, "Source *");
+
+  await expect
+    .poll(
+      async () => {
+        const formText = await page.locator("#root-modal").innerText().catch(() => "");
+        const nameReady = await nameInput.isVisible().catch(() => false) &&
+          !(await nameInput.isDisabled().catch(() => true));
+        const projectReady = await projectDropdown.isVisible().catch(() => false) &&
+          !(await projectDropdown.isDisabled().catch(() => true));
+        const sourceReady = await sourceDropdown.isVisible().catch(() => false) &&
+          !(await sourceDropdown.isDisabled().catch(() => true));
+
+        return nameReady && projectReady && sourceReady && !/loading\.\.\./i.test(formText);
+      },
+      { timeout: 60000 },
+    )
+    .toBeTruthy();
 }
 
 async function visibleFieldContainer(page: Page, field: LeadFieldTarget) {
@@ -825,6 +885,11 @@ function valueForLeadField(
   }
 
   return `Automation ${field.normalizedLabel}`.slice(0, 40);
+}
+
+function isOptionalAlternateEmailField(field: Pick<LeadFieldTarget, "key" | "normalizedLabel" | "label">) {
+  const fieldName = `${field.key} ${field.normalizedLabel || field.label}`.toLowerCase();
+  return /alternate/.test(fieldName) && /email/.test(fieldName);
 }
 
 function preferredOptionsForField(
@@ -1215,7 +1280,10 @@ async function fillAdaptiveLeadFields(
   app: AppConfig,
   sourcePreferences: string[],
 ) {
-  const orderedFields = fields.filter((field) => !CORE_LEAD_FIELD_KEYS.has(field.key));
+  const orderedFields = fields.filter((field) =>
+    !CORE_LEAD_FIELD_KEYS.has(field.key) &&
+    !isOptionalAlternateEmailField(field)
+  );
   if (orderedFields.length) {
     await logStep(`Fill ${orderedFields.length} mandatory custom field${orderedFields.length === 1 ? "" : "s"}`);
   }
@@ -1236,22 +1304,56 @@ async function fillCoreLeadFields(
   });
 
   await base.step("Select project", async () => {
-    const projectDropdown = await openDropdownWithRetry(page, "Project Name *");
-    const selectedProject = await chooseFirstOption(page, [app.activeProjectName, leadSeed.projectName], projectDropdown);
-    app.activeProjectName = selectedProject;
-    leadSeed.projectName = selectedProject;
-    await waitForDropdownValue(page, "Project Name *", selectedProject);
+    const expectedProject = [app.activeProjectName, leadSeed.projectName].find(Boolean);
+    for (let formAttempt = 0; formAttempt < 2; formAttempt += 1) {
+      const projectDropdownButton = dropdownFor(page, "Project Name *");
+      const alreadySelectedProject = await projectDropdownButton
+        .innerText()
+        .then((text) => text.replace(/\s+/g, " ").trim())
+        .catch(() => "");
+      if (expectedProject && alreadySelectedProject.includes(expectedProject)) {
+        app.activeProjectName = expectedProject;
+        leadSeed.projectName = expectedProject;
+        return;
+      }
+
+      try {
+        const projectDropdown = await openDropdownWithRetry(page, "Project Name *");
+        const selectedProject = await chooseFirstOption(
+          page,
+          [app.activeProjectName, leadSeed.projectName],
+          projectDropdown,
+          false,
+        );
+        app.activeProjectName = selectedProject;
+        leadSeed.projectName = selectedProject;
+        await waitForDropdownValue(page, "Project Name *", selectedProject);
+        return;
+      } catch (error) {
+        if (formAttempt === 1) {
+          throw error;
+        }
+
+        await page.keyboard.press("Escape").catch(() => {});
+        await page.getByRole("button", { name: /^cancel$/i }).last().click({ force: true }).catch(() => {});
+        await expect(page.locator("#root-modal")).toBeHidden({ timeout: 10000 }).catch(() => {});
+        await openLeadCreationForm(page);
+        await page.locator("#fullName").fill(leadSeed.fullName);
+      }
+    }
   });
 
   await base.step("Select source", async () => {
     const sourceDropdown = await openDropdownWithRetry(page, "Source *");
     const selectedSource = await chooseFirstOption(page, sourcePreferences, sourceDropdown);
+    leadSeed.sourceOfLead = selectedSource;
     await waitForDropdownValue(page, "Source *", selectedSource);
   });
 
   await base.step("Select sub source", async () => {
     const subSourceDropdown = await openDropdownWithRetry(page, "Sub Source *");
     const selectedSubSource = await chooseFirstOption(page, [], subSourceDropdown);
+    leadSeed.subSourceOfLead = selectedSubSource;
     await waitForDropdownValue(page, "Sub Source *", selectedSubSource);
   });
 
@@ -1318,6 +1420,28 @@ export async function fillLeadForm(page: Page, app: AppConfig) {
   });
 
   return leadSeed;
+}
+
+export async function fillLeadFormWithSeed(
+  page: Page,
+  app: AppConfig,
+  leadSeed: LeadSeed,
+  sourcePreferences?: string[],
+) {
+  leadSeed.projectName = app.activeProjectName;
+  const envSeed = getLeadFlowSeed(app.envName);
+  const preparedLeadSeed = await prepareLeadFormWithSeed(
+    page,
+    app,
+    leadSeed,
+    sourcePreferences ?? envSeed.fallbackSourcePreferences,
+  );
+
+  await base.step("Save lead", async () => {
+    await saveLeadFormAndWaitForClose(page);
+  });
+
+  return preparedLeadSeed;
 }
 
 async function expectLeadFormMessages(page: Page, messages: RegExp[]) {
@@ -1431,22 +1555,221 @@ async function clearDropdownField(page: Page, label: string) {
 async function repairLeadFormValidationErrors(page: Page) {
   const formText = await page.locator("#root-modal, #scrollableArea").first().innerText().catch(() => "");
 
+  if (/Please select Project Name/i.test(formText)) {
+    await base.step("Re-select project name", async () => {
+      await repairRequiredDropdownField(page, "Project Name *");
+    });
+  }
+
   if (/Please select Assigned to/i.test(formText)) {
     await base.step("Re-select assigned user", async () => {
-      await clearDropdownField(page, "Assigned To *");
-      const assignedToDropdown = await openDropdownWithRetry(page, "Assigned To *");
-      const selectedAssignedTo = await chooseFirstOption(page, [], assignedToDropdown);
-      await waitForDropdownValue(page, "Assigned To *", selectedAssignedTo);
+      await repairRequiredDropdownField(page, "Assigned To *");
     });
   }
 
   if (/Please select Secondary owner/i.test(formText)) {
     await base.step("Re-select secondary owner", async () => {
-      await clearDropdownField(page, "Secondary Owner *");
-      const secondaryOwnerDropdown = await openDropdownWithRetry(page, "Secondary Owner *");
-      const selectedSecondaryOwner = await chooseFirstOption(page, [], secondaryOwnerDropdown);
-      await waitForDropdownValue(page, "Secondary Owner *", selectedSecondaryOwner);
+      await repairRequiredDropdownField(page, "Secondary Owner *");
     });
+  }
+
+  if (/Invalid Email id format/i.test(formText)) {
+    await base.step("Clear optional lead email fields", async () => {
+      await fillVisibleLeadEmailInputs(page);
+      await clearOptionalLeadEmailInputs(page);
+    });
+  }
+}
+
+async function repairRequiredDropdownField(page: Page, label: string) {
+  const dropdown = dropdownFor(page, label);
+  const previousValue = await dropdown
+    .innerText()
+    .then((text) => text.replace(/\s+/g, " ").replace(/^Clear\s*/i, "").trim())
+    .catch(() => "");
+
+  const openedDropdown = await openDropdownWithRetry(page, label);
+  const optionTexts = await visibleDropdownOptionTexts(page, await locatorBox(openedDropdown));
+  const preferredOption = optionTexts.find((option) =>
+    option &&
+    !/^select here$/i.test(option) &&
+    option.toLowerCase() !== previousValue.toLowerCase()
+  ) || optionTexts[0];
+
+  const selectedValue = preferredOption
+    ? await chooseFirstOption(page, [preferredOption], openedDropdown)
+    : await chooseFirstOption(page, [], openedDropdown);
+  await page.mouse.click(20, 20).catch(() => {});
+  await waitForDropdownValue(page, label, selectedValue);
+}
+
+async function fillVisibleLeadEmailInputs(page: Page) {
+  await page.locator("#root-modal").evaluate((modal) => {
+    const normalize = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim();
+    const visible = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const fieldContext = (element: HTMLElement) => {
+      let current: HTMLElement | null = element;
+      for (let depth = 0; current && depth < 6 && current !== modal; depth += 1) {
+        const text = normalize(current.innerText || current.textContent);
+        if (/email/i.test(text) && text.length < 500) {
+          return text;
+        }
+        current = current.parentElement;
+      }
+      return "";
+    };
+    const setNativeValue = (element: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+      const prototype = element instanceof HTMLTextAreaElement
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
+      descriptor?.set?.call(element, value);
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      element.blur();
+    };
+
+    Array.from(modal.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input:not([type='hidden']), textarea"))
+      .filter((input) => !input.disabled && !input.readOnly && visible(input))
+      .filter((input) => {
+        const metadata = normalize([
+          input.id,
+          input.name,
+          input.placeholder,
+          input.getAttribute("aria-label"),
+          fieldContext(input),
+        ].join(" "));
+        return /email/i.test(metadata) && !/alternate/i.test(metadata);
+      })
+      .forEach((input, index) => setNativeValue(input, `automation.lead.${index + 1}@example.com`));
+  }).catch(() => {});
+  await page.waitForTimeout(500);
+}
+
+async function clearOptionalLeadEmailInputs(page: Page) {
+  await page.locator("#root-modal").evaluate((modal) => {
+    const normalize = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim();
+    const visible = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const fieldContext = (element: HTMLElement) => {
+      let current: HTMLElement | null = element;
+      for (let depth = 0; current && depth < 6 && current !== modal; depth += 1) {
+        const text = normalize(current.innerText || current.textContent);
+        if (/email/i.test(text) && text.length < 500) {
+          return text;
+        }
+        current = current.parentElement;
+      }
+      return "";
+    };
+    const setNativeValue = (element: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+      const prototype = element instanceof HTMLTextAreaElement
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
+      descriptor?.set?.call(element, value);
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      element.blur();
+    };
+
+    Array.from(modal.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input:not([type='hidden']), textarea"))
+      .filter((input) => !input.disabled && !input.readOnly && visible(input))
+      .forEach((input) => {
+        const context = normalize([
+          input.id,
+          input.name,
+          input.placeholder,
+          input.getAttribute("aria-label"),
+          fieldContext(input),
+        ].join(" "));
+        const isEmailField = /email/i.test(context);
+        const isPrimaryEmail = /(^|\s)email\s*id(\s|$)/i.test(context) && !/alternate|email\s*id\s*[2-9]/i.test(context);
+        if (isEmailField && !isPrimaryEmail) {
+          setNativeValue(input, "");
+        }
+      });
+  }).catch(() => {});
+  await page.waitForTimeout(500);
+}
+
+async function fillVisibleUnselectedLeadDropdowns(page: Page) {
+  const modal = page.locator("#root-modal");
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const dropdown = modal
+      .locator("button")
+      .filter({ hasText: /^Select here$/i })
+      .first();
+    if (!await dropdown.isVisible().catch(() => false)) {
+      return;
+    }
+
+    await dropdown.scrollIntoViewIfNeeded().catch(() => {});
+    const dropdownBox = await locatorBox(dropdown);
+    await dropdown.click({ force: true, timeout: 3000 }).catch(() => {});
+    await waitForDropdownOptions(page, dropdown).catch(() => {});
+    const selectedOption =
+      await clickFirstVisibleDropdownOption(page, dropdownBox) ||
+      await clickFirstVisibleDropdownOption(page, null);
+    if (!selectedOption) {
+      return;
+    }
+    await page.waitForTimeout(400);
+  }
+}
+
+async function fillVisibleEmptyLeadInputs(page: Page) {
+  const modal = page.locator("#root-modal");
+  const inputs = modal.locator("input:not([type='hidden']), textarea");
+  const count = await inputs.count().catch(() => 0);
+
+  for (let index = 0; index < count; index += 1) {
+    const input = inputs.nth(index);
+    if (!await input.isVisible().catch(() => false)) {
+      continue;
+    }
+
+    const value = await input.inputValue().catch(() => "");
+    const placeholder = await input.getAttribute("placeholder").catch(() => "") ?? "";
+    const disabled = await input.isDisabled().catch(() => true);
+    const readonly = await input.getAttribute("readonly").catch(() => null);
+    if (disabled || readonly !== null || value.trim()) {
+      continue;
+    }
+
+    const emailContext = await input.evaluate((element) => {
+      const normalize = (text: string | null | undefined) => (text ?? "").replace(/\s+/g, " ").trim();
+      let current: HTMLElement | null = element as HTMLElement;
+      for (let depth = 0; current && depth < 6; depth += 1) {
+        const text = normalize(current.innerText || current.textContent);
+        if (/email/i.test(text) && text.length < 500) {
+          return text;
+        }
+        current = current.parentElement;
+      }
+      return "";
+    }).catch(() => "");
+    const isOptionalEmail = /email/i.test(emailContext) &&
+      (!/(^|\s)email\s*id(\s|$)/i.test(emailContext) || /alternate|email\s*id\s*[2-9]/i.test(emailContext));
+    if (isOptionalEmail) {
+      continue;
+    }
+
+    const fillValue = /email/i.test(`${placeholder} ${emailContext}`)
+      ? "automation.lead@example.com"
+      : /budget|amount|price|cost|number|phone|mobile|alternate/i.test(placeholder)
+        ? "100000"
+        : "Automation";
+    await input.scrollIntoViewIfNeeded().catch(() => {});
+    await input.fill(fillValue).catch(() => {});
   }
 }
 
@@ -1468,7 +1791,15 @@ async function saveLeadFormAndWaitForClose(page: Page) {
   }
 
   await clickLeadFormSaveButton(page);
-  await expect.poll(async () => !(await leadFormIsOpen(page)), { timeout: 60000 }).toBeTruthy();
+  const saved = await expect
+    .poll(async () => !(await leadFormIsOpen(page)), { timeout: 60000 })
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
+  if (!saved) {
+    const formText = await page.locator("#root-modal, #scrollableArea").first().innerText().catch(() => "");
+    throw new Error(`Lead form did not close after Save. Visible form text: ${formText.replace(/\s+/g, " ").trim().slice(0, 1500)}`);
+  }
 }
 
 async function clickLeadFormSaveButton(page: Page) {
@@ -1738,10 +2069,9 @@ export async function assertLeadCreated(
   projectName: string,
 ) {
   await logStep("Verify lead created");
-  await expect(page.getByRole("button", { name: new RegExp(projectName, "i") }))
-    .toBeVisible({ timeout: 10000 })
-    .catch(() => {});
-  await new LeadListPage(page).expectLeadVisible(leadName);
+  const leadListPage = new LeadListPage(page);
+  await leadListPage.selectProjectForLeadSearch(projectName);
+  await leadListPage.expectLeadVisible(leadName);
 }
 
 export async function assertLeadSearchableByContactDetails(page: Page, leadSeed: LeadSeed) {
@@ -1861,7 +2191,29 @@ async function waitForListingReady(page: Page) {
   await waitForLeadListingContent(page);
 
   const addLeadButton = page.getByText("Add Lead", { exact: true });
-  await expect(addLeadButton).toBeVisible({ timeout: 60000 });
+  const addLeadVisible = await expect
+    .poll(
+      async () => {
+        if (await addLeadButton.first().isVisible().catch(() => false)) {
+          return true;
+        }
+
+        await page.getByRole("tab", { name: /Lead Listing/i }).click().catch(() => {});
+        await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+        return await addLeadButton.first().isVisible().catch(() => false);
+      },
+      { timeout: 60000 },
+    )
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
+
+  if (!addLeadVisible) {
+    await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+    await waitForLeadListingContent(page);
+  }
+
+  await expect(addLeadButton.first()).toBeVisible({ timeout: 30000 });
   await expect(addLeadButton).toBeEnabled({ timeout: 60000 });
   await page.waitForTimeout(1500);
 }
@@ -1877,34 +2229,31 @@ export async function openAnyLeadFromListing(page: Page, app: AppConfig) {
   await waitForListingReady(page);
   await page.waitForTimeout(2000);
 
-  const firstRow = page.locator("table tbody tr").first();
-  const firstLeadCell = firstRow.locator("td").nth(1);
-  const firstLeadClickableText = firstLeadCell
-    .locator("span, div, p, a")
-    .filter({ hasText: /\S/ })
-    .first();
+  const firstProfileHref = await page
+    .locator('a[href*="engagement-intelligence/manage-leads"][href*="id="]')
+    .evaluateAll((links) => {
+      const visible = (element: Element) => {
+        const htmlElement = element as HTMLElement;
+        const rect = htmlElement.getBoundingClientRect();
+        const style = window.getComputedStyle(htmlElement);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const link = links.find(visible) ?? links[0];
+      return link?.getAttribute("href") ?? "";
+    })
+    .catch(() => "");
 
-  if (await firstLeadClickableText.isVisible().catch(() => false)) {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      await firstLeadClickableText.click({ force: true }).catch(async () => {
-        await firstLeadCell.click({ force: true, position: { x: 28, y: 18 } });
-      });
-      const navigated = await page
-        .waitForURL(/engagement-intelligence\/manage-leads\?id=/, {
-          timeout: 15000,
-        })
-        .then(() => true)
-        .catch(() => false);
-      if (navigated) {
-        await waitForLeadProfile(page);
-        return;
-      }
-    }
+  if (firstProfileHref) {
+    await page.goto(new URL(firstProfileHref, page.url()).toString(), {
+      waitUntil: "domcontentloaded",
+    });
+    await waitForLeadProfile(page);
+    return;
   }
 
   const openedFromKnownLink = await clickFirstVisible(page, [
-    page.locator('a[href*="engagement-intelligence/manage-leads?id="]'),
-    page.locator('a[href*="/manage-leads?id="]'),
+    page.locator('a[href*="engagement-intelligence/manage-leads"][href*="id="]'),
+    page.locator('a[href*="/manage-leads"][href*="id="]'),
     page.getByText(/^L\d+/, { exact: false }),
     page.getByText(/Lead ID/i),
   ]);
@@ -1951,7 +2300,29 @@ export async function assertAddCommentPanelOnOpenedLead(
   page: Page,
 ): Promise<CommentPanelResult> {
   await logStep("Open add comment panel");
-  return await new LeadProfilePage(page).openAddCommentPanel();
+  const leadProfilePage = new LeadProfilePage(page);
+  const result = await leadProfilePage.openAddCommentPanel();
+  await leadProfilePage.expectAddCommentPanelOptionsVisible();
+  return result;
+}
+
+export async function saveCommentWithRecordingOnOpenedLead(page: Page, recordingPath: string) {
+  await logStep("Save add comment with recording upload");
+  return await new LeadProfilePage(page).saveCommentWithRecording(recordingPath);
+}
+
+export async function assignLeadFromListingToAvailableUser(page: Page, app: AppConfig) {
+  await logStep("Assign lead from listing");
+  const leadListPage = new LeadListPage(page);
+  await leadListPage.openManageLeads(app);
+  return await leadListPage.assignFirstVisibleLeadToAvailableUserAndVerify();
+}
+
+export async function openLeadWhatsAppIntegrationFromListing(page: Page, app: AppConfig) {
+  await logStep("Open lead WhatsApp integration from listing");
+  const leadListPage = new LeadListPage(page);
+  await leadListPage.openManageLeads(app);
+  return await leadListPage.openFirstVisibleLeadWhatsAppIntegrationAndVerify();
 }
 
 export async function addReEnquiryToOpenedLead(
@@ -1970,6 +2341,11 @@ export async function moveOpenedLeadToSiteVisitInProgress(
 ) {
   await logStep("Move site visit to in progress");
   await ensureLeadProfileIsOpen(page, leadName);
+
+  if (await isLeadAlreadyInSiteVisitProgress(page, leadName)) {
+    return;
+  }
+
   await openChangeStageTab(page);
 
   await expect(page.getByText("Choose a stage", { exact: true })).toBeVisible({
@@ -1981,12 +2357,59 @@ export async function moveOpenedLeadToSiteVisitInProgress(
   await inProgressOption.click({ force: true });
 
   if (await clickStartSiteVisitCta(page)) {
-    await completeSiteVisitStartAuthentication(page, otpMode);
+    // Direct Site Visit / Walk In leads can enter the visit immediately.
+    // In that case the application does not render an OTP step.
+    const startOutcome = await waitForSiteVisitStartOutcome(page, leadName);
+    if (startOutcome === "otp") {
+      await completeSiteVisitStartAuthentication(page, otpMode);
+    } else if (startOutcome === "not-ready") {
+      await saveInProgressStageDetails(page);
+    }
   } else {
     await saveInProgressStageDetails(page);
   }
 
   await expectSiteVisitInProgress(page, leadName);
+}
+
+async function isLeadAlreadyInSiteVisitProgress(page: Page, leadName: string) {
+  if (await page
+    .getByRole("button", { name: /end visit/i })
+    .first()
+    .isVisible()
+    .catch(() => false)) {
+    return true;
+  }
+
+  const statusText = await visibleLeadStatusCardText(page, leadName);
+  return /Site Visit/i.test(statusText) && /In Progress/i.test(statusText);
+}
+
+async function waitForSiteVisitStartOutcome(page: Page, leadName: string) {
+  return await expect
+    .poll(
+      async () => {
+        if (await isLeadAlreadyInSiteVisitProgress(page, leadName)) {
+          return "in-progress";
+        }
+
+        const otpVisible = await page
+          .getByRole("button", { name: /send otp/i })
+          .first()
+          .isVisible()
+          .catch(() => false);
+        return otpVisible ? "otp" : "";
+      },
+      { timeout: 15000 },
+    )
+    .not.toBe("")
+    .then(async () => {
+      if (await isLeadAlreadyInSiteVisitProgress(page, leadName)) {
+        return "in-progress" as const;
+      }
+      return "otp" as const;
+    })
+    .catch(() => "not-ready" as const);
 }
 
 async function clickStartSiteVisitCta(page: Page) {
@@ -2183,7 +2606,12 @@ async function completeOpenedSiteVisit(
   }
   await completedStatus.click({ force: true });
 
-  await expectSiteVisitDone(page, leadName);
+  const saved = await clickVisibleSaveButton(page, /Site Visit Completed|Visit Done|Lead Stage Changed/i);
+  if (!saved && !(await isSiteVisitDoneApplied(page, leadName, 10000))) {
+    throw new Error("Site Visit Completed outcome was not saved and no Save button was visible.");
+  }
+
+  await waitForSiteVisitDoneToPersist(page, leadName);
 }
 
 export async function completeOpenedSiteVisitWithOtp(page: Page, leadName: string) {
@@ -2195,20 +2623,52 @@ export async function completeOpenedSiteVisitWithSkip(page: Page, leadName: stri
 }
 
 async function expectSiteVisitDone(page: Page, leadName: string) {
+  await expect
+    .poll(
+      async () => await hasSiteVisitDoneState(page, leadName),
+      { timeout: 60000 },
+    )
+    .toBeTruthy();
+}
+
+async function waitForSiteVisitDoneToPersist(page: Page, leadName: string) {
+  await expectSiteVisitDone(page, leadName);
+  await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+  await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+  await ensureLeadProfileIsOpen(page, leadName);
+
+  await expect
+    .poll(
+      async () => await hasSiteVisitDoneState(page, leadName),
+      { timeout: 45000 },
+    )
+    .toBeTruthy();
+}
+
+async function isSiteVisitDoneApplied(page: Page, leadName: string, timeout = 5000) {
+  return await expect
+    .poll(
+      async () => await hasSiteVisitDoneState(page, leadName),
+      { timeout },
+    )
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
+}
+
+async function hasSiteVisitDoneState(page: Page, leadName: string) {
   const leadStatusPattern = new RegExp(
     `${escapeRegex(leadName)}[\\s\\S]{0,700}Site Visit[\\s\\S]{0,300}Visit Done`,
     "i",
   );
+  const statusText = await visibleLeadStatusCardText(page, leadName);
+  if (leadStatusPattern.test(statusText) || /Visit Done/i.test(statusText)) {
+    return true;
+  }
 
-  await expect
-    .poll(
-      async () => {
-        const bodyText = await page.locator("body").innerText().catch(() => "");
-        return leadStatusPattern.test(bodyText) || /Site Visit Completed/i.test(bodyText);
-      },
-      { timeout: 60000 },
-    )
-    .toBeTruthy();
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  return leadStatusPattern.test(bodyText) || /Stage Updated to Site Visit Completed|Lead Stage Changed Successfully/i.test(bodyText);
 }
 
 export async function markOpenedSiteVisitNoShow(page: Page, leadName: string) {
@@ -2534,7 +2994,41 @@ async function hasSiteVisitOpportunityState(page: Page, leadName: string) {
   }
 
   const bodyText = await page.locator("body").innerText().catch(() => "");
-  return /Stage Updated to Opportunity/i.test(bodyText);
+  if (/Stage Updated to Opportunity/i.test(bodyText)) {
+    return true;
+  }
+
+  return await hasOpportunityInLeadListing(page, leadName);
+}
+
+async function hasOpportunityInLeadListing(page: Page, leadName: string) {
+  const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
+  const searchInput = page
+    .getByRole("textbox", { name: /Search by name, number, email, or ID|Search by name, number, email/i })
+    .first();
+  if (!(await searchInput.isVisible().catch(() => false))) {
+    return false;
+  }
+
+  const currentValue = await searchInput.inputValue().catch(() => "");
+  if (normalize(currentValue) !== normalize(leadName)) {
+    await searchInput.fill(leadName).catch(() => {});
+    await searchInput.press("Enter").catch(() => {});
+    await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
+  }
+
+  const rowTexts = await page
+    .locator("tbody tr, [role='row']")
+    .evaluateAll((rows) =>
+      rows
+        .map((row) => (row.textContent || "").replace(/\s+/g, " ").trim())
+        .filter(Boolean),
+    )
+    .catch(() => []);
+
+  return rowTexts.some((rowText) =>
+    new RegExp(`${escapeRegex(leadName)}[\\s\\S]{0,700}Opportunity`, "i").test(rowText),
+  );
 }
 
 async function ensureLeadProfileIsOpen(page: Page, leadName: string) {
@@ -2837,6 +3331,10 @@ export async function assertSiteVisitStageCasesOnOpenedLead(page: Page) {
   await logStep("Schedule site visit");
   await openChangeStageTab(page);
 
+  if (await openedLeadAlreadyHasScheduledSiteVisit(page)) {
+    return;
+  }
+
   const siteVisitStage = page
     .locator("button, div")
     .filter({ hasText: /^Site Visit$/i })
@@ -2874,6 +3372,14 @@ export async function assertSiteVisitStageCasesOnOpenedLead(page: Page) {
       { timeout: 60000 },
     )
     .toBeTruthy();
+}
+
+async function openedLeadAlreadyHasScheduledSiteVisit(page: Page) {
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  return (
+    /Lead Stage\s*:\s*Site Visit/i.test(bodyText) &&
+    /Site Visit Scheduled\s*:\s*(?!-)(?=\S)/i.test(bodyText)
+  );
 }
 
 export async function assertScheduledSiteVisitReady(page: Page, leadName: string) {

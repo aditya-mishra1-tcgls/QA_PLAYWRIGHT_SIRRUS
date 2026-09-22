@@ -28,7 +28,7 @@ Each feature file should describe:
 - `domain`
   Top-level business area such as `engagement`, `martech`, or `post-sales`
 - `feature`
-  Module or capability inside a domain such as `lead-management`, `lead-report`, or `site-visit`
+  Module or capability inside a domain such as `lead-management`, `lead-report`, `dashboard-report`, or `site-visit`
 - `tests/flows/...`
   Contains executable Playwright tests
 - `tests/support/...`
@@ -94,6 +94,7 @@ The expected first question pattern is:
 Example:
 
 - `engagement -> lead-report`
+- `engagement -> dashboard-report`
 - `engagement -> lead-management`
 - `martech -> campaign-dashboard`
 - `post-sales -> service-request`

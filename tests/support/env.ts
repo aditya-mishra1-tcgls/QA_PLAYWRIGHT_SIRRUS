@@ -7,6 +7,11 @@ import leads from "../data/leads.json";
 type EnvConfig = {
   envName: string;
   baseUrl: string;
+  martechBaseUrl?: string;
+  organisationId: string;
+  receptionFormsOrgId?: string;
+  receptionFormsProjectName?: string;
+  receptionFormsProjectId?: string;
   activeProjectName: string;
   mobileNumber: string;
   otp: string;
@@ -94,12 +99,31 @@ export function loadEnv(): EnvConfig {
     process.env.APP_TEST_PROJECT_NAME ||
     process.env.ACTIVE_PROJECT_NAME ||
     availableEnv.activeProjectName;
+  const selectedOrganisationId =
+    process.env.APP_TEST_ORG_ID ||
+    process.env.ACTIVE_ORG_ID ||
+    availableEnv.organisationId;
+  const selectedReceptionFormsProjectName =
+    process.env.RECEPTION_FORMS_PROJECT_NAME ||
+    availableEnv.receptionFormsProjectName;
+  const selectedReceptionFormsOrgId =
+    process.env.RECEPTION_FORMS_ORG_ID ||
+    availableEnv.receptionFormsOrgId;
+  const selectedReceptionFormsProjectId =
+    process.env.RECEPTION_FORMS_PROJECT_ID ||
+    availableEnv.receptionFormsProjectId;
   ensureConfiguredCredential(selectedEnv, "mobileNumber", selectedMobileNumber);
   ensureConfiguredCredential(selectedEnv, "otp", selectedOtp);
+  ensureConfiguredCredential(selectedEnv, "organisationId", selectedOrganisationId);
 
   return {
     envName: selectedEnv,
     baseUrl: availableEnv.baseUrl,
+    martechBaseUrl: availableEnv.martechBaseUrl,
+    organisationId: selectedOrganisationId,
+    receptionFormsOrgId: selectedReceptionFormsOrgId,
+    receptionFormsProjectName: selectedReceptionFormsProjectName,
+    receptionFormsProjectId: selectedReceptionFormsProjectId,
     activeProjectName: selectedProjectName,
     mobileNumber: selectedMobileNumber,
     otp: selectedOtp,

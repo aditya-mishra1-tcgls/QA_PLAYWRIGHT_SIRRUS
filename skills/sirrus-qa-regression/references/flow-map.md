@@ -31,3 +31,8 @@
 
 - Whenever a new selector pattern, lead fixture, project fixture, stage rule, or documentation rule becomes stable, update this file and `project-context.md` in the same change.
 - Whenever a feature gets a new automated case, update the related file in `docs/features/` in the same change.
+
+## User-management status coverage
+
+- `manage_user.spec.ts` covers active/inactive selection, paginated row totals, count deltas after user status changes, search reset behavior, role filtering, row-to-edit navigation, and non-admin direct-access authorization.
+- Uses the recorded Reactivate/Deactivate reason confirmation flow and environment-driven authentication. All three new scenarios passed on UAT across validation runs on 14 September 2026. Search filters the count badges; clear it before global count assertions.

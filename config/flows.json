@@ -6,6 +6,9 @@
     "channel-partner",
     "lead-management",
     "lead-report",
-    "site-visit"
+    "dashboard-report",
+    "ReceptionForms",
+    "site-visit",
+    "martech"
   ]
 }

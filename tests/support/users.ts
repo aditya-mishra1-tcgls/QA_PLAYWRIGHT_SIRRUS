@@ -68,10 +68,11 @@ export async function openUserManagement(page: Page, app: AppConfig) {
 }
 
 export async function createAutomationUser(page: Page, app: AppConfig, seed = buildAutomationUserSeed(app)) {
+  const userManagementPage = new UserManagementPage(page);
   await openUserManagement(page, app);
 
   await base.step("Open create user form", async () => {
-    await new UserManagementPage(page).openCreateUserForm();
+    await userManagementPage.openCreateUserForm();
   });
 
   await base.step("Fill user details", async () => {
@@ -98,9 +99,11 @@ export async function createAutomationUser(page: Page, app: AppConfig, seed = bu
         page.getByText(/^Email ID\s*\*?$/i).locator("xpath=following::input[1]").first(),
         page.locator('input[placeholder="Enter here"]').nth(2),
       ], seed.email, "email");
-      await selectUserDropdownOption(page, /^Role\s*\*?$/i, process.env.AUTOMATION_USER_ROLE || "Presales Head Group");
-      await selectUserDropdownOption(page, /^Reporting Manager\s*\*?$/i, process.env.AUTOMATION_USER_REPORTING_MANAGER || "Aadi Gala Admin");
-      await selectUserDropdownOption(page, /^Projects Allocated\s*\*?$/i, process.env.AUTOMATION_USER_PROJECT || "All Projects");
+      await userManagementPage.selectCreateUserRequiredDropdowns({
+        role: process.env.AUTOMATION_USER_ROLE || "Presales Head Group",
+        reportingManager: process.env.AUTOMATION_USER_REPORTING_MANAGER || "Aadi Gala Admin",
+        project: process.env.AUTOMATION_USER_PROJECT || "All Projects",
+      });
       await closeOpenDropdowns(page);
       return;
     }
@@ -194,6 +197,17 @@ export async function createAutomationUser(page: Page, app: AppConfig, seed = bu
       "save user",
       { force: true }
       );
+    }
+
+    await page.waitForTimeout(1000);
+    const validationText = await page
+      .locator("body")
+      .innerText()
+      .then((text) => text.replace(/\s+/g, " ").trim())
+      .catch(() => "");
+    const validationMatch = validationText.match(/Please (?:select|enter) [^.!\n]+|Invalid [^.!\n]+|required/i);
+    if (validationMatch && await page.getByText(/Add User Details/i).first().isVisible().catch(() => false)) {
+      throw new Error(`Create user form still has validation after submit: ${validationMatch[0]}`);
     }
 
     await expect(page.locator("body")).toContainText(/User Added Successfully|User Added|successfully/i, {

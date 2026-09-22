@@ -24,6 +24,7 @@ Default sequential order is controlled in `config/flows.json`.
    Lead creation
    Lead edit
 5. `lead-report`
+6. `dashboard-report`
    Includes:
    Dashboard creation
    Chart creation

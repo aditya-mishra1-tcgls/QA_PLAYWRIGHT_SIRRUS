@@ -73,6 +73,30 @@ export class ProjectSwitcherPage {
     return projectName;
   }
 
+  /**
+   * Re-applies a project selection even when its name is already visible in
+   * the shell. List pages retain their own data scope, so a visible root label
+   * alone is not enough to guarantee that the list was refreshed for it.
+   */
+  async selectProject(projectName: string) {
+    const projectSwitcher = await this.waitForProjectSwitcher(projectName);
+    if (!projectSwitcher) {
+      throw new Error("Project switcher was not visible.");
+    }
+
+    await this.page.keyboard.press("Escape").catch(() => {});
+    await projectSwitcher.click({ force: true });
+
+    const switched = await this.chooseConfiguredProject(projectName);
+    if (!switched) {
+      throw new Error(`Project "${projectName}" was not visible in the project switcher.`);
+    }
+
+    await this.waitForProjectApplied(projectName);
+    await this.page.keyboard.press("Escape").catch(() => {});
+    return projectName;
+  }
+
   private async waitForProjectSwitcher(projectName: string) {
     await this.page.waitForLoadState("domcontentloaded").catch(() => {});
 

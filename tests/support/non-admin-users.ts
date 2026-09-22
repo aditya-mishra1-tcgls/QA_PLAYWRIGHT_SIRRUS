@@ -14,10 +14,39 @@ const nonAdminUsersByEnv: Record<string, NonAdminUser> = {
   },
 };
 
+const unauthorizedChannelPartnerUsersByEnv: Record<string, NonAdminUser> = {
+  qa: {
+    mobileNumber: "9090909090",
+    otp: "1234",
+  },
+  uat: {
+    mobileNumber: "9090909090",
+    otp: "1234",
+  },
+};
+
 export function getReceptionFormNonAdminUser(envName: string): NonAdminUser {
   const user = nonAdminUsersByEnv[envName.toLowerCase()];
   if (!user) {
     throw new Error(`Missing reception form non-admin user for "${envName}".`);
+  }
+
+  return user;
+}
+
+export function getUnauthorizedChannelPartnerUser(envName: string): NonAdminUser {
+  const user = unauthorizedChannelPartnerUsersByEnv[envName.toLowerCase()];
+  if (!user) {
+    throw new Error(`Missing unauthorized channel partner user for "${envName}".`);
+  }
+
+  return user;
+}
+
+export function getUnauthorizedUserManagementUser(envName: string): NonAdminUser {
+  const user = unauthorizedChannelPartnerUsersByEnv[envName.toLowerCase()];
+  if (!user) {
+    throw new Error(`Missing unauthorized user management user for "${envName}".`);
   }
 
   return user;

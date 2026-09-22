@@ -10,8 +10,9 @@ Suggested execution order:
 6. site-visit
 7. lead-search
 8. lead-stage-update
-9. lead-reports
-10. bulk-upload
+9. lead-report
+10. dashboard-report
+11. bulk-upload
 
 Use:
 

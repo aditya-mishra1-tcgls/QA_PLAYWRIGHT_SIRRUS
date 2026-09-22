@@ -800,7 +800,7 @@ export async function createLeadReportDashboardAndChart(page: Page, app: AppConf
   const dashboardName = `Automation Dashboard ${randomDigits(4)}`;
   const chartName = `Automation Report ${randomDigits(4)}`;
 
-  await base.step("Open lead reports page", async () => {
+  await base.step("Open reports dashboard page", async () => {
     await goToLeadReports(page, app);
   });
   await base.step("Create report dashboard", async () => {

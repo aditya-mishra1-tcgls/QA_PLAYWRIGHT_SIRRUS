@@ -82,5 +82,25 @@ For three team members:
 
 - Module registered in config.
 - Execution profile added as `user-management`.
-- Initial Playwright user-creation spec added at `tests/flows/user-management/create-user.spec.ts`.
+- Initial Playwright user-creation spec added at `tests/flows/user-management/create-users-roles.spec.ts`.
 - Generic user-management navigation and form selectors added at `tests/support/users.ts`; confirm the final route/selectors against the live Admin > Users screen.
+
+## User status and count coverage
+
+`tests/flows/user-management/manage_user.spec.ts` covers ongoing user-list management scenarios:
+
+- Active User tab selection, active-only rows (Deactivate action), and badge equality with the total across paginated rows.
+- Inactive User tab selection, inactive-only rows (Reactivate action), and badge equality with the total across paginated rows.
+- Fresh user creation, deactivation, and reactivation, asserting both badge counts immediately and after revisiting User Management.
+- Existing user search by full and partial user details, plus clearing search back to the default list.
+- User detail/edit view opening from listing rows.
+- Role filter apply/close behavior.
+- Non-admin authorization checks for hidden Settings access and direct URL protection.
+
+The mutation test uses a generated automation user email and the shared creation helper. It never selects an arbitrary existing user. Adding changes counts by (+1 active, 0 inactive); deactivation by (-1 active, +1 inactive); reactivation by (+1 active, -1 inactive). Counts are captured at runtime, without fixed totals. The generated user remains active after a successful run.
+
+Preconditions: configured account with user-management permissions and valid user-creation role/reporting-manager/project configuration. Run against a stable dataset without concurrent user additions or status changes, since assertions compare exact count deltas. Numbered pagination controls scoped to the table container are used to count all users. Search changes the badge totals, so the status-change helper clears search before asserting global count deltas.
+
+Validation on UAT (14 September 2026): both tab scenarios passed in the tab/full-file runs; the lifecycle scenario passed in a subsequent focused run after correcting search-dependent count handling. TypeScript checks passed. The shared navigation helper now waits for the User Management link and the User List tab instead of treating the Settings card as a loaded user list.
+
+Authentication is supplied by the common Playwright `setup` project in `tests/setup/auth.setup.ts`. User-management page helpers consume its saved storage state and do not perform a separate login.

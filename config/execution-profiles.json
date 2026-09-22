@@ -11,11 +11,15 @@
     },
     "lead": {
       "description": "Lead management focused execution.",
-      "flows": ["smoke", "channel-partner", "lead-management"]
+      "flows": ["smoke", "channel-partner", "lead-management", "lead-report", "dashboard-report"]
     },
     "site-visit": {
       "description": "Site visit focused execution.",
       "flows": ["smoke", "site-visit"]
+    },
+    "martech": {
+      "description": "Martech focused execution.",
+      "flows": ["smoke", "martech"]
     },
     "user-management": {
       "description": "Admin user creation and user access focused execution.",
@@ -23,7 +27,7 @@
     },
     "regression": {
       "description": "Full manually triggered regression pack.",
-      "flows": ["smoke", "auth", "channel-partner", "lead-management", "site-visit"]
+      "flows": ["smoke", "auth", "user-management", "channel-partner", "lead-management", "lead-report", "dashboard-report", "ReceptionForms", "site-visit", "martech"]
     }
   }
 }

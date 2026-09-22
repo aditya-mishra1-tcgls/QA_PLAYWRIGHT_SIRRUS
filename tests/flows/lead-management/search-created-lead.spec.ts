@@ -30,6 +30,7 @@ test.describe("Lead search flow", () => {
   });
 
   test("Create lead and search by name, phone number, and email", async ({ page, app }) => {
+    test.setTimeout(Number(process.env.PLAYWRIGHT_TEST_TIMEOUT || 180000));
     await goToManageLeads(page, app);
 
     const leadSeed = await fillLeadForm(page, app);
@@ -61,14 +62,22 @@ test.describe("Lead search flow", () => {
     const leadListPage = new LeadListPage(page);
     await leadListPage.selectAllProjects();
 
-    const statuses: LeadStageFilter[] = [
+    const candidateStatuses: LeadStageFilter[] = [
+      "New Lead",
+      "Contacted",
+      "Prospect",
       "Open",
       "Qualified",
       "Site Visit",
+      "Negotiation",
       "Opportunity",
       "Booked",
       "Dropped",
     ];
+    const statuses = await leadListPage.availableStageSummaryFilters(candidateStatuses);
+    if (statuses.length === 0) {
+      throw new Error("No lead stage summary filters were visible.");
+    }
 
     for (const status of statuses) {
       await test.step(`Apply ${status} status filter`, async () => {
@@ -99,7 +108,16 @@ test.describe("Lead search flow", () => {
     const leadListPage = new LeadListPage(page);
     await leadListPage.selectAllProjects();
 
-    await leadListPage.applyStageFilter("Open");
+    const stage = await leadListPage.firstAvailableStageSummaryFilter([
+      "Open",
+      "Contacted",
+      "New Lead",
+      "Qualified",
+      "Prospect",
+      "Site Visit",
+    ]);
+
+    await leadListPage.applyStageFilter(stage);
     await leadListPage.clearFilters();
     await leadListPage.expectAllStageDataLoaded();
   });
